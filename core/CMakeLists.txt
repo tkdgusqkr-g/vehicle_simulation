@@ -1,0 +1,50 @@
+# Version and commit, baked in for run metadata (design doc R-32).
+set(VSIM_GIT_COMMIT "unknown")
+find_package(Git QUIET)
+if(GIT_FOUND)
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" rev-parse --short HEAD
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    OUTPUT_VARIABLE _vsim_commit
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE _vsim_commit_result
+    ERROR_QUIET)
+  if(_vsim_commit_result EQUAL 0)
+    set(VSIM_GIT_COMMIT "${_vsim_commit}")
+  endif()
+endif()
+configure_file(src/version.cpp.in "${CMAKE_CURRENT_BINARY_DIR}/generated/version.cpp" @ONLY)
+
+add_library(vsim_core STATIC
+  src/control/reference_vcu.cpp
+  src/driver/drivers.cpp
+  src/driver/profile.cpp
+  src/log/mcap_logger.cpp
+  src/models/vehicle/single_track.cpp
+  src/sim/integrator.cpp
+  src/sim/params.cpp
+  src/sim/realism.cpp
+  src/sim/recorder.cpp
+  src/sim/rng.cpp
+  src/sim/scenario.cpp
+  src/sim/signal_bus.cpp
+  src/sim/simulation.cpp
+  src/util/paths.cpp
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/version.cpp")
+target_include_directories(vsim_core PUBLIC include)
+target_link_libraries(vsim_core PRIVATE yaml-cpp nlohmann_json::nlohmann_json vsim_mcap)
+vsim_set_warnings(vsim_core)
+
+if(VSIM_BUILD_APP)
+  add_library(vsim_api STATIC src/api/api_server.cpp)
+  target_include_directories(vsim_api PUBLIC include)
+  target_link_libraries(vsim_api PRIVATE ixwebsocket)
+  vsim_set_warnings(vsim_api)
+
+  add_executable(vsim-core apps/vsim-core/main.cpp)
+  target_link_libraries(vsim-core PRIVATE vsim_core vsim_api nlohmann_json::nlohmann_json)
+  if(WIN32)
+    target_link_libraries(vsim-core PRIVATE winmm shell32)
+  endif()
+  vsim_set_warnings(vsim-core)
+endif()

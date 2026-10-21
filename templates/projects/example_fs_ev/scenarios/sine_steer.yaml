@@ -1,0 +1,22 @@
+# 40 km/h를 유지하면서 사인 조향. 헤드리스(fast)로 돌리는 예제입니다.
+name: sine_steer
+project: ..
+seed: 1
+
+time:
+  dt: 0.001
+  mode: fast
+  t_end: 30
+
+driver:
+  type: maneuver
+  speed_hold_kph: 40
+  steer:                       # 핸들각 [deg]
+    type: sine
+    amplitude: 30
+    freq_hz: 0.25
+    start_s: 5
+
+logging:
+  rate_hz: 100
+  signals: ["veh.*", "drv.*", "pt.*"]

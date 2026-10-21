@@ -1,0 +1,19 @@
+# Build output
+build/
+out/
+cmake-build-*/
+
+# Python extension built into the source tree for development
+python/vsim/_vsim*.so
+python/vsim/_vsim*.pyd
+__pycache__/
+*.egg-info/
+.pytest_cache/
+
+# Simulation runs
+runs/
+
+# Editors
+.vs/
+.vscode/
+.idea/

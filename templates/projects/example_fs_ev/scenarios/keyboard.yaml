@@ -1,0 +1,23 @@
+# 키보드로 평지 주행. vsim-core로 실행하고 ui/live/index.html을 열어서 운전합니다.
+name: keyboard_flat
+project: ..
+seed: 1
+
+time:
+  dt: 0.001
+  mode: realtime
+
+realism:                       # M0에는 외란 모델이 없어서 모두 ideal
+  environment: ideal
+  sensors: ideal
+  actuators: ideal
+  electrical: ideal
+  comms: ideal
+  variation: ideal
+
+driver:
+  type: keyboard
+
+logging:
+  rate_hz: 100
+  signals: ["veh.*", "drv.*", "pt.*"]

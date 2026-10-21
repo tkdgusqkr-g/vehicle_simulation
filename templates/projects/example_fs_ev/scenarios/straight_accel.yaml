@@ -1,0 +1,19 @@
+# 정지 상태에서 풀 스로틀 직진 가속.
+name: straight_accel
+project: ..
+seed: 1
+
+time:
+  dt: 0.001
+  mode: fast
+  t_end: 10
+
+driver:
+  type: maneuver
+  throttle:
+    type: const
+    value: 1.0
+
+logging:
+  rate_hz: 100
+  signals: ["veh.*", "drv.*", "pt.*"]

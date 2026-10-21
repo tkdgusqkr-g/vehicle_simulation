@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python packages
+        run: python -m pip install pybind11 numpy pytest mcap
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DPython_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: C++ tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Python tests
+        run: python -m pytest python/tests -v
+
+      - name: Headless scenario run
+        run: |
+          exe=build/core/vsim-core
+          [ -f build/core/Release/vsim-core.exe ] && exe=build/core/Release/vsim-core.exe
+          "$exe" --scenario templates/projects/example_fs_ev/scenarios/sine_steer.yaml --log-dir runs
+          ls runs/*/

@@ -1,0 +1,8 @@
+#include "vsim/version.hpp"
+
+namespace vsim {
+
+const char* version() { return "@PROJECT_VERSION@"; }
+const char* git_commit() { return "@VSIM_GIT_COMMIT@"; }
+
+}  // namespace vsim

@@ -1,0 +1,7 @@
+# 예제 차량 프로젝트 (설계 문서 §18.2)
+# 수치는 전기 포뮬러 차량의 대표값이며, 특정 실차 데이터가 아닙니다.
+# 실제 차량은 이 폴더를 복사해서 별도 저장소로 관리하는 것을 권장합니다.
+name: example_fs_ev
+schema_version: 1
+vehicle: vehicle/vehicle.yaml
+control: control/vcu.yaml

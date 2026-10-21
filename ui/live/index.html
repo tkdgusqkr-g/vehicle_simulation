@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vsim 라이브 뷰</title>
+<style>
+  :root {
+    --bg: #12151a;
+    --grid-minor: #1d222a;
+    --grid-major: #2a313c;
+    --panel: rgba(18, 21, 26, 0.82);
+    --panel-border: #2c3440;
+    --text: #e6e9ee;
+    --muted: #8a94a3;
+    --accent: #4fb3ff;
+    --throttle: #3ecf8e;
+    --brake: #ff5c5c;
+    --trail: rgba(79, 179, 255, 0.55);
+    --car: #f2f4f7;
+    --tire: #0b0d10;
+  }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  .panel { position: fixed; background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.5; backdrop-filter: blur(4px); }
+  #status { top: 12px; left: 12px; min-width: 210px; }
+  #status .row { display: flex; justify-content: space-between; gap: 16px; }
+  #status .label { color: var(--muted); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--brake); }
+  .dot.on { background: var(--throttle); }
+  #help { top: 12px; right: 12px; color: var(--muted); }
+  #help kbd { color: var(--text); background: #222833; border: 1px solid var(--panel-border);
+    border-radius: 4px; padding: 0 5px; font-family: inherit; font-size: 12px; }
+  #dash { bottom: 12px; left: 12px; display: flex; gap: 16px; align-items: flex-end; }
+  #speed { font-size: 44px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; }
+  #speed small { font-size: 14px; color: var(--muted); font-weight: 400; margin-left: 4px; }
+  .bar { width: 14px; height: 70px; background: #222833; border-radius: 3px; position: relative; overflow: hidden; }
+  .bar > div { position: absolute; bottom: 0; left: 0; right: 0; height: 0; }
+  #throttle-bar > div { background: var(--throttle); }
+  #brake-bar > div { background: var(--brake); }
+  .bar-label { font-size: 11px; color: var(--muted); text-align: center; margin-top: 4px; }
+  #wheel { width: 64px; height: 64px; }
+  #numbers { font-variant-numeric: tabular-nums; color: var(--muted); }
+  #numbers b { color: var(--text); font-weight: 500; }
+  #paused { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 28px;
+    letter-spacing: 4px; color: var(--muted); display: none; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+
+<div id="status" class="panel">
+  <div><span id="conn-dot" class="dot"></span><span id="conn">연결 중…</span></div>
+  <div class="row"><span class="label">시나리오</span><span id="scenario">-</span></div>
+  <div class="row"><span class="label">드라이버</span><span id="driver">-</span></div>
+  <div class="row"><span class="label">시뮬 시간</span><span id="time">-</span></div>
+  <div class="row"><span class="label">실시간 배율</span><span id="rtf">-</span></div>
+</div>
+
+<div id="help" class="panel">
+  <div><kbd>↑</kbd>/<kbd>W</kbd> 가속 &nbsp; <kbd>↓</kbd>/<kbd>S</kbd> 브레이크</div>
+  <div><kbd>←</kbd><kbd>→</kbd>/<kbd>A</kbd><kbd>D</kbd> 조향</div>
+  <div><kbd>Space</kbd> 일시정지 &nbsp; <kbd>R</kbd> 리셋</div>
+  <div><kbd>C</kbd> 카메라 &nbsp; <kbd>+</kbd><kbd>-</kbd>/휠 확대</div>
+</div>
+
+<div id="dash" class="panel">
+  <div>
+    <div id="speed">0<small>km/h</small></div>
+    <div id="numbers">
+      <div>출력 <b id="power">0</b> kW</div>
+      <div>횡G <b id="lat-g">0.00</b> &nbsp; 종G <b id="long-g">0.00</b></div>
+    </div>
+  </div>
+  <div><div id="throttle-bar" class="bar"><div></div></div><div class="bar-label">APPS</div></div>
+  <div><div id="brake-bar" class="bar"><div></div></div><div class="bar-label">BRK</div></div>
+  <div>
+    <svg id="wheel" viewBox="-32 -32 64 64">
+      <g id="wheel-rot">
+        <circle r="26" fill="none" stroke="#8a94a3" stroke-width="5"/>
+        <line x1="-26" y1="4" x2="26" y2="4" stroke="#8a94a3" stroke-width="5"/>
+        <line x1="0" y1="4" x2="0" y2="26" stroke="#8a94a3" stroke-width="5"/>
+        <line x1="0" y1="-26" x2="0" y2="-19" stroke="#4fb3ff" stroke-width="5"/>
+      </g>
+    </svg>
+    <div class="bar-label" id="steer-deg">0°</div>
+  </div>
+</div>
+
+<div id="paused">일시정지</div>
+
+<script>
+"use strict";
+
+const canvas = document.getElementById("view");
+const ctx = canvas.getContext("2d");
+const css = getComputedStyle(document.documentElement);
+const color = (name) => css.getPropertyValue(name).trim();
+
+// Default vehicle geometry until the server says otherwise (hello message).
+let vehicle = { wheelbase: 1.53, cg_to_front: 0.8, track_width: 1.22, steering_ratio: 4.5 };
+let state = null;
+let trail = [];
+let headingUp = true;
+let pixelsPerMeter = 28;
+
+// --- WebSocket ----------------------------------------------------------------
+const params = new URLSearchParams(location.search);
+const wsUrl = params.get("ws") || `ws://${location.hostname || "127.0.0.1"}:8765`;
+let socket = null;
+
+function connect() {
+  socket = new WebSocket(wsUrl);
+  socket.onopen = () => setConnected(true);
+  socket.onclose = () => { setConnected(false); setTimeout(connect, 1000); };
+  socket.onerror = () => socket.close();
+  socket.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    if (message.method === "hello") {
+      vehicle = Object.assign(vehicle, message.params.vehicle);
+      document.getElementById("scenario").textContent = message.params.scenario;
+      document.getElementById("driver").textContent = message.params.driver;
+    } else if (message.method === "state") {
+      onState(message.params);
+    }
+  };
+}
+
+function setConnected(on) {
+  document.getElementById("conn-dot").classList.toggle("on", on);
+  document.getElementById("conn").textContent = on ? `연결됨 ${wsUrl}` : `연결 끊김 — ${wsUrl} 재시도 중`;
+}
+
+function send(method, params = {}) {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ jsonrpc: "2.0", method, params }));
+  }
+}
+
+// --- Keyboard -----------------------------------------------------------------
+const keys = { throttle: false, brake: false, left: false, right: false };
+const keyMap = {
+  ArrowUp: "throttle", KeyW: "throttle",
+  ArrowDown: "brake", KeyS: "brake",
+  ArrowLeft: "left", KeyA: "left",
+  ArrowRight: "right", KeyD: "right",
+};
+
+function sendKeys() { send("input.keys", keys); }
+
+window.addEventListener("keydown", (event) => {
+  const control = keyMap[event.code];
+  if (control) {
+    event.preventDefault();
+    if (!keys[control]) { keys[control] = true; sendKeys(); }
+    return;
+  }
+  if (event.repeat) return;
+  if (event.code === "Space" || event.code === "KeyP") { event.preventDefault(); send("sim.toggle_pause"); }
+  else if (event.code === "KeyR") { send("sim.reset"); trail = []; }
+  else if (event.code === "KeyC") { headingUp = !headingUp; }
+  else if (event.key === "+" || event.key === "=") { zoom(1.25); }
+  else if (event.key === "-") { zoom(0.8); }
+});
+
+window.addEventListener("keyup", (event) => {
+  const control = keyMap[event.code];
+  if (control) { keys[control] = false; sendKeys(); }
+});
+
+// Releasing everything when the window loses focus; the server also times out
+// keys that are not refreshed, so a closed tab cannot leave a pedal pressed.
+window.addEventListener("blur", () => { for (const k in keys) keys[k] = false; sendKeys(); });
+setInterval(sendKeys, 100);
+
+function zoom(factor) { pixelsPerMeter = Math.min(200, Math.max(3, pixelsPerMeter * factor)); }
+canvas.addEventListener("wheel", (event) => { event.preventDefault(); zoom(event.deltaY < 0 ? 1.1 : 0.9); },
+  { passive: false });
+
+// --- State --------------------------------------------------------------------
+function onState(s) {
+  if (state && Math.hypot(s.x - state.x, s.y - state.y) > 20) trail = [];  // reset jumped
+  state = s;
+  const last = trail[trail.length - 1];
+  if (!last || Math.hypot(s.x - last[0], s.y - last[1]) > 0.1) {
+    trail.push([s.x, s.y]);
+    if (trail.length > 4000) trail.shift();
+  }
+  document.getElementById("time").textContent = `${s.t.toFixed(2)} s`;
+  document.getElementById("rtf").textContent = s.rtf ? `${s.rtf.toFixed(2)}×` : "-";
+  document.getElementById("speed").firstChild.nodeValue = Math.round(s.speed * 3.6);
+  document.getElementById("power").textContent = (s.power / 1000).toFixed(1);
+  document.getElementById("lat-g").textContent = (s.ay / 9.81).toFixed(2);
+  document.getElementById("long-g").textContent = (s.ax / 9.81).toFixed(2);
+  document.querySelector("#throttle-bar > div").style.height = `${s.throttle * 100}%`;
+  document.querySelector("#brake-bar > div").style.height = `${s.brake * 100}%`;
+  const steerDeg = s.steer * 180 / Math.PI;
+  // Positive steer is left (counter-clockwise), which is a negative SVG rotation.
+  document.getElementById("wheel-rot").setAttribute("transform", `rotate(${-steerDeg})`);
+  document.getElementById("steer-deg").textContent = `${steerDeg.toFixed(0)}°`;
+  document.getElementById("paused").style.display = s.paused ? "block" : "none";
+}
+
+// --- Drawing ------------------------------------------------------------------
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(window.innerWidth * dpr);
+  canvas.height = Math.round(window.innerHeight * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener("resize", resize);
+resize();
+
+// World (east, north) -> screen pixels, centred on the car.
+function makeProjection(center, yaw) {
+  const cx = window.innerWidth / 2;
+  const cy = window.innerHeight * (headingUp ? 0.62 : 0.5);
+  const angle = headingUp ? Math.PI / 2 - yaw : 0;
+  const c = Math.cos(angle), s = Math.sin(angle);
+  return (x, y) => {
+    const dx = x - center[0], dy = y - center[1];
+    return [cx + pixelsPerMeter * (dx * c - dy * s), cy - pixelsPerMeter * (dx * s + dy * c)];
+  };
+}
+
+function line(p, a, b) {
+  const [x1, y1] = p(a[0], a[1]);
+  const [x2, y2] = p(b[0], b[1]);
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+}
+
+function drawGrid(p, center) {
+  const reach = Math.hypot(window.innerWidth, window.innerHeight) / pixelsPerMeter;
+  for (const [step, stroke] of [[1, color("--grid-minor")], [10, color("--grid-major")]]) {
+    if (step === 1 && pixelsPerMeter < 8) continue;
+    ctx.beginPath();
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 1;
+    const x0 = Math.floor((center[0] - reach) / step) * step;
+    const y0 = Math.floor((center[1] - reach) / step) * step;
+    for (let x = x0; x <= center[0] + reach; x += step) line(p, [x, center[1] - reach], [x, center[1] + reach]);
+    for (let y = y0; y <= center[1] + reach; y += step) line(p, [center[0] - reach, y], [center[0] + reach, y]);
+    ctx.stroke();
+  }
+  // Origin marker.
+  ctx.beginPath();
+  ctx.strokeStyle = color("--accent");
+  ctx.lineWidth = 2;
+  line(p, [-1, 0], [1, 0]);
+  line(p, [0, -1], [0, 1]);
+  ctx.stroke();
+}
+
+function drawTrail(p) {
+  if (trail.length < 2) return;
+  ctx.beginPath();
+  ctx.strokeStyle = color("--trail");
+  ctx.lineWidth = 2;
+  const [x0, y0] = p(trail[0][0], trail[0][1]);
+  ctx.moveTo(x0, y0);
+  for (let i = 1; i < trail.length; i++) {
+    const [x, y] = p(trail[i][0], trail[i][1]);
+    ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+// Polygon given in car coordinates (forward, left) around a local origin.
+function carPolygon(p, s, points, fill, origin = [0, 0], angle = 0) {
+  const ch = Math.cos(s.yaw), sh = Math.sin(s.yaw);
+  const ca = Math.cos(angle), sa = Math.sin(angle);
+  ctx.beginPath();
+  points.forEach(([f, l], i) => {
+    const fr = origin[0] + f * ca - l * sa;
+    const lr = origin[1] + f * sa + l * ca;
+    const [x, y] = p(s.x + fr * ch - lr * sh, s.y + fr * sh + lr * ch);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.closePath();
+  ctx.fillStyle = fill;
+  ctx.fill();
+}
+
+function drawCar(p, s) {
+  const lf = vehicle.cg_to_front;
+  const lr = vehicle.wheelbase - lf;
+  const half = vehicle.track_width / 2;
+  const tire = [[0.25, 0.11], [0.25, -0.11], [-0.25, -0.11], [-0.25, 0.11]];
+  // Wheels first, body on top. Front wheels turn by the road wheel angle.
+  for (const side of [half, -half]) {
+    carPolygon(p, s, tire, color("--tire"), [lf, side], s.delta);
+    carPolygon(p, s, tire, color("--tire"), [-lr, side]);
+  }
+  // Simple open-wheel outline: nose, monocoque, sidepods, rear wing.
+  carPolygon(p, s, [[lf + 0.75, 0.12], [lf + 0.75, -0.12], [lf - 0.1, -0.28], [-lr - 0.35, -0.3],
+    [-lr - 0.35, 0.3], [lf - 0.1, 0.28]], color("--car"));
+  carPolygon(p, s, [[lf + 0.85, half - 0.05], [lf + 0.85, -half + 0.05], [lf + 0.65, -half + 0.05],
+    [lf + 0.65, half - 0.05]], color("--accent"));
+  carPolygon(p, s, [[-lr - 0.3, 0.45], [-lr - 0.3, -0.45], [-lr - 0.55, -0.45], [-lr - 0.55, 0.45]],
+    color("--accent"));
+  // Cockpit.
+  carPolygon(p, s, [[0.15, 0.16], [0.15, -0.16], [-0.45, -0.16], [-0.45, 0.16]], color("--tire"));
+}
+
+function frame() {
+  ctx.fillStyle = color("--bg");
+  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+  const s = state || { x: 0, y: 0, yaw: 0, delta: 0 };
+  const p = makeProjection([s.x, s.y], s.yaw);
+  drawGrid(p, [s.x, s.y]);
+  drawTrail(p);
+  drawCar(p, s);
+  requestAnimationFrame(frame);
+}
+
+connect();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
