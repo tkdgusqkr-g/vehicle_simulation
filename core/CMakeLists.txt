@@ -19,6 +19,8 @@ add_library(vsim_core STATIC
   src/control/reference_vcu.cpp
   src/driver/drivers.cpp
   src/driver/profile.cpp
+  src/input/force_feedback.cpp
+  src/input/wheel_profile.cpp
   src/log/mcap_logger.cpp
   src/models/driveline/driveline.cpp
   src/models/powertrain/battery.cpp
@@ -54,4 +56,18 @@ if(VSIM_BUILD_APP)
     target_link_libraries(vsim-core PRIVATE winmm shell32)
   endif()
   vsim_set_warnings(vsim-core)
+
+  if(VSIM_WITH_SDL)
+    # Steering wheel input and force feedback (design doc §9.3).
+    add_library(vsim_input STATIC src/input/input_service.cpp)
+    target_include_directories(vsim_input PUBLIC include)
+    target_link_libraries(vsim_input PUBLIC vsim_core PRIVATE SDL3::SDL3)
+    vsim_set_warnings(vsim_input)
+    target_link_libraries(vsim-core PRIVATE vsim_input)
+    target_compile_definitions(vsim-core PRIVATE VSIM_HAS_SDL=1)
+
+    add_executable(vsim-input apps/vsim-input/main.cpp)
+    target_link_libraries(vsim-input PRIVATE vsim_core SDL3::SDL3)
+    vsim_set_warnings(vsim-input)
+  endif()
 endif()

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 
 #include "vsim/driver/profile.hpp"
 #include "vsim/sim/block.hpp"
@@ -74,7 +75,27 @@ class ExternalDriver final : public DriverBlock {
   InputHub* inputs_ = nullptr;
 };
 
-// Builds the driver named by driver.type (keyboard | maneuver | external).
+// Driver in the loop (design doc §9.3): a steering wheel and pedals when one
+// is connected (driver.input: auto | wheel | keyboard), else the keyboard.
+// Posts the road torque at the steering wheel for force feedback.
+class DilDriver final : public DriverBlock {
+ public:
+  enum class Source { Auto, Wheel, Keyboard };
+
+  std::string_view name() const override { return "driver.dil"; }
+  void step(double t, SignalBus& bus) override;
+
+ private:
+  void init_driver(const ParamTree& params, Context& ctx) override;
+
+  InputHub* inputs_ = nullptr;
+  Source source_ = Source::Auto;
+  KeyboardDriver keyboard_;
+  std::optional<SignalId> ffb_in_;
+  SignalId wheel_out_ = 0;
+};
+
+// Builds the driver named by driver.type (dil | keyboard | maneuver | external).
 std::unique_ptr<DriverBlock> make_driver(const ParamTree& params);
 
 }  // namespace vsim

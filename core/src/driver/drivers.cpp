@@ -109,10 +109,50 @@ void ExternalDriver::init_driver(const ParamTree& /*params*/, Context& ctx) {
 
 void ExternalDriver::step(double /*t*/, SignalBus& bus) { write_command(bus, inputs_->command()); }
 
+// --- DilDriver ----------------------------------------------------------------
+
+void DilDriver::init_driver(const ParamTree& params, Context& ctx) {
+  inputs_ = &ctx.inputs();
+  const std::string source = params.get_string("driver.input", "auto");
+  if (source == "auto") {
+    source_ = Source::Auto;
+  } else if (source == "wheel") {
+    source_ = Source::Wheel;
+  } else if (source == "keyboard") {
+    source_ = Source::Keyboard;
+  } else {
+    throw std::invalid_argument("driver.input '" + source + "' (expected auto, wheel or keyboard)");
+  }
+  keyboard_.init(params, ctx);
+  ffb_in_ = ctx.bus().find("veh.ffb.torque_sw");
+  wheel_out_ = ctx.bus().declare("drv.input.wheel", "-", "1 while driving with the steering wheel");
+}
+
+void DilDriver::step(double t, SignalBus& bus) {
+  const WheelState wheel = inputs_->wheel();
+  const bool use_wheel =
+      source_ == Source::Wheel || (source_ == Source::Auto && wheel.connected);
+  if (use_wheel) {
+    // A wheel that is required but unplugged gives no input at all.
+    DriverCommand command;
+    if (wheel.connected) {
+      command = {wheel.steer, wheel.throttle, wheel.brake};
+    }
+    write_command(bus, command);
+  } else {
+    keyboard_.step(t, bus);
+  }
+  bus.set(wheel_out_, use_wheel ? 1.0 : 0.0);
+  inputs_->set_force_feedback(ffb_in_ ? bus.get(*ffb_in_) : 0.0, max_steer_);
+}
+
 // --- Factory ------------------------------------------------------------------
 
 std::unique_ptr<DriverBlock> make_driver(const ParamTree& params) {
   const std::string type = params.get_string("driver.type", "external");
+  if (type == "dil") {
+    return std::make_unique<DilDriver>();
+  }
   if (type == "keyboard") {
     return std::make_unique<KeyboardDriver>();
   }
@@ -123,7 +163,7 @@ std::unique_ptr<DriverBlock> make_driver(const ParamTree& params) {
     return std::make_unique<ExternalDriver>();
   }
   throw std::invalid_argument("driver.type '" + type +
-                              "' is not available (expected keyboard, maneuver or external)");
+                              "' is not available (expected dil, keyboard, maneuver or external)");
 }
 
 }  // namespace vsim

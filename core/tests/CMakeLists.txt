@@ -1,5 +1,6 @@
 add_executable(vsim_tests
   test_driveline.cpp
+  test_input.cpp
   test_integrator.cpp
   test_params.cpp
   test_powertrain.cpp
@@ -15,3 +16,13 @@ vsim_set_warnings(vsim_tests)
 
 include(GoogleTest)
 gtest_discover_tests(vsim_tests DISCOVERY_MODE PRE_TEST)
+
+# Wheel input service and the vsim-input tool (needs SDL3).
+if(VSIM_BUILD_APP AND VSIM_WITH_SDL)
+  add_executable(vsim_input_tests test_input_service.cpp)
+  target_link_libraries(vsim_input_tests PRIVATE vsim_input SDL3::SDL3 GTest::gtest_main)
+  vsim_set_warnings(vsim_input_tests)
+  gtest_discover_tests(vsim_input_tests DISCOVERY_MODE PRE_TEST)
+  # Runs without any device attached (CI).
+  add_test(NAME vsim_input_list COMMAND vsim-input list)
+endif()

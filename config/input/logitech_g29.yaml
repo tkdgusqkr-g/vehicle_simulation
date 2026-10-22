@@ -1,0 +1,31 @@
+# 로지텍 G29 기본 프로필. 축 번호나 FFB 방향이 다르면
+#   vsim-input calibrate
+# 로 이 폴더에 새 프로필을 만드세요 (같은 장치에 맞는 프로필 중 파일 이름순으로 첫 번째를 씁니다).
+name: "Logitech G29"
+match:
+  names: ["G29"]
+  usb_ids: ["046d:c24f", "046d:c260"]   # PS3 모드, PS4 모드
+steer:
+  axis: 0
+  range_deg: 900               # G HUB의 회전 범위(Operating Range)와 같게. 차량 조향 한계(±110°)를
+                               # 실제로 느끼려면 G HUB를 220°로 두고 여기도 220
+  center: 0
+  invert: true                 # SDL 축은 왼쪽이 음수, 시뮬레이터는 왼쪽이 양수
+pedals:                        # 원시값: 놓았을 때 → 끝까지 밟았을 때
+  throttle: {axis: 1, released: 32767, pressed: -32768, deadzone: 0.02, gamma: 1.0}
+  brake: {axis: 2, released: 32767, pressed: -32768, deadzone: 0.02, gamma: 1.0}
+  clutch: {axis: 3, released: 32767, pressed: -32768, deadzone: 0.02, gamma: 1.0}
+buttons:                       # vsim-input monitor로 번호 확인. -1이면 사용 안 함
+  reset: -1
+  pause: -1
+ffb:
+  enabled: true
+  invert: true                 # calibrate가 실제 방향을 측정해서 정합니다
+  gain: 0.15                   # 차량 핸들 토크(N·m) → 휠 토크 비율. 무거우면 줄이세요
+  max_torque_nm: 2.2           # G29 최대 토크
+  damping_nm_s_per_rad: 0.03
+  friction_nm: 0.05
+  end_stop_nm_per_rad: 8       # 조향 한계를 넘으면 밀어내는 강성
+  timeout_s: 0.2               # 시뮬레이션이 멈추면 이 시간 뒤 노면 반력을 서서히 끔
+  fade_s: 0.3
+  update_hz: 500

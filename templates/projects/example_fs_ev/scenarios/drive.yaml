@@ -1,0 +1,27 @@
+# 직접 운전 (Driver-in-the-loop). 로지텍 G29 같은 휠이 연결돼 있으면 휠과 페달로,
+# 없으면 브라우저 키보드로 운전합니다. FFB는 휠이 있을 때 자동으로 켜집니다.
+# 실행: vsim-core --scenario <이 파일>  →  ui/live/index.html 열기
+name: drive_flat
+project: ..
+seed: 1
+
+time:
+  dt: 0.001
+  mode: realtime
+
+realism:                       # 아직 외란 모델이 없어서 모두 ideal
+  environment: ideal
+  sensors: ideal
+  actuators: ideal
+  electrical: ideal
+  comms: ideal
+  variation: ideal
+
+driver:
+  type: dil
+  input: auto                  # auto | wheel | keyboard
+  period_s: 0.002              # 휠 입력·FFB 갱신 500 Hz
+
+logging:
+  rate_hz: 100
+  signals: ["veh.*", "drv.*", "pt.*", "bat.*", "vcu.*", "energy.*"]

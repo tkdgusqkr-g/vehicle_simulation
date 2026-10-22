@@ -11,6 +11,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(VSIM_BUILD_APP "Build the vsim-core executable" ON)
 option(VSIM_BUILD_TESTS "Build C++ unit tests" ON)
 option(VSIM_BUILD_PYTHON "Build the Python extension module" ON)
+option(VSIM_WITH_SDL "Steering wheel input and force feedback (SDL3) in the apps" ON)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)

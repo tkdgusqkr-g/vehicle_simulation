@@ -6,6 +6,7 @@
 #include <stdexcept>
 
 #include "vsim/sim/context.hpp"
+#include "vsim/util/paths.hpp"
 
 namespace vsim {
 namespace {
@@ -148,7 +149,7 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   battery_ = BatteryParams::from_params(params);
   driveline_config_ = DrivelineConfig::from_params(params);
   driveline_.init(driveline_config_, p_.wheel_inertia, motor_.rotor_inertia);
-  const std::filesystem::path project_dir = params.get_string("project.dir", ".");
+  const std::filesystem::path project_dir = path_from_utf8(params.get_string("project.dir", "."));
   tires_[0] = make_tire(params, "front", project_dir);
   tires_[1] = make_tire(params, "rear", project_dir);
 

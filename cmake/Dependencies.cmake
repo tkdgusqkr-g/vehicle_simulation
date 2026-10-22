@@ -51,6 +51,31 @@ if(VSIM_BUILD_APP)
   FetchContent_MakeAvailable(ixwebsocket)
 endif()
 
+# --- SDL3: steering wheels, pedals and force feedback -----------------------
+# Static, with only the joystick, haptic and HIDAPI subsystems; on Windows the
+# joystick code brings its own hidden helper window for DirectInput.
+if(VSIM_BUILD_APP AND VSIM_WITH_SDL)
+  set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+  set(SDL_STATIC ON CACHE BOOL "" FORCE)
+  set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+  set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+  set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
+  # No windows needed; without this SDL insists on X11/Wayland headers on Linux.
+  set(SDL_UNIX_CONSOLE_BUILD ON CACHE BOOL "" FORCE)
+  foreach(_vsim_sdl_off AUDIO VIDEO GPU RENDER CAMERA POWER SENSOR DIALOG TRAY)
+    set(SDL_${_vsim_sdl_off} OFF CACHE BOOL "" FORCE)
+  endforeach()
+  foreach(_vsim_sdl_on JOYSTICK HAPTIC HIDAPI)
+    set(SDL_${_vsim_sdl_on} ON CACHE BOOL "" FORCE)
+  endforeach()
+  FetchContent_Declare(SDL3
+    URL https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.tar.gz
+    URL_HASH SHA256=9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3
+    SYSTEM)
+  FetchContent_MakeAvailable(SDL3)
+endif()
+
 # --- GoogleTest ---------------------------------------------------------------
 if(VSIM_BUILD_TESTS)
   set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)

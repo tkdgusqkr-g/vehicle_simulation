@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
+#include <memory>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -27,6 +29,9 @@
 #endif
 
 #include "vsim/api/api_server.hpp"
+#ifdef VSIM_HAS_SDL
+#include "vsim/input/input_service.hpp"
+#endif
 #include "vsim/sim/simulation.hpp"
 #include "vsim/util/paths.hpp"
 #include "vsim/version.hpp"
@@ -46,6 +51,8 @@ struct Options {
   std::string host = "127.0.0.1";
   int port = 8765;
   std::string log_dir;
+  std::string input_profiles;
+  bool no_wheel = false;
   std::optional<double> duration;
   vsim::Scenario::Overrides overrides;
 };
@@ -59,6 +66,8 @@ constexpr const char* kUsage = R"(usage: vsim-core --scenario <file.yaml> [optio
   --set <key>=<value>  override a scenario parameter (repeatable)
   --port <n>           Sim API WebSocket port (default 8765)
   --host <addr>        bind address (default 127.0.0.1; 0.0.0.0 for other machines)
+  --no-wheel           do not look for a steering wheel (driver.type dil uses the keyboard)
+  --input-profiles <d> wheel profile directory (default: config/input in the source tree)
   --version            print the version and exit
 
 In realtime mode open ui/live/index.html in a browser to watch and drive.
@@ -108,6 +117,10 @@ std::optional<Options> parse_args(const std::vector<std::string>& args) {
       options.port = std::stoi(value());
     } else if (arg == "--host") {
       options.host = value();
+    } else if (arg == "--no-wheel") {
+      options.no_wheel = true;
+    } else if (arg == "--input-profiles") {
+      options.input_profiles = value();
     } else if (arg == "--set") {
       const std::string& assignment = value();
       const auto eq = assignment.find('=');
@@ -165,6 +178,7 @@ struct StateStream {
       {"bat_temp", "bat.temp", {}},
       {"regen", "vcu.regen", {}},
       {"ffb", "veh.ffb.torque_sw", {}},
+      {"wheel", "drv.input.wheel", {}},
   };
   std::vector<vsim::SignalId> motor_temps;
 
@@ -175,8 +189,8 @@ struct StateStream {
     motor_temps = bus.match("pt.motor.*.temp");
   }
 
-  std::string message(const vsim::Simulation& sim, bool paused, double rtf) const {
-    json params;
+  std::string message(const vsim::Simulation& sim, bool paused, double rtf, const json& extra) const {
+    json params = extra;
     params["t"] = sim.time();
     params["paused"] = paused;
     params["rtf"] = rtf;
@@ -267,6 +281,31 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
   constexpr auto kPublishPeriod = std::chrono::microseconds(16'667);
   constexpr auto kKeyTimeout = std::chrono::milliseconds(500);
 
+#ifdef VSIM_HAS_SDL
+  // Steering wheel and force feedback for the driver-in-the-loop driver.
+  std::unique_ptr<vsim::InputService> wheel_service;
+  if (!options.no_wheel && sim.scenario().params.get_string("driver.type", "external") == "dil") {
+    vsim::InputService::Options input;
+    const std::filesystem::path dir = options.input_profiles.empty()
+                                          ? vsim::find_resource_dir("config/input")
+                                          : vsim::path_from_utf8(options.input_profiles);
+    if (!dir.empty()) {
+      input.profiles = vsim::WheelProfile::load_directory(dir);
+    }
+    wheel_service = std::make_unique<vsim::InputService>(sim.inputs(), std::move(input));
+    if (const auto error = wheel_service->start()) {
+      std::cerr << "warning: steering wheel input unavailable: " << *error << "\n";
+      wheel_service.reset();
+    } else {
+      std::cout << "Steering wheel: waiting for a device (profiles: "
+                << (dir.empty() ? std::string("built-in") : vsim::path_to_utf8(dir))
+                << "); the keyboard works meanwhile\n";
+    }
+  }
+  vsim::InputService::Status wheel_status;
+#endif
+  vsim::WheelState last_wheel;
+
   const double end_time = options.duration ? sim.time() + *options.duration : sim.end_time();
   bool paused = false;
   double lag = 0.0;
@@ -310,6 +349,18 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
     }
 
     const auto now = Clock::now();
+    // Wheel buttons mapped by the profile act on the press.
+    const vsim::WheelState wheel = sim.inputs().wheel();
+    if (wheel.reset && !last_wheel.reset) {
+      sim.reset();
+      stream.resolve(sim.bus());
+      rtf_sim_start = sim.time();
+      lag = 0.0;
+    }
+    if (wheel.pause && !last_wheel.pause) {
+      paused = !paused;
+    }
+    last_wheel = wheel;
     if (now - last_keys > kKeyTimeout) {
       // A browser that lost focus or disconnected must not leave a pedal pressed.
       sim.inputs().set_keys({});
@@ -335,7 +386,26 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
       rtf_sim_start = sim.time();
     }
     if (now >= next_publish) {
-      server.broadcast(stream.message(sim, paused, rtf));
+      json input = {{"device", wheel.connected ? wheel.device : ""}};
+#ifdef VSIM_HAS_SDL
+      if (wheel_service) {
+        const vsim::InputService::Status status = wheel_service->status();
+        if (status.connected != wheel_status.connected || status.device != wheel_status.device) {
+          if (status.connected) {
+            std::cout << "Steering wheel: " << status.device << " (profile " << status.profile
+                      << ", force feedback " << (status.force_feedback ? "on" : "off: " + status.ffb_error)
+                      << ")\n";
+          } else {
+            std::cout << "Steering wheel: disconnected, using the keyboard\n";
+          }
+        }
+        wheel_status = status;
+        input["ffb"] = wheel_status.force_feedback;
+        input["ffb_torque"] = wheel_status.ffb_torque;
+        input["ffb_clipping"] = wheel_status.ffb_clipping;
+      }
+#endif
+      server.broadcast(stream.message(sim, paused, rtf, {{"input", input}}));
       next_publish = now + kPublishPeriod;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));

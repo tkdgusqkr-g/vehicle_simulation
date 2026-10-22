@@ -57,6 +57,8 @@
   <div class="row"><span class="label">드라이버</span><span id="driver">-</span></div>
   <div class="row"><span class="label">시뮬 시간</span><span id="time">-</span></div>
   <div class="row"><span class="label">실시간 배율</span><span id="rtf">-</span></div>
+  <div class="row"><span class="label">입력</span><span id="input">-</span></div>
+  <div class="row"><span class="label">FFB</span><span id="ffb-status">-</span></div>
 </div>
 
 <div id="help" class="panel">
@@ -193,6 +195,12 @@ function onState(s) {
   }
   document.getElementById("time").textContent = `${s.t.toFixed(2)} s`;
   document.getElementById("rtf").textContent = s.rtf ? `${s.rtf.toFixed(2)}×` : "-";
+  const input = s.input || {};
+  document.getElementById("input").textContent = s.wheel > 0.5 ? (input.device || "휠") : "키보드";
+  document.getElementById("ffb-status").textContent =
+    input.ffb === undefined ? "-" :
+    !input.ffb ? "꺼짐" :
+    `${input.ffb_torque.toFixed(2)} N·m${input.ffb_clipping ? " (포화)" : ""}`;
   document.getElementById("speed").firstChild.nodeValue = Math.round(s.speed * 3.6);
   // Battery power when the model has a battery (L2), else motor shaft power.
   const power = s.power_elec !== undefined ? s.power_elec : s.power;
