@@ -1,16 +1,25 @@
 # 빌드와 실행
 
-M1 기준 안내입니다. 설계는 [design.md](design.md)를 보세요.
+M2 기준 안내입니다. 설계는 [design.md](design.md)를 보세요.
 
-## M1에서 되는 것
+## 지금 되는 것
 
+**M2 (트랙 위를 구른다)**
+- 트랙: 센터라인 점 + 폭 + 출발/결승·구간 + 주행 라인. 템플릿(가속, 스키드패드, 원선회, 슬라럼, 더블 레인 체인지, 오토크로스)
+- **트랙 편집기** (`ui/editor/index.html`): 점 추가·이동·삭제, 폭, 구간, 주행 라인(최소 곡률 자동 계산 + 핸들 편집), 검사, 실행 중인 시뮬레이터로 바로 보내기
+- 랩 타이밍: 랩·구간 시간, 코스 이탈, 무효 랩. 라이브 뷰에 트랙과 랩 정보 표시
+- 자동 주행: Pure Pursuit + 속도 프로파일로 주행 라인을 따라 랩 주행
+- 표준 시험용 입력: 사인 스윕, 사인 위드 드웰 (Maneuver)
+- **시나리오 테스트 러너**: `python -m vsim.testing` (판정식 → 통과/실패 리포트)
+
+**M1까지**
 - **로지텍 G29**(휠 + 페달)로 운전, **포스 피드백(FFB)** 포함. 휠이 없으면 키보드
 - L2 차량 모델: 네 바퀴 각각의 타이어(과도 슬립), 하중 이동, 바퀴 회전(휠스핀·락업)
 - 구동계: 4WD 인휠, 단일 모터 + 디퍼렌셜(open / LSD / locked) 등 YAML로 구성
 - 모터(토크·출력 한계, 손실, 온도 디레이팅)와 배터리(OCV-R-RC 등가회로, 온도, BMS 전류 한계)
 - 참조 VCU: 토크 분배, 회생 제동, 휠별 슬립 제어(트랙션 컨트롤), 출력 제한(설정값과 BMS 중 작은 쪽)
 - 타이어: 기본 Magic Formula 모델 또는 `.tir` 파일(MF 5.2/6.1)
-- 헤드리스 실행, Python 바인딩, MCAP 로그, 비트 단위 결정론 (M0부터)
+- 헤드리스 실행, Python 바인딩, MCAP 로그, 비트 단위 결정론
 
 ---
 
@@ -33,7 +42,7 @@ M1 기준 안내입니다. 설계는 [design.md](design.md)를 보세요.
 ```powershell
 git clone https://github.com/tkdgusqkr-g/vehicle_simulation.git
 cd vehicle_simulation
-python -m pip install pybind11 numpy pytest mcap
+python -m pip install pybind11 numpy pytest mcap pyyaml
 cmake -S . -B build
 cmake --build build --config Release
 ```
@@ -128,6 +137,153 @@ build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/sce
 
 ---
 
+## 트랙에서 달리기
+
+### 자동 주행으로 랩 돌기
+
+```powershell
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/autocross_auto.yaml --mode realtime
+```
+
+라이브 뷰(`ui\live\index.html`)에 트랙, 주행 라인(주황), 구간선(노랑), 출발선(흰색)이 그려지고 위쪽에 랩 정보가 나옵니다. <kbd>M</kbd>을 누르면 트랙 전체가 보입니다. `--mode realtime` 없이 실행하면 헤드리스로 75초(3랩)를 1초 남짓에 끝내고 `--log-dir`를 주면 `summary.json`에 랩 기록이 남습니다.
+
+| 시나리오 | 내용 |
+|---|---|
+| `acceleration.yaml` | FS 가속 75 m (출발선 0.3 m 뒤, 풀 스로틀) |
+| `skidpad_auto.yaml` | 스키드패드 자동 주행 (오른쪽 2바퀴, 왼쪽 2바퀴; 구간 2·4가 기록 랩) |
+| `autocross_auto.yaml` | 예제 오토크로스 3랩 자동 주행 |
+| `drive.yaml` | 직접 운전 (트랙 없음 — 편집기에서 트랙을 보내거나 `--set track.template=autocross`) |
+
+직접 운전하면서 트랙을 쓰려면:
+
+```powershell
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/drive.yaml --set track.template=autocross
+```
+
+### 시나리오의 트랙 설정
+
+```yaml
+track:
+  template: autocross            # templates/tracks/autocross.track.json
+  # file: ../tracks/my_track.track.json   # 또는 파일 (시나리오 파일 기준 상대 경로)
+  start_distance_m: 5            # 출발선 몇 m 뒤에서 출발할지 (기본 5)
+
+driver:
+  type: pursuit                  # 자동 주행
+  # line: racing                 # 주행 라인 (기본: 트랙 파일의 첫 라인, 없으면 center)
+  profile: {lateral_g: 1.3, accel_g: 0.9, brake_g: 1.2, max_kph: 100}   # 속도 프로파일 한계
+  # speed_kph: 40                # 속도 프로파일 대신 일정 속도
+  # lookahead: {min_m: 2.5, gain_s: 0.12, max_m: 12}
+```
+
+트랙이 있으면 차는 출발선 뒤 센터라인 위에서 트랙 방향으로 출발합니다 (`initial.x_m`/`initial.y_m`을 직접 주면 그 위치).
+
+- **닫힌 트랙**: 출발선을 처음 지날 때 1랩이 시작되고, 다시 지날 때마다 랩이 끝납니다.
+- **열린 트랙**(가속, 스키드패드 등): 출발선부터 결승선까지가 한 번의 기록입니다.
+- **코스 이탈**: 차 중심이 경계를 벗어나면 그 랩은 무효이고, 베스트 랩에서 빠집니다.
+
+### 트랙 신호
+
+| 신호 | 내용 |
+|---|---|
+| `track.s`, `track.n` | 센터라인 위치와 좌우 오프셋 (왼쪽 +) |
+| `track.distance` | 출발선부터 달린 거리 (출발 전에는 음수) |
+| `track.lap`, `track.lap_time` | 완료한 랩 수, 현재 랩 시간 |
+| `track.last_lap`, `track.best_lap` | 지난 랩, 베스트 랩 (유효 랩만; 없으면 0) |
+| `track.sector`, `track.last_sector` | 현재 구간, 마지막으로 끝난 구간 시간 |
+| `track.off_track`, `track.off_track_count`, `track.lap_valid` | 코스 이탈 여부, 횟수, 현재 랩 유효 여부 |
+| `drv.target_speed`, `drv.line_offset` | 자동 주행의 목표 속도, 주행 라인에서 벗어난 거리 |
+
+---
+
+## 트랙 편집기
+
+`ui\editor\index.html`을 Chrome이나 Edge로 엽니다. 설치나 서버 없이 바로 열립니다.
+
+| 도구 | 단축키 | 동작 |
+|---|---|---|
+| 선택 | <kbd>V</kbd> | 점 드래그로 이동, 빈 곳 드래그로 화면 이동, <kbd>Delete</kbd>로 점 삭제 |
+| 점 추가 | <kbd>A</kbd> | 빈 곳 클릭: 마지막 점 뒤에 추가 / 트랙 위 클릭: 그 사이에 삽입 |
+| 출발·결승 | <kbd>S</kbd> | 점 클릭: 출발선, <kbd>Shift</kbd>+클릭: 결승선 (열린 트랙) |
+| 구간 | <kbd>K</kbd> | 점 클릭: 구간 경계 추가/제거 |
+| 주행 라인 | <kbd>L</kbd> | 핸들을 옆으로 끌기, 트랙 클릭으로 핸들 추가, <kbd>Delete</kbd>로 삭제 |
+| | <kbd>F</kbd>, <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Y</kbd>, <kbd>Ctrl+S</kbd> | 전체 보기, 되돌리기/다시, 저장 |
+
+- 오른쪽 패널에서 점별 좌표·폭(좌/우)·고도·뱅크, 트랙 이름, 닫힌/열린 트랙을 바꿉니다. 고도·뱅크는 파일에 저장만 되고, 실제 반영은 L3 모델(M5)부터입니다.
+- **최소 곡률 라인 계산**: 경계에서 "경계 여유"만큼 안쪽으로 곡률이 가장 작은 라인을 계산합니다(TORCS K1999 방식). 그다음 핸들로 다듬습니다.
+- **검사**: 최소 반경 4.5 m 미만, 안쪽 경계가 접히는 곳, 폭 3 m 미만, 센터라인 교차를 알려 줍니다.
+- **곡률 색**: 센터라인을 반경으로 색칠합니다 (파랑: 직선 ~ 빨강: 7 m 이하).
+- **열기·저장**: `*.track.json`을 열고, 저장하면 다운로드 폴더에 받아집니다. TUMFTM racetrack-database CSV(`x_m, y_m, w_tr_right_m, w_tr_left_m`)도 열 수 있습니다.
+
+### 그리고 바로 달리기
+
+1. vsim-core를 realtime으로 실행합니다 (예: `drive.yaml`로 직접 운전, 또는 `autocross_auto.yaml --mode realtime`으로 자동 주행).
+2. 편집기에서 **시뮬레이터로 보내기**를 누르면 vsim-core가 그 트랙으로 처음부터 다시 시작합니다. 라이브 뷰도 새 트랙으로 바뀝니다.
+3. 고치고 다시 보내기를 반복합니다. **가져오기**는 시뮬레이터가 쓰고 있는 트랙을 편집기로 불러오고, **시나리오 트랙으로 되돌리기**는 원래 트랙으로 돌아갑니다.
+
+편집기와 시뮬레이터의 스플라인 계산은 같아서(차이 1e-14 m 수준) 편집기에서 본 모양 그대로 달립니다.
+
+### 트랙 파일 (`*.track.json`)
+
+```json
+{
+ "schema_version": 1, "name": "my track", "closed": true,
+ "points": [{"x": 0, "y": 0, "z": 0, "w_left": 1.75, "w_right": 1.75, "bank_deg": 0}, ...],
+ "start_point": 0, "finish_point": -1, "sector_points": [12, 30],
+ "lines": [{"name": "racing", "offsets": [[0.0, 0.5], [0.05, -0.8], ...]}]
+}
+```
+
+- 센터라인은 점들을 지나는 3차 스플라인입니다 (닫힌 트랙은 주기 스플라인).
+- 출발·결승·구간은 점 번호로 지정해서, 점을 옮겨도 함께 움직입니다.
+- 주행 라인은 센터라인 기준 좌우 오프셋 n [m]을 트랙 길이 비율 u ∈ [0, 1]마다 적은 것입니다. 그래서 센터라인을 고쳐도 라인이 따라갑니다.
+
+템플릿은 `templates/tracks/`에 있고, `python -m vsim.tracks templates/tracks`로 다시 만들 수 있습니다 ([python/vsim/tracks.py](../python/vsim/tracks.py)).
+
+---
+
+## 시나리오 테스트
+
+시나리오를 돌리고 판정식으로 통과/실패를 가립니다 (설계 문서 §13.2).
+
+```powershell
+$env:PYTHONPATH = "python"
+python -m vsim.testing templates/projects/example_fs_ev/tests --report report.md
+```
+
+테스트 파일(`*.test.yaml`):
+
+```yaml
+test: acceleration_75m
+description: FS 가속 시험
+scenario: ../scenarios/acceleration.yaml   # 테스트 파일 기준 상대 경로
+overrides: {vehicle.mass_kg: 300}           # 선택
+duration_s: 8                               # 선택 (기본: 시나리오의 time.t_end)
+seeds: [1, 2, 3]                            # 선택 (시드마다 한 번씩 실행)
+checks:
+  - name: 75 m를 4.0초 안에
+    expr: "final(track.last_lap) < 4.0"
+  - name: 출발 후 슬립률
+    expr: "max(window(vcu.motor.fl.slip, 0.5, 3.0)) < 0.2"
+```
+
+| 함수 | 뜻 |
+|---|---|
+| `max` `min` `mean` `std` `rms` `abs` | 통계 / 절댓값 |
+| `final(x)` `initial(x)` `at(x, t)` | 마지막 값, 처음 값, 시각 t의 값 |
+| `window(x, t0, t1)` | t0~t1 구간만 |
+| `time_to(x, v)` | x가 처음 v에 닿는 시각 (못 닿으면 inf) |
+| `rise_time(x, 목표)` `overshoot(x, 목표)` `settle_time(x, 목표, 허용비)` | 응답 특성 |
+| `count(조건)` `duration(조건)` `any` `all` | 조건이 참이 된 횟수, 참인 시간 |
+| `changes(x)[i]` | x가 바뀐 값들 중 i번째 (예: 랩·구간 시간) |
+
+- 신호는 이름 그대로 씁니다 (`track.best_lap`, `veh.chassis.vx`). `+ - * /`, 비교, `and`/`or`/`not`을 쓸 수 있습니다.
+- 판정식은 위 함수만 해석하고 `eval`은 쓰지 않습니다.
+- 실패한 판정은 비교의 양쪽 값을 보여 줍니다. `--json`으로 JSON 리포트도 씁니다.
+- 하나라도 실패하면 종료 코드 1이라서 CI에서 그대로 쓸 수 있습니다 (이 저장소의 CI도 예제 테스트를 돌립니다).
+
+---
+
 ## 헤드리스 실행과 로그
 
 ```powershell
@@ -204,7 +360,10 @@ templates/projects/example_fs_ev/      예제 차량 프로젝트 (대표값, �
 ├─ vehicle/vehicle.yaml                차량 파라미터 (모델, 서스펜션, 타이어, 구동계, 모터, 배터리, 브레이크)
 ├─ vehicle/tires/example_fs_10in.tir   예제 Magic Formula 타이어 파일 (합성 데이터)
 ├─ control/vcu.yaml                    참조 VCU 설정 (토크 분배, 회생, 슬립 제어, 출력 한계)
-└─ scenarios/                          drive / keyboard / sine_steer / straight_accel
+├─ scenarios/                          drive, keyboard, sine_steer, straight_accel,
+│                                       acceleration, skidpad_auto, autocross_auto
+└─ tests/                              시나리오 테스트 (*.test.yaml)
+templates/tracks/                      트랙 템플릿 (*.track.json)
 ```
 
 자기 차량은 이 폴더를 복사해서 값을 바꾸면 됩니다. 시나리오의 `project:`는 시나리오 파일 기준 상대 경로입니다.
@@ -214,14 +373,16 @@ templates/projects/example_fs_ev/      예제 차량 프로젝트 (대표값, �
 | 차량 모델 | `vehicle.yaml`의 `model: two_track` (L2) 또는 `single_track` (L1, 빠른 검토용) |
 | 구동계 토폴로지 | `vehicle.yaml`의 `driveline:` 목록 (주석에 후륜 단일 모터 + LSD 예시) |
 | 타이어를 `.tir`로 | `tire: {model: mf, file: vehicle/tires/<파일>.tir}` (축별로는 `tire.front.file`) |
-| 드라이버 | 시나리오의 `driver.type`: `dil`(휠/키보드), `keyboard`, `maneuver`(스크립트), `external`(Python) |
+| 드라이버 | 시나리오의 `driver.type`: `dil`(휠/키보드), `keyboard`, `maneuver`(스크립트), `pursuit`(자동 주행), `external`(Python) |
+| 트랙 | 시나리오의 `track.template` 또는 `track.file` |
+| 표준 시험 입력 | `driver.steer: {type: sweep, amplitude: 20, f0_hz: 0.2, f1_hz: 3, duration_s: 20}` 또는 `{type: sine_dwell, amplitude: 60, freq_hz: 0.7, dwell_s: 0.5}` |
 
 ---
 
 ## Linux
 
 ```bash
-python3 -m pip install pybind11 numpy pytest mcap
+python3 -m pip install pybind11 numpy pytest mcap pyyaml
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ctest --test-dir build --output-on-failure
@@ -249,4 +410,7 @@ Linux에서 휠을 쓰려면 `/dev/input/event*`, `/dev/hidraw*` 읽기 권한�
 | CMake가 다른 Python을 잡음 | `-DPython_EXECUTABLE="C:\경로\python.exe"` |
 | `cannot listen on 127.0.0.1:8765` | 다른 프로그램이 포트 사용 중. `--port`로 변경 |
 | 라이브 뷰가 "연결 끊김" | vsim-core가 realtime 모드로 실행 중인지 확인 (fast 모드는 서버를 열지 않음) |
+| `track.template '...': templates/tracks not found` | 시나리오가 저장소 밖에 있으면 템플릿을 못 찾습니다. `track.file`로 트랙 파일 경로를 직접 지정 |
+| 편집기 "연결할 수 없습니다" | vsim-core를 realtime 모드로 실행 중인지, 주소(`ws://127.0.0.1:8765`)가 맞는지 확인 |
+| `ModuleNotFoundError: No module named 'yaml'` | `python -m pip install pyyaml` (테스트 러너용) |
 | `import vsim` 실패 | 빌드 후 `python/vsim/` 안에 `_vsim...pyd`(Windows) 또는 `.so`(Linux)가 있는지 확인 |
