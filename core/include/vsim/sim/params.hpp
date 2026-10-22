@@ -34,6 +34,7 @@ class ParamTree {
   std::string get_string(std::string_view key, std::string_view fallback) const;
   // Items "key.0", "key.1", ... in index order; empty if absent.
   std::vector<std::string> get_string_list(std::string_view key) const;
+  std::vector<double> get_double_list(std::string_view key) const;
 
   // Sets a scalar. Anything stored under "key." and any scalar stored at a
   // parent of key is removed, so the tree stays representable as YAML.

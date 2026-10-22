@@ -4,13 +4,21 @@
 #include <numbers>
 
 #include "test_support.hpp"
+#include "vsim/models/driveline/driveline.hpp"
 #include "vsim/models/vehicle/single_track.hpp"
 
 namespace vsim {
 namespace {
 
-using test::load_example;
 using test::signal;
+
+// The example vehicle defaults to the L2 model; these tests pin L1, which has
+// no battery or energy signals to log.
+Scenario load_example(const std::string& name, Scenario::Overrides overrides = {}) {
+  overrides.emplace("vehicle.model", "single_track");
+  overrides.emplace("logging.signals", "*");
+  return test::load_example(name, overrides);
+}
 
 constexpr double kGravity = 9.81;
 
@@ -39,8 +47,12 @@ TEST(SingleTrack, FullSteeringLockAtRestDoesNotCreep) {
 // power limit minus drag and rolling resistance.
 TEST(SingleTrack, PowerLimitedAccelerationMatchesTheory) {
   Simulation sim(load_example("straight_accel"));
-  const auto p = SingleTrackModel::params_from(sim.scenario().params);
-  const double power = sim.scenario().params.get_double("control.power_limit_kw") * 1e3;
+  const ParamTree& params = sim.scenario().params;
+  const auto p = SingleTrackModel::params_from(params);
+  // The VCU limits estimated battery power; this model has no motor losses.
+  const double power =
+      params.get_double("control.power_limit_kw") * 1e3 * params.get_double("control.efficiency_estimate");
+  const double gear_efficiency = DrivelineConfig::from_params(params).entries.front().efficiency;
   while (signal(sim, "veh.chassis.vx") < 30.0) {
     sim.step();
     ASSERT_LT(sim.time(), 20.0) << "never reached 30 m/s";
@@ -49,7 +61,7 @@ TEST(SingleTrack, PowerLimitedAccelerationMatchesTheory) {
   const double q = 0.5 * p.air_density * v * v;
   const double drag = p.cda * q;
   const double rolling = p.rolling_resistance * (p.mass * kGravity + p.cla * q);
-  const double expected = (power * p.gear_efficiency / v - drag - rolling) / p.mass;
+  const double expected = (power * gear_efficiency / v - drag - rolling) / p.mass;
   EXPECT_NEAR(signal(sim, "veh.chassis.ax"), expected, 0.02 * expected);
   EXPECT_LE(signal(sim, "pt.power_mech"), power * 1.01);
 }
@@ -67,7 +79,7 @@ TEST(SingleTrack, SteadyStateYawRateMatchesLinearBicycle) {
                      {"vehicle.aero.cla_m2", "0"},
                      {"vehicle.aero.cda_m2", "0"},
                      {"vehicle.tire.rolling_resistance", "0"},
-                     {"vehicle.tire.rear.B", "16"}}));  // stiffer rear -> understeer
+                     {"vehicle.tire.rear.simple.By", "16"}}));  // stiffer rear -> understeer
   sim.run_for(20.0);
 
   const auto p = SingleTrackModel::params_from(sim.scenario().params);

@@ -22,7 +22,7 @@ double approach(double current, double target, double rise_rate, double fall_rat
 
 void DriverBlock::init(const ParamTree& params, Context& ctx) {
   period_ = params.get_double("driver.period_s", 0.01);
-  max_steer_ = deg_to_rad(params.get_double("vehicle.steering.max_wheel_angle_deg"));
+  max_steer_ = deg_to_rad(params.get_double("vehicle.steering.lock_deg"));
   SignalBus& bus = ctx.bus();
   out_steer_ = bus.declare("drv.cmd.steer", "rad", "steering wheel angle");
   out_throttle_ = bus.declare("drv.cmd.throttle", "-", "accelerator pedal");

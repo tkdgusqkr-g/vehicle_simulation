@@ -7,7 +7,7 @@ time:
   dt: 0.001
   mode: realtime
 
-realism:                       # M0에는 외란 모델이 없어서 모두 ideal
+realism:                       # 아직 외란 모델이 없어서 모두 ideal
   environment: ideal
   sensors: ideal
   actuators: ideal
@@ -20,4 +20,4 @@ driver:
 
 logging:
   rate_hz: 100
-  signals: ["veh.*", "drv.*", "pt.*"]
+  signals: ["veh.*", "drv.*", "pt.*", "bat.*", "vcu.*", "energy.*"]

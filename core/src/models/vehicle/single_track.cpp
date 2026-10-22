@@ -5,6 +5,10 @@
 #include <numbers>
 #include <stdexcept>
 
+#include "vsim/models/driveline/driveline.hpp"
+#include "vsim/models/powertrain/motor.hpp"
+#include "vsim/models/tire/tire.hpp"
+
 namespace vsim {
 namespace {
 
@@ -20,11 +24,8 @@ double magic_formula(double slip, double peak, const SingleTrackModel::Tire& tir
 }
 
 SingleTrackModel::Tire read_tire(const ParamTree& params, const std::string& axle) {
-  const auto get = [&](const char* name) {
-    return params.get_double("vehicle.tire." + axle + "." + name,
-                             params.get_double(std::string("vehicle.tire.") + name));
-  };
-  return {get("mu"), get("B"), get("C"), get("E")};
+  const SimpleTire::Params tire = SimpleTire::params_from(params, axle);
+  return {tire.mu_y, tire.by, tire.cy, tire.ey};
 }
 
 void require_positive(double value, const char* key) {
@@ -43,8 +44,8 @@ SingleTrackModel::Params SingleTrackModel::params_from(const ParamTree& params) 
   p.cg_to_front = params.get_double("vehicle.cg_to_front_axle_m");
   p.cg_height = params.get_double("vehicle.cg_height_m");
   p.steering_ratio = params.get_double("vehicle.steering.ratio");
-  p.max_steer_wheel = deg_to_rad(params.get_double("vehicle.steering.max_wheel_angle_deg"));
-  p.tire_radius = params.get_double("vehicle.tire.radius_m");
+  p.max_steer_wheel = deg_to_rad(params.get_double("vehicle.steering.lock_deg"));
+  p.tire_radius = params.get_double("vehicle.wheel.radius_m");
   p.tire_front = read_tire(params, "front");
   p.tire_rear = read_tire(params, "rear");
   p.rolling_resistance = params.get_double("vehicle.tire.rolling_resistance", p.rolling_resistance);
@@ -52,23 +53,21 @@ SingleTrackModel::Params SingleTrackModel::params_from(const ParamTree& params) 
   p.cda = params.get_double("vehicle.aero.cda_m2", p.cda);
   p.aero_front_ratio = params.get_double("vehicle.aero.front_ratio", p.aero_front_ratio);
   p.air_density = params.get_double("vehicle.aero.air_density_kgm3", p.air_density);
-  p.motor_torque_max = params.get_double("vehicle.powertrain.motor_torque_max_nm");
-  p.motor_power_max = params.get_double("vehicle.powertrain.motor_power_max_kw") * 1e3;
-  p.gear_ratio = params.get_double("vehicle.powertrain.gear_ratio");
-  p.gear_efficiency = params.get_double("vehicle.powertrain.gear_efficiency", p.gear_efficiency);
+  const MotorParams motor = MotorParams::from_params(params);
+  p.motor_torque_max = motor.torque_max;
+  p.motor_power_max = motor.power_max;
   p.brake_pressure_max = params.get_double("vehicle.brakes.max_pressure_bar");
   p.brake_gain_front = params.get_double("vehicle.brakes.front_gain_nm_per_bar");
   p.brake_gain_rear = params.get_double("vehicle.brakes.rear_gain_nm_per_bar");
   p.load_transfer_tau =
-      params.get_double("vehicle.model_options.load_transfer_tau_s", p.load_transfer_tau);
+      params.get_double("vehicle.suspension.load_transfer_tau_s", p.load_transfer_tau);
 
   require_positive(p.mass, "vehicle.mass_kg");
   require_positive(p.yaw_inertia, "vehicle.yaw_inertia_kgm2");
   require_positive(p.wheelbase, "vehicle.wheelbase_m");
   require_positive(p.steering_ratio, "vehicle.steering.ratio");
-  require_positive(p.tire_radius, "vehicle.tire.radius_m");
-  require_positive(p.gear_ratio, "vehicle.powertrain.gear_ratio");
-  require_positive(p.load_transfer_tau, "vehicle.model_options.load_transfer_tau_s");
+  require_positive(p.tire_radius, "vehicle.wheel.radius_m");
+  require_positive(p.load_transfer_tau, "vehicle.suspension.load_transfer_tau_s");
   if (!(p.cg_to_front > 0.0 && p.cg_to_front < p.wheelbase)) {
     throw std::invalid_argument("vehicle.cg_to_front_axle_m must lie between 0 and the wheelbase");
   }
@@ -79,18 +78,20 @@ void SingleTrackModel::init(const ParamTree& params, Context& ctx) {
   p_ = params_from(params);
   SignalBus& bus = ctx.bus();
 
-  const std::vector<std::string> corners = params.get_string_list("vehicle.powertrain.motors");
-  if (corners.empty() || corners.size() > kMaxMotors) {
-    throw std::invalid_argument("vehicle.powertrain.motors must list 1 to 4 corners");
-  }
+  // Each motor drives distinct wheels, so there are at most four.
+  const DrivelineConfig driveline = DrivelineConfig::from_params(params);
   motors_.clear();
-  for (const std::string& corner : corners) {
-    if (corner != "fl" && corner != "fr" && corner != "rl" && corner != "rr") {
-      throw std::invalid_argument("vehicle.powertrain.motors: unknown corner '" + corner +
-                                  "' (expected fl, fr, rl or rr)");
+  for (const DrivelineEntry& entry : driveline.entries) {
+    const bool front = std::all_of(entry.wheels.begin(), entry.wheels.end(),
+                                   [](std::size_t wheel) { return is_front(wheel); });
+    const bool rear = std::none_of(entry.wheels.begin(), entry.wheels.end(),
+                                   [](std::size_t wheel) { return is_front(wheel); });
+    if (!front && !rear) {
+      throw std::invalid_argument("single_track: motor '" + entry.motor +
+                                  "' drives both axles; use the two_track model");
     }
-    const std::string base = "pt.motor." + corner;
-    motors_.push_back({corner, corner.front() == 'f',
+    const std::string base = "pt.motor." + entry.motor;
+    motors_.push_back({entry.motor, front, entry.gear_ratio, entry.efficiency,
                        bus.declare(base + ".torque_cmd", "N*m", "motor torque command"),
                        bus.declare(base + ".torque", "N*m", "motor torque delivered"),
                        bus.declare(base + ".speed", "rad/s", "motor shaft speed")});
@@ -168,16 +169,18 @@ SingleTrackModel::Eval SingleTrackModel::evaluate(std::span<const double> x) con
                                 e.downforce * (1.0 - p_.aero_front_ratio) + transfer);
 
   // Motors: torque envelope min(T_max, P_max / omega).
-  e.motor_speed = std::abs(vx) / p_.tire_radius * p_.gear_ratio;
-  const double torque_available =
-      e.motor_speed > 1e-6 ? std::min(p_.motor_torque_max, p_.motor_power_max / e.motor_speed)
-                           : p_.motor_torque_max;
   double drive_front = 0.0;
   double drive_rear = 0.0;
   for (std::size_t i = 0; i < motors_.size(); ++i) {
+    const Motor& motor = motors_[i];
+    e.motor_speed[i] = std::abs(vx) / p_.tire_radius * motor.gear_ratio;
+    const double torque_available =
+        e.motor_speed[i] > 1e-6
+            ? std::min(p_.motor_torque_max, p_.motor_power_max / e.motor_speed[i])
+            : p_.motor_torque_max;
     e.motor_torque[i] = std::clamp(torque_cmd_[i], -torque_available, torque_available);
-    const double force = e.motor_torque[i] * p_.gear_ratio * p_.gear_efficiency / p_.tire_radius;
-    (motors_[i].front ? drive_front : drive_rear) += force;
+    const double force = e.motor_torque[i] * motor.gear_ratio * motor.efficiency / p_.tire_radius;
+    (motor.front ? drive_front : drive_rear) += force;
   }
 
   // Longitudinal tire forces, limited by friction.
@@ -277,8 +280,8 @@ void SingleTrackModel::write_outputs(double /*t*/, std::span<const double> x,
   double power = 0.0;
   for (std::size_t i = 0; i < motors_.size(); ++i) {
     bus.set(motors_[i].torque_out, e.motor_torque[i]);
-    bus.set(motors_[i].speed_out, e.motor_speed);
-    power += e.motor_torque[i] * e.motor_speed;
+    bus.set(motors_[i].speed_out, e.motor_speed[i]);
+    power += e.motor_torque[i] * e.motor_speed[i];
   }
   bus.set(out_power_, power);
 }

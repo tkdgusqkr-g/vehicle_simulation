@@ -251,6 +251,14 @@ std::vector<std::string> ParamTree::get_string_list(std::string_view key) const 
   return values;
 }
 
+std::vector<double> ParamTree::get_double_list(std::string_view key) const {
+  std::vector<double> values;
+  for (const std::string& item : get_string_list(key)) {
+    values.push_back(parse_double(key, item));
+  }
+  return values;
+}
+
 void ParamTree::set(std::string_view key, std::string_view value) {
   if (key.empty()) {
     throw std::invalid_argument("parameter key must not be empty");

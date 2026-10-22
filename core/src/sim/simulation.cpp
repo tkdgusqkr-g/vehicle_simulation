@@ -16,6 +16,7 @@
 #include "vsim/driver/drivers.hpp"
 #include "vsim/log/mcap_logger.hpp"
 #include "vsim/models/vehicle/single_track.hpp"
+#include "vsim/models/vehicle/two_track.hpp"
 #include "vsim/sim/context.hpp"
 #include "vsim/sim/integrator.hpp"
 #include "vsim/util/paths.hpp"
@@ -119,12 +120,15 @@ void Simulation::Impl::build(const Scenario& scenario, const SimulationOptions& 
   const auto seed = static_cast<std::uint64_t>(params.get_int("seed", 0));
   context = std::make_unique<Context>(bus, inputs, RealismConfig::from_params(params), seed, dt);
 
-  const std::string model = params.get_string("vehicle.model", "single_track");
-  if (model != "single_track") {
+  const std::string model = params.get_string("vehicle.model", "two_track");
+  if (model == "two_track") {
+    plant = std::make_unique<TwoTrackModel>();
+  } else if (model == "single_track") {
+    plant = std::make_unique<SingleTrackModel>();
+  } else {
     throw std::invalid_argument("vehicle.model '" + model +
-                                "' is not available yet (this build has: single_track)");
+                                "' is not available (expected two_track or single_track)");
   }
-  plant = std::make_unique<SingleTrackModel>();
   plant->init(params, *context);
 
   // Execution order within a tick: driver, then VCU.

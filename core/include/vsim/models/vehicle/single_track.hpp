@@ -16,8 +16,11 @@ namespace vsim {
 // those arrive with the L2 model). Below ~1-3 m/s it blends into kinematic
 // motion, where slip angles are not defined.
 //
-// Inputs:  drv.cmd.steer, drv.cmd.brake, pt.motor.<corner>.torque_cmd
-// Outputs: veh.*, pt.motor.<corner>.{torque,speed}, pt.power_mech
+// It reads the same vehicle files as the L2 model and uses the lateral curve
+// of the simple tire parameters; each driveline entry acts on its axle.
+//
+// Inputs:  drv.cmd.steer, drv.cmd.brake, pt.motor.<id>.torque_cmd
+// Outputs: veh.*, pt.motor.<id>.{torque,speed}, pt.power_mech
 class SingleTrackModel final : public PlantModel {
  public:
   enum State : std::size_t { kX, kY, kYaw, kVx, kVy, kYawRate, kAxFiltered, kStateSize };
@@ -48,8 +51,6 @@ class SingleTrackModel final : public PlantModel {
     double air_density = 1.2;         // [kg/m^3]
     double motor_torque_max = 21.0;   // [N m] per motor
     double motor_power_max = 35e3;    // [W] per motor
-    double gear_ratio = 14.0;
-    double gear_efficiency = 0.97;
     double brake_pressure_max = 60.0;     // [bar] at full pedal
     double brake_gain_front = 30.0;       // [N m / bar], front axle total
     double brake_gain_rear = 18.0;        // [N m / bar], rear axle total
@@ -74,8 +75,10 @@ class SingleTrackModel final : public PlantModel {
 
  private:
   struct Motor {
-    std::string corner;
+    std::string id;
     bool front = true;
+    double gear_ratio = 1.0;
+    double efficiency = 1.0;
     SignalId torque_cmd_in = 0;
     SignalId torque_out = 0;
     SignalId speed_out = 0;
@@ -94,7 +97,7 @@ class SingleTrackModel final : public PlantModel {
     AxleState rear;
     double drag = 0.0;
     double downforce = 0.0;
-    double motor_speed = 0.0;  // [rad/s], same for all motors in this model
+    std::array<double, kMaxMotors> motor_speed{};  // [rad/s], from vehicle speed
     std::array<double, kMaxMotors> motor_torque{};
     double ax = 0.0;  // body-frame acceleration [m/s^2]
     double ay = 0.0;

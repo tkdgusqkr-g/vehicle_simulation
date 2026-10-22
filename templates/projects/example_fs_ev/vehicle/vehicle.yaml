@@ -1,25 +1,49 @@
 # 예제 차량 파라미터 (대표값). M4부터는 차량 빌더가 CAD에서 대부분을 채웁니다.
-model: single_track            # M0: L1 single-track
+# 항목 설명과 측정 방법은 docs/vehicle_parameters.md를 보세요.
+model: two_track               # two_track (L2, 기본) | single_track (L1)
 
 mass_kg: 280                   # 드라이버 포함
 yaw_inertia_kgm2: 110
 wheelbase_m: 1.53
 cg_to_front_axle_m: 0.80       # 무게중심 → 앞차축
 cg_height_m: 0.28
-track_width_m: 1.22            # 화면 표시용 (single-track 모델은 사용하지 않음)
+track_front_m: 1.22
+track_rear_m: 1.18
+
+suspension:                    # L2는 준정적 하중 이동만 계산 (서스펜션 자유도는 L3/M5)
+  roll_center_front_m: 0.03
+  roll_center_rear_m: 0.05
+  roll_stiffness_front_ratio: 0.55   # 전체 롤 강성 중 앞 비율
+  load_transfer_tau_s: 0.05          # 하중 이동 지연 (차체 롤·피치 응답 근사)
 
 steering:
   ratio: 4.5                   # 핸들각 / 바퀴 조향각
-  max_wheel_angle_deg: 110     # 핸들 최대각
+  lock_deg: 110                # 핸들 최대각 (한쪽)
+  ackermann: 0.5               # 0 = 평행, 1 = 완전 Ackermann
+  mechanical_trail_m: 0.02     # 캐스터 트레일 (FFB 조향 반력)
+
+wheel:
+  radius_m: 0.203              # 하중 상태 반경
+  inertia_kgm2: 0.25           # 휠 + 타이어 + 허브 (모터 로터·감속기는 별도)
 
 tire:
-  radius_m: 0.203
-  mu: 1.6
-  B: 12.0                      # Magic Formula (횡방향, 축 단위)
-  C: 1.4
-  E: 0.2
+  model: simple                # simple | mf (.tir, M1 후반)
   rolling_resistance: 0.015
-  # 축별로 다르게 하려면 front: / rear: 아래에 mu, B, C, E를 지정
+  relaxation_length_x_m: 0.10  # 과도 슬립
+  relaxation_length_y_m: 0.25
+  simple:                      # 방향별 Magic Formula + 마찰 타원
+    nominal_load_n: 700
+    mu_x: 1.6
+    mu_y: 1.6
+    load_sensitivity: -0.1     # 하중 2배일 때 μ 변화율
+    Bx: 12.0
+    Cx: 1.65
+    Ex: 0.3
+    By: 12.0
+    Cy: 1.4
+    Ey: 0.2
+    pneumatic_trail_m: 0.025   # 셀프 얼라이닝 토크
+  # 축별로 다르게 하려면 front: / rear: 아래에 simple: {...}를 지정
 
 aero:
   cla_m2: 3.2
@@ -27,14 +51,58 @@ aero:
   front_ratio: 0.45            # 다운포스 중 앞축 비율
   air_density_kgm3: 1.2
 
+# 구동계: 모터마다 구동하는 바퀴. 바퀴 2개면 디퍼렌셜(open | lsd | locked)
+#   예) 후륜 단일 모터: - {motor: rear, wheels: [rl, rr], gear_ratio: 4.2,
+#                         diff: {type: lsd, preload_nm: 20, ramp: 0.3}}
+driveline:
+  - {motor: fl, wheel: fl, gear_ratio: 14.0, efficiency: 0.97}
+  - {motor: fr, wheel: fr, gear_ratio: 14.0, efficiency: 0.97}
+  - {motor: rl, wheel: rl, gear_ratio: 14.0, efficiency: 0.97}
+  - {motor: rr, wheel: rr, gear_ratio: 14.0, efficiency: 0.97}
+
 powertrain:
-  motors: [fl, fr, rl, rr]     # 4WD 인휠
-  motor_torque_max_nm: 21      # 모터 1개
-  motor_power_max_kw: 35       # 모터 1개
-  gear_ratio: 14.0
-  gear_efficiency: 0.97
+  motor:                       # 모터 + 인버터 (Level A), 모든 모터 공통
+    torque_max_nm: 21
+    power_max_kw: 35           # nominal_voltage_v에서
+    speed_max_rpm: 20000
+    nominal_voltage_v: 600     # DC 전압이 낮으면 출력이 비례해서 줄어듦
+    rotor_inertia_kgm2: 0.00027
+    torque_time_constant_s: 0.002
+    losses:                    # P = copper*T^2 + iron*|w| + windage*w^2 + constant
+      copper_w_per_nm2: 3.0
+      iron_w_per_radps: 0.25
+      windage_w_per_radps2: 0.00005
+      constant_w: 50
+    thermal:
+      heat_capacity_j_per_k: 2000
+      resistance_k_per_w: 0.04
+      coolant_temp_c: 35
+      derate_start_c: 100
+      derate_end_c: 140
+
+battery:                       # 셀 등가회로 (OCV-R0-RC) × 직렬·병렬
+  cells_series: 144
+  cells_parallel: 5
+  cell_capacity_ah: 3.0
+  ocv_soc: [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+  ocv_v: [3.00, 3.30, 3.45, 3.55, 3.62, 3.68, 3.74, 3.82, 3.90, 3.99, 4.08, 4.19]
+  r0_mohm: 12                  # 셀 1개
+  rc:
+    - {r_mohm: 5, tau_s: 10}
+    - {r_mohm: 6, tau_s: 100}
+  extra_resistance_mohm: 30    # 버스바, 퓨즈, 컨택터
+  cell_voltage_min_v: 3.0
+  cell_voltage_max_v: 4.2
+  discharge_current_max_a: 200
+  charge_current_max_a: 60
+  aux_power_w: 300             # 저전압 계통·냉각 펌프
+  thermal:
+    heat_capacity_j_per_k: 40000
+    cooling_w_per_k: 15
+    derate_start_c: 50
+    cutoff_c: 60
 
 brakes:
-  max_pressure_bar: 60         # 페달 최대
-  front_gain_nm_per_bar: 30    # 앞축 합계
-  rear_gain_nm_per_bar: 18     # 뒤축 합계
+  max_pressure_bar: 30         # 페달 최대
+  front_gain_nm_per_bar: 16    # 앞축 합계
+  rear_gain_nm_per_bar: 5      # 뒤축 합계

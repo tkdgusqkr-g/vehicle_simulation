@@ -70,8 +70,11 @@
   <div>
     <div id="speed">0<small>km/h</small></div>
     <div id="numbers">
-      <div>출력 <b id="power">0</b> kW</div>
+      <div>출력 <b id="power">0</b> kW <span id="regen" class="label"></span></div>
       <div>횡G <b id="lat-g">0.00</b> &nbsp; 종G <b id="long-g">0.00</b></div>
+      <div id="battery-row">SoC <b id="soc">-</b> &nbsp; <b id="bat-v">-</b> V &nbsp; <b id="bat-i">-</b> A</div>
+      <div id="temp-row">모터 <b id="motor-temp">-</b>°C &nbsp; 배터리 <b id="bat-temp">-</b>°C</div>
+      <div id="ffb-row">조향 반력 <b id="ffb">-</b> N·m</div>
     </div>
   </div>
   <div><div id="throttle-bar" class="bar"><div></div></div><div class="bar-label">APPS</div></div>
@@ -100,7 +103,7 @@ const css = getComputedStyle(document.documentElement);
 const color = (name) => css.getPropertyValue(name).trim();
 
 // Default vehicle geometry until the server says otherwise (hello message).
-let vehicle = { wheelbase: 1.53, cg_to_front: 0.8, track_width: 1.22, steering_ratio: 4.5 };
+let vehicle = { wheelbase: 1.53, cg_to_front: 0.8, track_front: 1.22, track_rear: 1.18, steering_ratio: 4.5 };
 let state = null;
 let trail = [];
 let headingUp = true;
@@ -191,7 +194,19 @@ function onState(s) {
   document.getElementById("time").textContent = `${s.t.toFixed(2)} s`;
   document.getElementById("rtf").textContent = s.rtf ? `${s.rtf.toFixed(2)}×` : "-";
   document.getElementById("speed").firstChild.nodeValue = Math.round(s.speed * 3.6);
-  document.getElementById("power").textContent = (s.power / 1000).toFixed(1);
+  // Battery power when the model has a battery (L2), else motor shaft power.
+  const power = s.power_elec !== undefined ? s.power_elec : s.power;
+  document.getElementById("power").textContent = (power / 1000).toFixed(1);
+  document.getElementById("regen").textContent = s.regen > 0.01 ? "회생" : "";
+  const show = (id, value, digits) => {
+    document.getElementById(id).textContent = value === undefined ? "-" : value.toFixed(digits);
+  };
+  show("soc", s.soc === undefined ? undefined : s.soc * 100, 1);
+  show("bat-v", s.bat_v, 0);
+  show("bat-i", s.bat_i, 0);
+  show("motor-temp", s.motor_temp, 0);
+  show("bat-temp", s.bat_temp, 0);
+  show("ffb", s.ffb, 1);
   document.getElementById("lat-g").textContent = (s.ay / 9.81).toFixed(2);
   document.getElementById("long-g").textContent = (s.ax / 9.81).toFixed(2);
   document.querySelector("#throttle-bar > div").style.height = `${s.throttle * 100}%`;
@@ -287,12 +302,13 @@ function carPolygon(p, s, points, fill, origin = [0, 0], angle = 0) {
 function drawCar(p, s) {
   const lf = vehicle.cg_to_front;
   const lr = vehicle.wheelbase - lf;
-  const half = vehicle.track_width / 2;
+  const half = vehicle.track_front / 2;
+  const halfRear = vehicle.track_rear / 2;
   const tire = [[0.25, 0.11], [0.25, -0.11], [-0.25, -0.11], [-0.25, 0.11]];
   // Wheels first, body on top. Front wheels turn by the road wheel angle.
-  for (const side of [half, -half]) {
-    carPolygon(p, s, tire, color("--tire"), [lf, side], s.delta);
-    carPolygon(p, s, tire, color("--tire"), [-lr, side]);
+  for (const sign of [1, -1]) {
+    carPolygon(p, s, tire, color("--tire"), [lf, sign * half], s.delta);
+    carPolygon(p, s, tire, color("--tire"), [-lr, sign * halfRear]);
   }
   // Simple open-wheel outline: nose, monocoque, sidepods, rear wing.
   carPolygon(p, s, [[lf + 0.75, 0.12], [lf + 0.75, -0.12], [lf - 0.1, -0.28], [-lr - 0.35, -0.3],

@@ -19,4 +19,4 @@ driver:
 
 logging:
   rate_hz: 100
-  signals: ["veh.*", "drv.*", "pt.*"]
+  signals: ["veh.*", "drv.*", "pt.*", "bat.*", "vcu.*", "energy.*"]

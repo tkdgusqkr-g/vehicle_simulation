@@ -42,6 +42,8 @@ Scenario Scenario::load(const std::filesystem::path& file, const Overrides& over
   ParamTree merged;
   merged.set("project.name", project.get_string("name", path_to_utf8(project_dir.filename())));
   merged.set("project.schema_version", std::to_string(schema));
+  // Models resolve file references (tire files, CAD) against this.
+  merged.set("project.dir", path_to_utf8(project_dir));
   for (const char* section : {"vehicle", "control"}) {
     if (project.has(section)) {
       merged.merge(

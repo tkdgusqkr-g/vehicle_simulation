@@ -1,12 +1,14 @@
 // vsim-core: runs a scenario in real time (with the live view) or headless.
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <exception>
 #include <iostream>
+#include <numbers>
 #include <optional>
 #include <string>
 #include <thread>
@@ -25,7 +27,6 @@
 #endif
 
 #include "vsim/api/api_server.hpp"
-#include "vsim/models/vehicle/single_track.hpp"
 #include "vsim/sim/simulation.hpp"
 #include "vsim/util/paths.hpp"
 #include "vsim/version.hpp"
@@ -157,12 +158,21 @@ struct StateStream {
       {"throttle", "drv.cmd.throttle", {}},
       {"brake", "drv.cmd.brake", {}},
       {"power", "pt.power_mech", {}},
+      {"power_elec", "bat.power", {}},
+      {"soc", "bat.soc", {}},
+      {"bat_v", "bat.voltage", {}},
+      {"bat_i", "bat.current", {}},
+      {"bat_temp", "bat.temp", {}},
+      {"regen", "vcu.regen", {}},
+      {"ffb", "veh.ffb.torque_sw", {}},
   };
+  std::vector<vsim::SignalId> motor_temps;
 
   void resolve(const vsim::SignalBus& bus) {
     for (Field& field : fields) {
       field.id = bus.find(field.signal);
     }
+    motor_temps = bus.match("pt.motor.*.temp");
   }
 
   std::string message(const vsim::Simulation& sim, bool paused, double rtf) const {
@@ -175,20 +185,28 @@ struct StateStream {
         params[field.key] = sim.bus().get(*field.id);
       }
     }
+    if (!motor_temps.empty()) {
+      double hottest = sim.bus().get(motor_temps.front());
+      for (const vsim::SignalId id : motor_temps) {
+        hottest = std::max(hottest, sim.bus().get(id));
+      }
+      params["motor_temp"] = hottest;
+    }
     return json{{"jsonrpc", "2.0"}, {"method", "state"}, {"params", params}}.dump();
   }
 };
 
 std::string hello_message(const vsim::Simulation& sim) {
   const vsim::ParamTree& params = sim.scenario().params;
-  const auto p = vsim::SingleTrackModel::params_from(params);
   json vehicle;
-  vehicle["wheelbase"] = p.wheelbase;
-  vehicle["cg_to_front"] = p.cg_to_front;
-  vehicle["track_width"] = params.get_double("vehicle.track_width_m", 1.2);
-  vehicle["steering_ratio"] = p.steering_ratio;
-  vehicle["max_steer_wheel"] = p.max_steer_wheel;
-  vehicle["tire_radius"] = p.tire_radius;
+  vehicle["model"] = params.get_string("vehicle.model", "two_track");
+  vehicle["wheelbase"] = params.get_double("vehicle.wheelbase_m");
+  vehicle["cg_to_front"] = params.get_double("vehicle.cg_to_front_axle_m");
+  vehicle["track_front"] = params.get_double("vehicle.track_front_m", 1.2);
+  vehicle["track_rear"] = params.get_double("vehicle.track_rear_m", 1.2);
+  vehicle["steering_ratio"] = params.get_double("vehicle.steering.ratio");
+  vehicle["max_steer_wheel"] = params.get_double("vehicle.steering.lock_deg") * std::numbers::pi / 180.0;
+  vehicle["tire_radius"] = params.get_double("vehicle.wheel.radius_m");
   json hello;
   hello["vsim_version"] = vsim::version();
   hello["scenario"] = sim.scenario().name;

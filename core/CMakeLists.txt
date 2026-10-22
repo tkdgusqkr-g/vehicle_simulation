@@ -20,7 +20,14 @@ add_library(vsim_core STATIC
   src/driver/drivers.cpp
   src/driver/profile.cpp
   src/log/mcap_logger.cpp
+  src/models/driveline/driveline.cpp
+  src/models/powertrain/battery.cpp
+  src/models/powertrain/motor.cpp
+  src/models/tire/simple_tire.cpp
+  src/models/tire/tire_factory.cpp
+  src/models/vehicle/corners.cpp
   src/models/vehicle/single_track.cpp
+  src/models/vehicle/two_track.cpp
   src/sim/integrator.cpp
   src/sim/params.cpp
   src/sim/realism.cpp
