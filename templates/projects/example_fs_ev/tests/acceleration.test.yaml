@@ -1,0 +1,12 @@
+test: acceleration_75m
+description: FS 가속 시험. 75 m 기록과 슬립 제어 동작을 확인합니다.
+scenario: ../scenarios/acceleration.yaml
+checks:
+  - name: 75 m를 4.0초 안에
+    expr: "final(track.last_lap) < 4.0"
+  - name: 결승선 통과
+    expr: "final(track.finished) == 1"
+  - name: 출발 후 슬립률이 목표(0.1) 근처에 머묾
+    expr: "max(window(vcu.motor.fl.slip, 0.5, 3.0)) < 0.2"
+  - name: 배터리 출력 80 kW 이하
+    expr: "max(bat.power) < 81000"

@@ -1,0 +1,19 @@
+test: autocross_laps
+description: 예제 오토크로스 트랙 자동 주행 3랩. 랩타임, 코스 이탈, 온도와 SoC를 확인합니다.
+scenario: ../scenarios/autocross_auto.yaml
+seeds: [1, 2]
+checks:
+  - name: 3랩 완주
+    expr: "final(track.lap) >= 3"
+  - name: 코스 이탈 없음
+    expr: "final(track.off_track_count) == 0"
+  - name: 베스트 랩 22초 이내
+    expr: "final(track.best_lap) < 22"
+  - name: 라인 추종 오차 0.8 m 이내
+    expr: "max(abs(window(drv.line_offset, 2, 75))) < 0.8"
+  - name: 모터 권선 100 °C 미만
+    expr: "max(pt.motor.fl.temp) < 100"
+  - name: 3랩 뒤 SoC 85 % 이상
+    expr: "final(bat.soc) > 0.85"
+  - name: 에너지 수지 오차 1 J 미만
+    expr: "abs(final(energy.residual)) < 1"

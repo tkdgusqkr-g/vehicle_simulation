@@ -1,0 +1,14 @@
+test: skidpad
+description: 스키드패드 자동 주행. 기록 랩(오른쪽·왼쪽 두 번째 바퀴)과 코스 이탈을 확인합니다.
+scenario: ../scenarios/skidpad_auto.yaml
+checks:
+  - name: 네 바퀴 모두 완주
+    expr: "final(track.finished) == 1"
+  - name: 코스 이탈 없음
+    expr: "final(track.off_track_count) == 0"
+  - name: 오른쪽 기록 랩 6초 이내
+    expr: "changes(track.last_sector)[1] < 6.0"
+  - name: 왼쪽 기록 랩 6초 이내
+    expr: "changes(track.last_sector)[3] < 6.0"
+  - name: 기록 랩 횡가속도 1.2 g 이상 유지
+    expr: "mean(abs(window(veh.chassis.ay, 8, 10))) > 1.2 * 9.81"

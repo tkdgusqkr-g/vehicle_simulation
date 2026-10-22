@@ -1,0 +1,15 @@
+test: step_steer_iso7401
+description: 스텝 조향 응답 (ISO 7401 참고). 40 km/h에서 핸들 30° 스텝, yaw rate 응답을 봅니다.
+scenario: ../scenarios/sine_steer.yaml
+duration_s: 10
+overrides:
+  driver.steer.type: step
+  driver.steer.at_s: 5
+  driver.steer.value: 30
+checks:
+  - name: yaw rate 응답 시간 (10→90 %) 0.3 s 미만
+    expr: "rise_time(window(veh.chassis.yaw_rate, 5, 10), final(veh.chassis.yaw_rate)) < 0.3"
+  - name: 오버슈트 30 % 미만
+    expr: "overshoot(window(veh.chassis.yaw_rate, 5, 10), final(veh.chassis.yaw_rate)) < 0.3"
+  - name: 2초 안에 정상상태 (±5 %)
+    expr: "settle_time(window(veh.chassis.yaw_rate, 5, 10), final(veh.chassis.yaw_rate)) < 7"

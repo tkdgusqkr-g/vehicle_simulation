@@ -22,7 +22,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install Python packages
-        run: python -m pip install pybind11 numpy pytest mcap
+        run: python -m pip install pybind11 numpy pytest mcap pyyaml
 
       - name: Configure
         run: >
@@ -37,6 +37,19 @@ jobs:
 
       - name: Python tests
         run: python -m pytest python/tests -v
+
+      - name: Scenario tests
+        env:
+          PYTHONPATH: python
+        run: python -m vsim.testing templates/projects/example_fs_ev/tests --report test-report-${{ matrix.os }}.md
+
+      - name: Keep the test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-${{ matrix.os }}
+          path: test-report-${{ matrix.os }}.md
+          if-no-files-found: ignore
 
       - name: Headless scenario run
         run: |
