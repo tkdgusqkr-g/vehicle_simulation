@@ -13,6 +13,7 @@ struct KeyState {
   bool brake = false;
   bool left = false;
   bool right = false;
+  std::chrono::steady_clock::time_point stamp{};  // when they were read (latency measurement)
 };
 
 // Steering wheel and pedals, already normalized by the device profile.
@@ -25,6 +26,7 @@ struct WheelState {
   double clutch = 0.0;    // 0..1
   bool reset = false;     // buttons mapped by the profile
   bool pause = false;
+  std::chrono::steady_clock::time_point stamp{};  // when the device was read
 };
 
 // What the force feedback loop should render: the road torque at the car's

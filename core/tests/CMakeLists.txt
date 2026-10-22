@@ -3,6 +3,7 @@ add_executable(vsim_tests
   test_input.cpp
   test_integrator.cpp
   test_lap.cpp
+  test_link.cpp
   test_params.cpp
   test_powertrain.cpp
   test_rng.cpp
@@ -28,4 +29,16 @@ if(VSIM_BUILD_APP AND VSIM_WITH_SDL)
   gtest_discover_tests(vsim_input_tests DISCOVERY_MODE PRE_TEST)
   # Runs without any device attached (CI).
   add_test(NAME vsim_input_list COMMAND vsim-input list)
+endif()
+
+# Shared-memory link across processes: vsim-core plus vsim-link as the viewer.
+if(VSIM_BUILD_APP)
+  find_package(Python3 COMPONENTS Interpreter)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME vsim_link_e2e
+             COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/link_e2e.py $<TARGET_FILE:vsim-core>
+                     $<TARGET_FILE:vsim-link>
+                     ${PROJECT_SOURCE_DIR}/templates/projects/example_fs_ev/scenarios/drive.yaml)
+    set_tests_properties(vsim_link_e2e PROPERTIES TIMEOUT 60)
+  endif()
 endif()

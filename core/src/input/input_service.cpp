@@ -212,6 +212,7 @@ void InputService::run() {
       wheel.clutch = p.clutch.value(axis(p.clutch.axis));
       wheel.reset = button(p.button_reset);
       wheel.pause = button(p.button_pause);
+      wheel.stamp = now;
       hub_.set_wheel(wheel);
 
       if (device.haptic && now >= next_ffb) {

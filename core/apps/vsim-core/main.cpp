@@ -33,6 +33,7 @@
 #ifdef VSIM_HAS_SDL
 #include "vsim/input/input_service.hpp"
 #endif
+#include "vsim/link/state_link.hpp"
 #include "vsim/sim/simulation.hpp"
 #include "vsim/track/track.hpp"
 #include "vsim/track/track_mesh.hpp"
@@ -56,7 +57,9 @@ struct Options {
   std::string log_dir;
   std::string input_profiles;
   std::string export_track;
+  std::string link_name = vsim_link::kStateName;
   bool no_wheel = false;
+  bool no_link = false;
   std::optional<double> duration;
   vsim::Scenario::Overrides overrides;
 };
@@ -71,6 +74,8 @@ constexpr const char* kUsage = R"(usage: vsim-core --scenario <file.yaml> [optio
   --port <n>           Sim API WebSocket port (default 8765)
   --host <addr>        bind address (default 127.0.0.1; 0.0.0.0 for other machines)
   --no-wheel           do not look for a steering wheel (driver.type dil uses the keyboard)
+  --no-link            do not publish to shared memory (the Unreal viewer reads it)
+  --link-name <name>   shared-memory name (default vsim_state_v1)
   --input-profiles <d> wheel profile directory (default: config/input in the source tree)
   --export-track-glb <file>  write the scenario's track as a 3D model (glTF binary) and exit
   --version            print the version and exit
@@ -124,6 +129,10 @@ std::optional<Options> parse_args(const std::vector<std::string>& args) {
       options.host = value();
     } else if (arg == "--no-wheel") {
       options.no_wheel = true;
+    } else if (arg == "--no-link") {
+      options.no_link = true;
+    } else if (arg == "--link-name") {
+      options.link_name = value();
     } else if (arg == "--input-profiles") {
       options.input_profiles = value();
     } else if (arg == "--export-track-glb") {
@@ -323,6 +332,10 @@ std::string track_mesh_message(const vsim::Simulation& sim, std::uint64_t genera
   return json{{"jsonrpc", "2.0"}, {"method", "track.mesh"}, {"params", params}}.dump();
 }
 
+std::int64_t to_ns(Clock::time_point t) {
+  return t == Clock::time_point{} ? 0 : std::chrono::duration_cast<std::chrono::nanoseconds>(t.time_since_epoch()).count();
+}
+
 std::string notice(const std::string& level, const std::string& text) {
   return json{{"jsonrpc", "2.0"}, {"method", "notice"}, {"params", {{"level", level}, {"text", text}}}}.dump();
 }
@@ -404,6 +417,34 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
 #endif
   vsim::WheelState last_wheel;
 
+  // Shared-memory link for native renderers (Unreal viewer, vsim_link.h).
+  std::unique_ptr<vsim::StateLink> link;
+  vsim::LinkSnapshot snapshot;
+  vsim_link::VehicleState link_state{};
+  bool viewer_alive = false;
+  if (!options.no_link) {
+    try {
+      link = std::make_unique<vsim::StateLink>(options.link_name);
+      snapshot.reset(sim);
+    } catch (const std::exception& error) {
+      std::cerr << "warning: shared-memory link off: " << error.what() << "\n";
+    }
+  }
+  const auto publish_track = [&] {
+    if (!link) {
+      return;
+    }
+    if (const auto track = sim.track()) {
+      link->publish_track(vsim::make_track_mesh(*track), track->name(), track->length());
+    } else {
+      link->clear_track();
+    }
+  };
+  publish_track();
+  if (link) {
+    std::cout << "Shared-memory link '" << link->name() << "' for the Unreal viewer (ui/unreal)\n";
+  }
+
   const double end_time = options.duration ? sim.time() + *options.duration : sim.end_time();
   bool paused = false;
   double lag = 0.0;
@@ -415,6 +456,16 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
   auto rtf_window = last;
   double rtf_sim_start = sim.time();
   const auto start = last;
+  vsim::KeyState browser_keys;
+  std::int64_t applied_input_ns = 0;
+  const auto after_reset = [&] {
+    stream.resolve(sim.bus());
+    if (link) {
+      snapshot.reset(sim);
+    }
+    rtf_sim_start = sim.time();
+    lag = 0.0;
+  };
 
   while (!g_stop && sim.time() < end_time) {
     for (const std::string& text : server.take_messages()) {
@@ -425,18 +476,15 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
       const std::string method = message.value("method", "");
       const json params = message.value("params", json::object());
       if (method == "input.keys") {
-        vsim::KeyState keys;
-        keys.throttle = params.value("throttle", false);
-        keys.brake = params.value("brake", false);
-        keys.left = params.value("left", false);
-        keys.right = params.value("right", false);
-        sim.inputs().set_keys(keys);
-        last_keys = Clock::now();
+        browser_keys.throttle = params.value("throttle", false);
+        browser_keys.brake = params.value("brake", false);
+        browser_keys.left = params.value("left", false);
+        browser_keys.right = params.value("right", false);
+        browser_keys.stamp = Clock::now();
+        last_keys = browser_keys.stamp;
       } else if (method == "sim.reset") {
         sim.reset();
-        stream.resolve(sim.bus());
-        rtf_sim_start = sim.time();
-        lag = 0.0;
+        after_reset();
       } else if (method == "sim.pause") {
         paused = true;
       } else if (method == "sim.resume") {
@@ -452,9 +500,8 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
                 vsim::TrackDefinition::from_json(params.value("track", json::object()).dump()));
           }
           sim.set_track(std::move(track));
-          stream.resolve(sim.bus());
-          rtf_sim_start = sim.time();
-          lag = 0.0;
+          after_reset();
+          publish_track();
           ++track_generation;
           server.set_hello(hello_message(sim, track_generation));
           server.broadcast(hello_message(sim, track_generation));
@@ -486,18 +533,46 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
     const vsim::WheelState wheel = sim.inputs().wheel();
     if (wheel.reset && !last_wheel.reset) {
       sim.reset();
-      stream.resolve(sim.bus());
-      rtf_sim_start = sim.time();
-      lag = 0.0;
+      after_reset();
     }
     if (wheel.pause && !last_wheel.pause) {
       paused = !paused;
     }
     last_wheel = wheel;
-    if (now - last_keys > kKeyTimeout) {
-      // A browser that lost focus or disconnected must not leave a pedal pressed.
-      sim.inputs().set_keys({});
+
+    // Keys from the browser and from the 3D viewer; a source that went quiet
+    // (lost focus, disconnected) must not leave a pedal pressed.
+    vsim::KeyState keys;
+    if (now - last_keys <= kKeyTimeout) {
+      keys = browser_keys;
     }
+    vsim::StateLink::ViewerInput viewer;
+    if (link) {
+      viewer = link->poll_viewer();
+      if (viewer.keys) {
+        keys.throttle = keys.throttle || viewer.keys->throttle;
+        keys.brake = keys.brake || viewer.keys->brake;
+        keys.left = keys.left || viewer.keys->left;
+        keys.right = keys.right || viewer.keys->right;
+        keys.stamp = std::max(keys.stamp, Clock::time_point(std::chrono::duration_cast<Clock::duration>(
+                                              std::chrono::nanoseconds(viewer.keys_ns))));
+      }
+      for (const vsim_link::Command command : viewer.commands) {
+        if (command == vsim_link::kCommandReset) {
+          sim.reset();
+          after_reset();
+        } else if (command == vsim_link::kCommandTogglePause) {
+          paused = !paused;
+        }
+      }
+      if (viewer.alive != viewer_alive) {
+        viewer_alive = viewer.alive;
+        std::cout << (viewer_alive ? "3D viewer connected\n" : "3D viewer disconnected\n");
+      }
+    }
+    sim.inputs().set_keys(keys);
+    // The newest driver input the coming steps apply, for latency.
+    const std::int64_t input_ns = std::max(to_ns(keys.stamp), wheel.connected ? to_ns(wheel.stamp) : 0);
     const double elapsed = std::chrono::duration<double>(now - last).count();
     last = now;
     if (!paused) {
@@ -510,7 +585,19 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
       if (steps > 0) {
         sim.step(steps);
         lag -= static_cast<double>(steps) * sim.dt();
+        applied_input_ns = input_ns;
       }
+    }
+
+    if (link) {
+      snapshot.update(sim, link_state);
+      link_state.publish_ns = vsim_link::now_ns();
+      link_state.input_ns = applied_input_ns;
+      link_state.rtf = static_cast<float>(rtf);
+      link_state.paused = paused;
+      link_state.wheel_connected = wheel.connected;
+      link_state.track_generation = link->track_generation();
+      link->publish(link_state);
     }
 
     if (now - rtf_window >= std::chrono::seconds(1)) {
@@ -520,6 +607,9 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
     }
     if (now >= next_publish) {
       json input = {{"device", wheel.connected ? wheel.device : ""}};
+      if (viewer.alive) {
+        input["viewer"] = {{"latency_ms", viewer.latency_ms}, {"frame_ms", viewer.frame_ms}};
+      }
 #ifdef VSIM_HAS_SDL
       if (wheel_service) {
         const vsim::InputService::Status status = wheel_service->status();

@@ -21,6 +21,8 @@ add_library(vsim_core STATIC
   src/driver/profile.cpp
   src/input/force_feedback.cpp
   src/input/wheel_profile.cpp
+  src/link/shared_memory.cpp
+  src/link/state_link.cpp
   src/log/mcap_logger.cpp
   src/models/driveline/driveline.cpp
   src/models/powertrain/battery.cpp
@@ -47,6 +49,9 @@ add_library(vsim_core STATIC
   "${CMAKE_CURRENT_BINARY_DIR}/generated/version.cpp")
 target_include_directories(vsim_core PUBLIC include)
 target_link_libraries(vsim_core PRIVATE yaml-cpp nlohmann_json::nlohmann_json vsim_mcap)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(vsim_core PRIVATE rt)  # shm_open on glibc < 2.34
+endif()
 vsim_set_warnings(vsim_core)
 
 if(VSIM_BUILD_APP)
@@ -61,6 +66,13 @@ if(VSIM_BUILD_APP)
     target_link_libraries(vsim-core PRIVATE winmm shell32)
   endif()
   vsim_set_warnings(vsim-core)
+
+  add_executable(vsim-link apps/vsim-link/main.cpp)
+  target_link_libraries(vsim-link PRIVATE vsim_core)
+  if(WIN32)
+    target_link_libraries(vsim-link PRIVATE winmm)
+  endif()
+  vsim_set_warnings(vsim-link)
 
   if(VSIM_WITH_SDL)
     # Steering wheel input and force feedback (design doc §9.3).
