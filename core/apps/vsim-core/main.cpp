@@ -289,6 +289,8 @@ std::string hello_message(const vsim::Simulation& sim, std::uint64_t track_gener
   vehicle["steering_ratio"] = params.get_double("vehicle.steering.ratio");
   vehicle["max_steer_wheel"] = params.get_double("vehicle.steering.lock_deg") * std::numbers::pi / 180.0;
   vehicle["tire_radius"] = params.get_double("vehicle.wheel.radius_m");
+  vehicle["tire_width"] = params.get_double("vehicle.tire.width_m", 0.2);
+  vehicle["cg_height"] = params.get_double("vehicle.cg_height_m", 0.3);
   json hello;
   hello["vsim_version"] = vsim::version();
   hello["scenario"] = sim.scenario().name;

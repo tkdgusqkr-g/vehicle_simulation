@@ -1,0 +1,710 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vsim 3D 주행 화면</title>
+<style>
+  :root {
+    --panel: rgba(14, 17, 22, 0.72);
+    --panel-border: rgba(255, 255, 255, 0.10);
+    --text: #eef1f5;
+    --muted: #9aa4b2;
+    --accent: #4fb3ff;
+    --throttle: #3ecf8e;
+    --brake: #ff5c5c;
+    --warn: #ffb347;
+  }
+  html, body { margin: 0; height: 100%; background: #0d1014; color: var(--text); overflow: hidden;
+    font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
+  canvas#view { display: block; width: 100vw; height: 100vh; }
+  .panel { position: fixed; background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px;
+    padding: 10px 14px; font-size: 13px; line-height: 1.5; backdrop-filter: blur(6px); }
+  .label { color: var(--muted); }
+  .hidden { display: none !important; }
+  #status { top: 12px; left: 12px; min-width: 220px; font-variant-numeric: tabular-nums; }
+  #status .row { display: flex; justify-content: space-between; gap: 18px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--brake); }
+  .dot.on { background: var(--throttle); }
+  #help { top: 12px; right: 12px; color: var(--muted); }
+  #help kbd { color: var(--text); background: rgba(255,255,255,0.08); border: 1px solid var(--panel-border);
+    border-radius: 4px; padding: 0 5px; font-family: inherit; font-size: 12px; }
+  #laps { top: 12px; left: 50%; transform: translateX(-50%); display: flex; gap: 18px; align-items: baseline;
+    font-variant-numeric: tabular-nums; }
+  #laps .big { font-size: 26px; font-weight: 600; }
+  #laps .bad { color: var(--brake); }
+  #laps .good { color: var(--throttle); }
+  #dash { bottom: 14px; left: 50%; transform: translateX(-50%); display: flex; gap: 18px; align-items: flex-end;
+    font-variant-numeric: tabular-nums; }
+  #speed { font-size: 56px; font-weight: 650; line-height: 0.95; min-width: 120px; text-align: right; }
+  #speed small { display: block; font-size: 13px; color: var(--muted); font-weight: 400; }
+  .bar { width: 14px; height: 72px; background: rgba(255,255,255,0.08); border-radius: 3px; position: relative; overflow: hidden; }
+  .bar > div { position: absolute; bottom: 0; left: 0; right: 0; height: 0; }
+  #throttle-bar > div { background: var(--throttle); }
+  #brake-bar > div { background: var(--brake); }
+  .bar-label { font-size: 11px; color: var(--muted); text-align: center; margin-top: 4px; }
+  #wheel-icon { width: 66px; height: 66px; }
+  #numbers { color: var(--muted); min-width: 150px; }
+  #numbers b { color: var(--text); font-weight: 500; }
+  #map { bottom: 14px; right: 14px; padding: 6px; }
+  #map canvas { display: block; width: 190px; height: 190px; }
+  #toast { bottom: 120px; left: 50%; transform: translateX(-50%); display: none; }
+  #toast.error { border-color: var(--brake); }
+  #toast.warning { border-color: var(--warn); }
+  #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    pointer-events: none; font-size: 26px; letter-spacing: 3px; color: var(--muted); text-shadow: 0 2px 8px #000; }
+  #connect-help { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); max-width: 520px;
+    text-align: center; font-size: 15px; line-height: 1.7; }
+  #connect-help code { background: rgba(255,255,255,0.08); padding: 1px 6px; border-radius: 4px; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<canvas id="view"></canvas>
+
+<div id="status" class="panel">
+  <div><span id="conn-dot" class="dot"></span><span id="conn">연결 중…</span></div>
+  <div class="row"><span class="label">시나리오</span><span id="scenario">-</span></div>
+  <div class="row"><span class="label">트랙</span><span id="track-name">-</span></div>
+  <div class="row"><span class="label">카메라</span><span id="camera-name">-</span></div>
+  <div class="row"><span class="label">입력</span><span id="input">-</span></div>
+  <div class="row"><span class="label">화면</span><span id="fps">-</span></div>
+  <div class="row"><span class="label">키 → 화면</span><span id="latency">가속 키를 눌러 측정</span></div>
+  <div class="row"><span class="label">실시간 배율</span><span id="rtf">-</span></div>
+</div>
+
+<div id="help" class="panel">
+  <div><kbd>↑</kbd>/<kbd>W</kbd> 가속 &nbsp; <kbd>↓</kbd>/<kbd>S</kbd> 브레이크 &nbsp; <kbd>←</kbd><kbd>→</kbd>/<kbd>A</kbd><kbd>D</kbd> 조향</div>
+  <div><kbd>C</kbd> 카메라 &nbsp; <kbd>R</kbd> 리셋 &nbsp; <kbd>Space</kbd> 일시정지</div>
+  <div><kbd>H</kbd> HUD 숨김 &nbsp; <kbd>F</kbd> 전체 화면</div>
+</div>
+
+<div id="laps" class="panel hidden">
+  <span><span class="label">랩 </span><span id="lap-no" class="big">-</span></span>
+  <span><span class="label">현재 </span><span id="lap-time" class="big">-</span></span>
+  <span><span class="label">지난 </span><span id="last-lap">-</span></span>
+  <span><span class="label">베스트 </span><span id="best-lap">-</span></span>
+  <span><span class="label">구간 </span><span id="sector">-</span></span>
+  <span id="lap-flag"></span>
+</div>
+
+<div id="dash" class="panel">
+  <div id="speed">0<small>km/h</small></div>
+  <div><div id="throttle-bar" class="bar"><div></div></div><div class="bar-label">APPS</div></div>
+  <div><div id="brake-bar" class="bar"><div></div></div><div class="bar-label">BRK</div></div>
+  <div>
+    <svg id="wheel-icon" viewBox="-32 -32 64 64">
+      <g id="wheel-rot">
+        <circle r="26" fill="none" stroke="#9aa4b2" stroke-width="5"/>
+        <line x1="-26" y1="4" x2="26" y2="4" stroke="#9aa4b2" stroke-width="5"/>
+        <line x1="0" y1="4" x2="0" y2="26" stroke="#9aa4b2" stroke-width="5"/>
+        <line x1="0" y1="-26" x2="0" y2="-19" stroke="#4fb3ff" stroke-width="5"/>
+      </g>
+    </svg>
+    <div class="bar-label" id="steer-deg">0°</div>
+  </div>
+  <div id="numbers">
+    <div>출력 <b id="power">0</b> kW <span id="regen" class="label"></span></div>
+    <div>횡G <b id="lat-g">0.00</b> &nbsp; 종G <b id="long-g">0.00</b></div>
+    <div>SoC <b id="soc">-</b> &nbsp; 모터 <b id="motor-temp">-</b>°C</div>
+  </div>
+</div>
+
+<div id="map" class="panel hidden"><canvas id="map-canvas" width="380" height="380"></canvas></div>
+<div id="toast" class="panel"></div>
+<div id="overlay"></div>
+<div id="connect-help" class="panel hidden">
+  시뮬레이터에 연결하지 못했습니다.<br>
+  <code>vsim-core --scenario …/drive.yaml</code>를 실시간 모드로 실행하세요.<br>
+  <span class="label" id="connect-url"></span>
+</div>
+
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+// vsim frame (x east, y north, z up) -> three.js / glTF (y up): (x, z, -y).
+// The track mesh from the simulator is a glTF in this frame already.
+
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const wsUrl = params.get("ws") || `ws://${location.hostname || "127.0.0.1"}:8765`;
+
+// --- Renderer, scene, light ---------------------------------------------------
+const canvas = $("view");
+// Logarithmic depth: road paint sits millimetres above the asphalt and must
+// not flicker hundreds of metres away.
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance",
+  logarithmicDepthBuffer: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+const skyColor = new THREE.Color(0xb4d0ea);
+scene.background = skyColor;
+scene.fog = new THREE.Fog(skyColor, 180, 900);
+
+scene.add(new THREE.HemisphereLight(0xe8f2ff, 0x4d5a3c, 1.1));
+const sun = new THREE.DirectionalLight(0xfff4e0, 2.4);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = sun.shadow.camera.bottom = -18;
+sun.shadow.camera.right = sun.shadow.camera.top = 18;
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 200;
+sun.shadow.bias = -0.0005;
+scene.add(sun, sun.target);
+const sunOffset = new THREE.Vector3(-40, 90, 30);
+
+const camera = new THREE.PerspectiveCamera(60, 1, 0.05, 3000);
+
+// Procedural textures: a little grain so speed is visible on plain colours.
+function noiseTexture(size, lo, hi, streaks) {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d");
+  const img = g.createImageData(size, size);
+  for (let i = 0; i < size * size; i++) {
+    const v = Math.round(255 * (lo + (hi - lo) * Math.random()));
+    img.data.set([v, v, v, 255], i * 4);
+  }
+  g.putImageData(img, 0, 0);
+  if (streaks) {
+    g.globalAlpha = 0.08;
+    for (let i = 0; i < 40; i++) {
+      g.fillStyle = Math.random() < 0.5 ? "#000" : "#fff";
+      g.fillRect(Math.random() * size, 0, 1 + Math.random() * 3, size);
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return t;
+}
+const asphaltTexture = noiseTexture(256, 0.78, 1.0, true);
+const grassTexture = noiseTexture(256, 0.72, 1.0, false);
+
+// Ground to the horizon (the track's own ground covers its surroundings).
+const farGround = new THREE.Mesh(
+  new THREE.PlaneGeometry(6000, 6000).rotateX(-Math.PI / 2),
+  new THREE.MeshStandardMaterial({ color: 0x55703f, roughness: 1, map: grassTexture.clone() }));
+farGround.material.map.repeat.set(600, 600);
+farGround.position.y = -0.25;
+farGround.receiveShadow = true;
+scene.add(farGround);
+const grid = new THREE.GridHelper(400, 80, 0x8aa070, 0x7a9062);
+grid.position.y = -0.04;
+scene.add(grid);
+
+// --- Car ------------------------------------------------------------------------
+let vehicle = { wheelbase: 1.53, cg_to_front: 0.8, track_front: 1.22, track_rear: 1.18, tire_radius: 0.203,
+  tire_width: 0.19, cg_height: 0.28, steering_ratio: 4.5 };
+
+const mat = {
+  body: new THREE.MeshStandardMaterial({ color: 0xd7263d, roughness: 0.35, metalness: 0.1 }),
+  carbon: new THREE.MeshStandardMaterial({ color: 0x1b1e23, roughness: 0.5, metalness: 0.2 }),
+  white: new THREE.MeshStandardMaterial({ color: 0xf2f4f7, roughness: 0.4 }),
+  tire: new THREE.MeshStandardMaterial({ color: 0x111214, roughness: 0.92 }),
+  rim: new THREE.MeshStandardMaterial({ color: 0xb8bec7, roughness: 0.3, metalness: 0.8 }),
+  helmet: new THREE.MeshStandardMaterial({ color: 0xffd23f, roughness: 0.3 }),
+  metal: new THREE.MeshStandardMaterial({ color: 0x8a919b, roughness: 0.4, metalness: 0.7 }),
+};
+
+function box(sx, sy, sz, material, x, y, z) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), material);
+  m.position.set(x, y, z);
+  m.castShadow = true;
+  return m;
+}
+
+// Box whose front end (+x) is scaled down: a simple nose cone.
+function taperedBox(sx, sy, sz, frontScaleY, frontScaleZ, dropY, material) {
+  const g = new THREE.BoxGeometry(sx, sy, sz, 1, 1, 1);
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    if (p.getX(i) > 0) {
+      p.setY(i, p.getY(i) * frontScaleY - dropY);
+      p.setZ(i, p.getZ(i) * frontScaleZ);
+    }
+  }
+  g.computeVertexNormals();
+  const m = new THREE.Mesh(g, material);
+  m.castShadow = true;
+  return m;
+}
+
+function cylinder(r, length, material, segments = 12) {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, length, segments), material);
+  m.castShadow = true;
+  return m;
+}
+
+// Thin rod between two points (suspension links).
+function rod(a, b, r, material) {
+  const d = new THREE.Vector3().subVectors(b, a);
+  const m = cylinder(r, d.length(), material, 6);
+  m.position.copy(a).addScaledVector(d, 0.5);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize());
+  return m;
+}
+
+const car = {
+  root: new THREE.Group(),   // position and yaw
+  body: new THREE.Group(),   // pitch and roll about the CG
+  wheels: [],                // {steer, spin}
+  helmet: null, steeringWheel: null, eye: new THREE.Object3D(), nose: new THREE.Object3D(),
+};
+scene.add(car.root);
+
+function buildCar(v) {
+  car.root.clear();
+  car.body = new THREE.Group();
+  car.wheels = [];
+  const a = v.cg_to_front, b = v.wheelbase - v.cg_to_front, r = v.tire_radius, w = v.tire_width;
+  const h = v.cg_height;
+  car.body.position.y = h;
+  const shell = new THREE.Group();  // body parts in car coordinates (y from the ground)
+  shell.position.y = -h;
+  car.body.add(shell);
+  car.root.add(car.body);
+
+  const tubLength = a + b * 0.55;
+  shell.add(box(tubLength, 0.30, 0.56, mat.body, a - tubLength / 2 - 0.05, 0.27, 0));
+  const nose = taperedBox(0.75, 0.26, 0.50, 0.45, 0.35, 0.03, mat.body);
+  nose.position.set(a + 0.32, 0.26, 0);
+  shell.add(nose);
+  shell.add(box(0.75, 0.24, 0.26, mat.body, -b * 0.15, 0.22, 0.40));   // sidepods
+  shell.add(box(0.75, 0.24, 0.26, mat.body, -b * 0.15, 0.22, -0.40));
+  shell.add(box(0.80, 0.04, 0.57, mat.white, a - 0.55, 0.43, 0));       // stripe
+  shell.add(box(0.55, 0.08, 0.42, mat.carbon, -0.05, 0.44, 0));         // cockpit opening
+  shell.add(box(b * 0.75, 0.38, 0.50, mat.carbon, -b * 0.55, 0.32, 0)); // motor / battery bay
+  // Roll hoop behind the driver.
+  shell.add(box(0.05, 0.55, 0.05, mat.metal, -0.36, 0.62, 0.20));
+  shell.add(box(0.05, 0.55, 0.05, mat.metal, -0.36, 0.62, -0.20));
+  shell.add(box(0.05, 0.05, 0.45, mat.metal, -0.36, 0.89, 0));
+  car.helmet = new THREE.Mesh(new THREE.SphereGeometry(0.13, 20, 14), mat.helmet);
+  car.helmet.position.set(-0.18, 0.74, 0);
+  car.helmet.castShadow = true;
+  shell.add(car.helmet);
+  // Front wing with endplates, rear wing on two pylons.
+  const frontSpan = v.track_front + 0.15;
+  shell.add(box(0.30, 0.025, frontSpan, mat.carbon, a + 0.62, 0.07, 0));
+  shell.add(box(0.22, 0.02, frontSpan - 0.1, mat.carbon, a + 0.58, 0.13, 0));
+  shell.add(box(0.36, 0.14, 0.015, mat.carbon, a + 0.62, 0.11, frontSpan / 2));
+  shell.add(box(0.36, 0.14, 0.015, mat.carbon, a + 0.62, 0.11, -frontSpan / 2));
+  const rearSpan = Math.min(v.track_rear, 1.1);
+  shell.add(box(0.32, 0.025, rearSpan, mat.carbon, -b - 0.32, 1.02, 0));
+  shell.add(box(0.22, 0.02, rearSpan, mat.carbon, -b - 0.40, 1.12, 0));
+  shell.add(box(0.45, 0.32, 0.015, mat.carbon, -b - 0.34, 1.02, rearSpan / 2));
+  shell.add(box(0.45, 0.32, 0.015, mat.carbon, -b - 0.34, 1.02, -rearSpan / 2));
+  shell.add(box(0.05, 0.62, 0.03, mat.carbon, -b - 0.25, 0.70, 0.15));
+  shell.add(box(0.05, 0.62, 0.03, mat.carbon, -b - 0.25, 0.70, -0.15));
+  // Steering wheel facing the driver.
+  car.steeringWheel = new THREE.Group();
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.014, 8, 24), mat.carbon);
+  rim.rotation.y = Math.PI / 2;
+  car.steeringWheel.add(rim, box(0.01, 0.025, 0.2, mat.carbon, 0, 0, 0), box(0.01, 0.12, 0.025, mat.carbon, 0, -0.06, 0));
+  const column = new THREE.Group();  // the wheel turns about the column's axis (local x)
+  column.position.set(0.18, 0.55, 0);
+  column.rotation.z = -0.2;
+  column.add(car.steeringWheel);
+  shell.add(column);
+  // Camera mounts.
+  car.eye.position.set(-0.12, 0.86, 0);
+  car.nose.position.set(a + 0.15, 0.48, 0);
+  shell.add(car.eye, car.nose);
+
+  // Wheels hang from the root (no body roll) at x forward, z = -y (left = -z).
+  const corners = [[a, -v.track_front / 2], [a, v.track_front / 2], [-b, -v.track_rear / 2], [-b, v.track_rear / 2]];
+  for (const [x, z] of corners) {
+    const steer = new THREE.Group();
+    steer.position.set(x, r, z);
+    const spin = new THREE.Group();
+    const tire = cylinder(r, w, mat.tire, 28);
+    tire.rotation.x = Math.PI / 2;
+    const hub = cylinder(r * 0.62, w + 0.012, mat.rim, 18);
+    hub.rotation.x = Math.PI / 2;
+    const marker = box(r * 1.15, 0.035, w + 0.02, mat.white, 0, 0, 0);  // shows the rotation
+    spin.add(tire, hub, marker);
+    steer.add(spin);
+    car.root.add(steer);
+    car.wheels.push({ steer, spin, angle: 0 });
+    // Wishbones from the tub to the upright.
+    const inner = Math.sign(z) * 0.25;
+    for (const dy of [-0.06, 0.07]) {
+      car.root.add(rod(new THREE.Vector3(x + 0.12, r + dy, inner), new THREE.Vector3(x, r + dy, z - Math.sign(z) * w / 2), 0.012, mat.metal));
+      car.root.add(rod(new THREE.Vector3(x - 0.12, r + dy, inner), new THREE.Vector3(x, r + dy, z - Math.sign(z) * w / 2), 0.012, mat.metal));
+    }
+  }
+}
+buildCar(vehicle);
+
+// --- Track ------------------------------------------------------------------------
+let trackGroup = null;
+let trackGeneration = -1;
+let trackOutline = null;  // from hello: center/left/right [x, y] in vsim frame
+let tvCameras = [];
+const loader = new GLTFLoader();
+
+function base64ToBuffer(text) {
+  const bytes = atob(text);
+  const out = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) out[i] = bytes.charCodeAt(i);
+  return out.buffer;
+}
+
+function setTrackMesh(params) {
+  if (trackGroup) {
+    scene.remove(trackGroup);
+    trackGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+    trackGroup = null;
+  }
+  trackGeneration = params.generation;
+  grid.visible = !params.glb;
+  if (!params.glb) return;
+  loader.parse(base64ToBuffer(params.glb), "", (gltf) => {
+    trackGroup = gltf.scene;
+    trackGroup.traverse((o) => {
+      if (!o.isMesh) return;
+      o.receiveShadow = true;
+      const name = o.material.name || "";
+      o.castShadow = name.startsWith("cones");
+      if (name === "asphalt") { o.material.map = asphaltTexture; o.material.roughness = 0.95; }
+      if (name === "ground") { o.material.map = grassTexture; o.material.roughness = 1.0; }
+      o.material.needsUpdate = true;
+    });
+    scene.add(trackGroup);
+  }, (error) => toast(`트랙 3D 모델을 읽지 못했습니다: ${error.message || error}`, "error"));
+}
+
+// TV cameras: every ~45 m along the track, outside the right boundary.
+function placeTvCameras(outline) {
+  tvCameras = [];
+  if (!outline || outline.right.length < 2) return;
+  const n = outline.center.length;
+  let travelled = 0;
+  for (let i = 1; i < n; i++) {
+    const [x0, y0] = outline.center[i - 1], [x1, y1] = outline.center[i];
+    travelled += Math.hypot(x1 - x0, y1 - y0);
+    if (travelled < 45) continue;
+    travelled = 0;
+    const [cx, cy] = outline.center[i], [rx, ry] = outline.right[i];
+    const len = Math.hypot(rx - cx, ry - cy) || 1;
+    const out = 7;
+    tvCameras.push(new THREE.Vector3(rx + (rx - cx) / len * out, 3.5, -(ry + (ry - cy) / len * out)));
+  }
+}
+
+// --- Minimap ------------------------------------------------------------------------
+const mapCanvas = $("map-canvas");
+const mapCtx = mapCanvas.getContext("2d");
+let mapTransform = null;
+
+function prepareMap(outline) {
+  $("map").classList.toggle("hidden", !outline);
+  if (!outline) return;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of outline.left.concat(outline.right)) {
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+  }
+  const size = mapCanvas.width, pad = 16;
+  const scale = (size - 2 * pad) / Math.max(maxX - minX, maxY - minY, 1);
+  const ox = pad + (size - 2 * pad - (maxX - minX) * scale) / 2, oy = pad + (size - 2 * pad - (maxY - minY) * scale) / 2;
+  mapTransform = (x, y) => [ox + (x - minX) * scale, size - (oy + (y - minY) * scale)];
+}
+
+function drawMap(s) {
+  if (!trackOutline || !mapTransform) return;
+  const g = mapCtx;
+  g.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
+  g.lineJoin = "round";
+  g.strokeStyle = "rgba(255,255,255,0.75)";
+  g.lineWidth = 7;
+  g.beginPath();
+  trackOutline.center.forEach(([x, y], i) => { const [px, py] = mapTransform(x, y); i ? g.lineTo(px, py) : g.moveTo(px, py); });
+  if (trackOutline.closed) g.closePath();
+  g.stroke();
+  if (trackOutline.start) {
+    const [px, py] = mapTransform(trackOutline.start.x, trackOutline.start.y);
+    g.fillStyle = "#ffffff";
+    g.fillRect(px - 4, py - 4, 8, 8);
+  }
+  if (s) {
+    const [px, py] = mapTransform(s.x, s.y);
+    g.fillStyle = "#d7263d";
+    g.strokeStyle = "#ffffff";
+    g.lineWidth = 2;
+    g.beginPath();
+    g.arc(px, py, 7, 0, 2 * Math.PI);
+    g.fill();
+    g.stroke();
+  }
+}
+
+// --- Simulator connection -------------------------------------------------------
+let socket = null;
+let state = null;
+let stateTime = 0;  // performance.now() when `state` arrived
+let connectedOnce = false;
+
+function connect() {
+  socket = new WebSocket(wsUrl);
+  socket.onopen = () => { setConnected(true); connectedOnce = true; };
+  socket.onclose = () => { setConnected(false); setTimeout(connect, 1000); };
+  socket.onerror = () => socket.close();
+  socket.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    const p = message.params;
+    if (message.method === "hello") onHello(p);
+    else if (message.method === "state") onState(p);
+    else if (message.method === "track.mesh") setTrackMesh(p);
+    else if (message.method === "notice") toast(p.text, p.level);
+  };
+}
+
+function send(method, params = {}) {
+  if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ jsonrpc: "2.0", method, params }));
+}
+
+function setConnected(on) {
+  $("conn-dot").classList.toggle("on", on);
+  $("conn").textContent = on ? "연결됨" : "연결 끊김, 재시도 중";
+  $("connect-url").textContent = wsUrl;
+  $("connect-help").classList.toggle("hidden", on || !connectedOnceTimer);
+}
+let connectedOnceTimer = false;
+setTimeout(() => { connectedOnceTimer = true; if (!socket || socket.readyState !== WebSocket.OPEN) setConnected(false); }, 2500);
+
+function onHello(p) {
+  vehicle = Object.assign({}, vehicle, p.vehicle);
+  buildCar(vehicle);
+  $("scenario").textContent = p.scenario;
+  trackOutline = p.track || null;
+  $("track-name").textContent = trackOutline ? `${trackOutline.name} (${trackOutline.length.toFixed(0)} m)` : "없음";
+  $("laps").classList.toggle("hidden", !trackOutline);
+  prepareMap(trackOutline);
+  placeTvCameras(trackOutline);
+  const generation = p.track_generation ?? 0;
+  if (!trackOutline) setTrackMesh({ generation, glb: null });
+  else if (generation !== trackGeneration) send("track.mesh");
+  state = null;
+}
+
+const fmtTime = (t) => {
+  if (!t) return "-";
+  const m = Math.floor(t / 60), s = t - 60 * m;
+  return m ? `${m}:${s.toFixed(3).padStart(6, "0")}` : s.toFixed(3);
+};
+
+function onState(s) {
+  const now = performance.now();
+  if (pendingLatency !== null && s.throttle > 0.01 && !latencyArrived) latencyArrived = now;
+  state = s;
+  stateTime = now;
+  $("speed").firstChild.nodeValue = Math.round(s.speed * 3.6);
+  $("throttle-bar").firstChild.style.height = `${(s.throttle * 100).toFixed(0)}%`;
+  $("brake-bar").firstChild.style.height = `${(s.brake * 100).toFixed(0)}%`;
+  const steerDeg = (s.steer * 180) / Math.PI;
+  $("wheel-rot").setAttribute("transform", `rotate(${-steerDeg})`);
+  $("steer-deg").textContent = `${steerDeg.toFixed(0)}°`;
+  const power = s.power_elec !== undefined ? s.power_elec : s.power;
+  $("power").textContent = (power / 1000).toFixed(1);
+  $("regen").textContent = s.regen > 0.01 ? "회생" : "";
+  $("lat-g").textContent = (s.ay / 9.81).toFixed(2);
+  $("long-g").textContent = (s.ax / 9.81).toFixed(2);
+  $("soc").textContent = s.soc !== undefined ? `${(s.soc * 100).toFixed(1)}%` : "-";
+  $("motor-temp").textContent = s.motor_temp !== undefined ? s.motor_temp.toFixed(0) : "-";
+  $("rtf").textContent = s.rtf ? `${s.rtf.toFixed(2)}×` : "-";
+  const input = s.input || {};
+  $("input").textContent = s.wheel === undefined ? "-" : s.wheel > 0.5 ? (input.device || "휠") : "키보드";
+  if (trackOutline) {
+    $("lap-no").textContent = s.finished ? "완주" : `${(s.lap ?? 0) + 1}`;
+    $("lap-time").textContent = fmtTime(s.lap_time);
+    $("last-lap").textContent = fmtTime(s.last_lap);
+    $("last-lap").className = s.last_lap ? (s.last_lap_valid ? "" : "bad") : "";
+    $("best-lap").textContent = fmtTime(s.best_lap);
+    $("sector").textContent = s.sector !== undefined ? `S${s.sector + 1}` : "-";
+    $("lap-flag").textContent = s.off_track ? "트랙 이탈" : s.lap_valid === false ? "무효 랩" : "";
+    $("lap-flag").className = s.off_track || s.lap_valid === false ? "bad" : "";
+  }
+  $("overlay").textContent = s.paused ? "일시정지" : "";
+}
+
+// --- Keyboard -------------------------------------------------------------------
+const keys = { throttle: false, brake: false, left: false, right: false };
+const keyMap = { ArrowUp: "throttle", KeyW: "throttle", ArrowDown: "brake", KeyS: "brake",
+  ArrowLeft: "left", KeyA: "left", ArrowRight: "right", KeyD: "right" };
+const sendKeys = () => send("input.keys", keys);
+
+// Key -> screen latency: throttle key press until the first frame drawn from
+// a state with the throttle applied (simulator, network and rendering).
+let pendingLatency = null, latencyArrived = null;
+const latencies = [];
+
+window.addEventListener("keydown", (event) => {
+  const control = keyMap[event.code];
+  if (control) {
+    event.preventDefault();
+    if (!keys[control]) {
+      keys[control] = true;
+      if (control === "throttle" && (!state || state.throttle < 0.01)) { pendingLatency = performance.now(); latencyArrived = null; }
+      sendKeys();
+    }
+    return;
+  }
+  if (event.repeat) return;
+  if (event.code === "Space" || event.code === "KeyP") { event.preventDefault(); send("sim.toggle_pause"); }
+  else if (event.code === "KeyR") send("sim.reset");
+  else if (event.code === "KeyC") cycleCamera();
+  else if (event.code === "KeyH") document.querySelectorAll(".panel:not(#toast):not(#connect-help)").forEach((p) => p.style.visibility = p.style.visibility === "hidden" ? "" : "hidden");
+  else if (event.code === "KeyF") { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); }
+});
+window.addEventListener("keyup", (event) => {
+  const control = keyMap[event.code];
+  if (control) { keys[control] = false; sendKeys(); if (control === "throttle") pendingLatency = null; }
+});
+window.addEventListener("blur", () => { for (const k in keys) keys[k] = false; sendKeys(); });
+setInterval(sendKeys, 100);
+
+// --- Cameras -------------------------------------------------------------------------
+const cameraModes = ["chase", "cockpit", "nose", "tv", "top"];
+const cameraNames = { chase: "추적", cockpit: "콕핏", nose: "노즈", tv: "TV", top: "위" };
+let cameraMode = params.get("camera") || "chase";
+function cycleCamera() {
+  cameraMode = cameraModes[(cameraModes.indexOf(cameraMode) + 1) % cameraModes.length];
+  if (cameraMode === "tv" && !tvCameras.length) cycleCamera();
+  chaseInit = false;
+}
+let chaseInit = false;
+let chaseYaw = 0;
+
+function updateCamera(dt) {
+  const forward = new THREE.Vector3(1, 0, 0).applyQuaternion(car.root.quaternion);
+  const carPos = car.root.position;
+  car.helmet.visible = cameraMode !== "cockpit";
+  let fov = 60;
+  if (cameraMode === "chase") {
+    // Swings round behind the car with a lag in heading only, so the
+    // distance stays the same and the camera never cuts a corner.
+    const speed = state ? state.speed : 0;
+    const yaw = car.root.rotation.y;
+    const turn = Math.atan2(Math.sin(yaw - chaseYaw), Math.cos(yaw - chaseYaw));
+    chaseYaw = chaseInit ? chaseYaw + turn * (1 - Math.exp(-dt * 5)) : yaw;
+    chaseInit = true;
+    const back = new THREE.Vector3(Math.cos(chaseYaw), 0, -Math.sin(chaseYaw));
+    const distance = 5.0 + Math.min(speed, 40) * 0.03;
+    camera.position.copy(carPos).addScaledVector(back, -distance).add(new THREE.Vector3(0, 1.7, 0));
+    camera.lookAt(carPos.clone().addScaledVector(forward, 2.0).add(new THREE.Vector3(0, 0.5, 0)));
+    fov = 62 + Math.min(speed, 40) * 0.15;
+  } else if (cameraMode === "cockpit" || cameraMode === "nose") {
+    const mount = cameraMode === "cockpit" ? car.eye : car.nose;
+    mount.getWorldPosition(camera.position);
+    const q = new THREE.Quaternion();
+    mount.getWorldQuaternion(q);
+    camera.quaternion.copy(q).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, -Math.PI / 2, 0)));
+    camera.rotateX(cameraMode === "cockpit" ? -0.08 : -0.03);
+    fov = cameraMode === "cockpit" ? 75 : 70;
+  } else if (cameraMode === "tv") {
+    let best = tvCameras[0], bestD = Infinity;
+    for (const c of tvCameras) { const d = c.distanceToSquared(carPos); if (d < bestD) { bestD = d; best = c; } }
+    camera.position.copy(best);
+    camera.lookAt(carPos.x, 0.4, carPos.z);
+    fov = THREE.MathUtils.clamp(2 * Math.atan(5 / Math.sqrt(bestD)) * 180 / Math.PI, 6, 55);
+  } else {
+    camera.position.set(carPos.x, 55, carPos.z + 0.01);
+    camera.lookAt(carPos);
+    fov = 50;
+  }
+  if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+  $("camera-name").textContent = cameraNames[cameraMode];
+}
+
+// --- Frame loop --------------------------------------------------------------------
+let roll = 0, pitch = 0;
+let lastFrame = performance.now();
+let fpsFrames = 0, fpsStart = lastFrame;
+
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener("resize", resize);
+resize();
+
+function frame(now) {
+  const dt = Math.min(0.1, (now - lastFrame) / 1000);
+  lastFrame = now;
+  if (state) {
+    // States come at 60 Hz; dead-reckon to this frame (at most 50 ms) so
+    // high-refresh displays move smoothly.
+    const ahead = state.paused ? 0 : Math.min((now - stateTime) / 1000, 0.05);
+    const yaw = state.yaw + (state.yaw_rate || 0) * ahead;
+    const vx = state.vx ?? state.speed, vy = state.vy ?? 0;
+    const x = state.x + (vx * Math.cos(state.yaw) - vy * Math.sin(state.yaw)) * ahead;
+    const y = state.y + (vx * Math.sin(state.yaw) + vy * Math.cos(state.yaw)) * ahead;
+    car.root.position.set(x, 0, -y);
+    car.root.rotation.y = yaw;
+    // Body motion for the picture: ~1 deg roll and 0.6 deg pitch per g.
+    const blend = 1 - Math.exp(-dt / 0.08);
+    roll += blend * ((1.0 * Math.PI / 180) * (state.ay || 0) / 9.81 - roll);
+    pitch += blend * ((-0.6 * Math.PI / 180) * (state.ax || 0) / 9.81 - pitch);
+    car.body.rotation.set(roll, 0, -pitch, "YZX");
+    const delta = state.delta || 0;
+    const omega = (vx / vehicle.tire_radius) * (state.paused ? 0 : dt);
+    car.wheels.forEach((w, i) => {
+      w.steer.rotation.y = i < 2 ? delta : 0;
+      w.angle = (w.angle - omega) % (2 * Math.PI);
+      w.spin.rotation.z = w.angle;
+    });
+    car.steeringWheel.rotation.x = -(state.steer || 0);  // seen from the seat: left is counter-clockwise
+    sun.position.copy(car.root.position).add(sunOffset);
+    sun.target.position.copy(car.root.position);
+    drawMap({ x, y });
+  }
+  updateCamera(dt);
+  renderer.render(scene, camera);
+
+  if (latencyArrived !== null && pendingLatency !== null) {
+    latencies.push(performance.now() - pendingLatency);
+    if (latencies.length > 5) latencies.shift();
+    const mean = latencies.reduce((a, b) => a + b, 0) / latencies.length;
+    $("latency").textContent = `${latencies[latencies.length - 1].toFixed(0)} ms (평균 ${mean.toFixed(0)})`;
+    pendingLatency = latencyArrived = null;
+  }
+  fpsFrames++;
+  if (now - fpsStart > 500) {
+    $("fps").textContent = `${(fpsFrames * 1000 / (now - fpsStart)).toFixed(0)} fps`;
+    fpsFrames = 0;
+    fpsStart = now;
+  }
+  requestAnimationFrame(frame);
+}
+
+let toastTimer = null;
+function toast(text, level = "info") {
+  const t = $("toast");
+  t.textContent = text;
+  t.className = `panel ${level}`;
+  t.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.style.display = "none"), level === "error" ? 8000 : 4000);
+}
+
+connect();
+requestAnimationFrame(frame);
+window.vsimView = { scene, camera, car, get state() { return state; }, get trackLoaded() { return !!trackGroup; } };
+</script>
+</body>
+</html>

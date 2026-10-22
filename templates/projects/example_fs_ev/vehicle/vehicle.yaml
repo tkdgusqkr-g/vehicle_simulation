@@ -28,6 +28,7 @@ wheel:
 
 tire:
   model: simple                # simple | mf (.tir, M1 후반)
+  width_m: 0.19                # 트레드 폭 (3D 화면 표시용)
   rolling_resistance: 0.015
   relaxation_length_x_m: 0.10  # 과도 슬립
   relaxation_length_y_m: 0.25
