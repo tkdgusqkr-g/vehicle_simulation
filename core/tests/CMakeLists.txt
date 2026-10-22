@@ -11,6 +11,7 @@ add_executable(vsim_tests
   test_single_track.cpp
   test_tire.cpp
   test_track.cpp
+  test_track_mesh.cpp
   test_two_track.cpp)
 target_link_libraries(vsim_tests PRIVATE vsim_core GTest::gtest_main nlohmann_json::nlohmann_json)
 target_compile_definitions(vsim_tests PRIVATE VSIM_SOURCE_DIR="${PROJECT_SOURCE_DIR}")

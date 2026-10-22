@@ -42,6 +42,7 @@ add_library(vsim_core STATIC
   src/track/lap_timer.cpp
   src/track/speed_profile.cpp
   src/track/track.cpp
+  src/track/track_mesh.cpp
   src/util/paths.cpp
   "${CMAKE_CURRENT_BINARY_DIR}/generated/version.cpp")
 target_include_directories(vsim_core PUBLIC include)

@@ -9,6 +9,7 @@
 #include <csignal>
 #include <cstdint>
 #include <exception>
+#include <fstream>
 #include <iostream>
 #include <numbers>
 #include <optional>
@@ -34,6 +35,7 @@
 #endif
 #include "vsim/sim/simulation.hpp"
 #include "vsim/track/track.hpp"
+#include "vsim/track/track_mesh.hpp"
 #include "vsim/util/paths.hpp"
 #include "vsim/version.hpp"
 
@@ -53,6 +55,7 @@ struct Options {
   int port = 8765;
   std::string log_dir;
   std::string input_profiles;
+  std::string export_track;
   bool no_wheel = false;
   std::optional<double> duration;
   vsim::Scenario::Overrides overrides;
@@ -69,6 +72,7 @@ constexpr const char* kUsage = R"(usage: vsim-core --scenario <file.yaml> [optio
   --host <addr>        bind address (default 127.0.0.1; 0.0.0.0 for other machines)
   --no-wheel           do not look for a steering wheel (driver.type dil uses the keyboard)
   --input-profiles <d> wheel profile directory (default: config/input in the source tree)
+  --export-track-glb <file>  write the scenario's track as a 3D model (glTF binary) and exit
   --version            print the version and exit
 
 In realtime mode open ui/live/index.html in a browser to watch and drive.
@@ -122,6 +126,8 @@ std::optional<Options> parse_args(const std::vector<std::string>& args) {
       options.no_wheel = true;
     } else if (arg == "--input-profiles") {
       options.input_profiles = value();
+    } else if (arg == "--export-track-glb") {
+      options.export_track = value();
     } else if (arg == "--set") {
       const std::string& assignment = value();
       const auto eq = assignment.find('=');
@@ -263,7 +269,7 @@ json track_geometry(const vsim::Track& track) {
           {"sectors", sectors}};
 }
 
-std::string hello_message(const vsim::Simulation& sim) {
+std::string hello_message(const vsim::Simulation& sim, std::uint64_t track_generation) {
   const vsim::ParamTree& params = sim.scenario().params;
   json vehicle;
   vehicle["model"] = params.get_string("vehicle.model", "two_track");
@@ -282,7 +288,39 @@ std::string hello_message(const vsim::Simulation& sim) {
   hello["vehicle"] = vehicle;
   const std::shared_ptr<const vsim::Track> track = sim.track();
   hello["track"] = track ? track_geometry(*track) : json(nullptr);
+  hello["track_generation"] = track_generation;  // track.mesh fetches the 3D model for it
   return json{{"jsonrpc", "2.0"}, {"method", "hello"}, {"params", hello}}.dump();
+}
+
+std::string base64(const std::string& data) {
+  static constexpr char kDigits[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  out.reserve((data.size() + 2) / 3 * 4);
+  for (std::size_t i = 0; i < data.size(); i += 3) {
+    std::uint32_t chunk = static_cast<std::uint8_t>(data[i]) << 16;
+    if (i + 1 < data.size()) {
+      chunk |= static_cast<std::uint32_t>(static_cast<std::uint8_t>(data[i + 1])) << 8;
+    }
+    if (i + 2 < data.size()) {
+      chunk |= static_cast<std::uint8_t>(data[i + 2]);
+    }
+    out += kDigits[(chunk >> 18) & 63];
+    out += kDigits[(chunk >> 12) & 63];
+    out += i + 1 < data.size() ? kDigits[(chunk >> 6) & 63] : '=';
+    out += i + 2 < data.size() ? kDigits[chunk & 63] : '=';
+  }
+  return out;
+}
+
+// The track's 3D scenery as a glTF binary for the 3D views (null without a track).
+std::string track_mesh_message(const vsim::Simulation& sim, std::uint64_t generation) {
+  const std::shared_ptr<const vsim::Track> track = sim.track();
+  json params = {{"generation", generation}, {"glb", nullptr}};
+  if (track) {
+    params["name"] = track->name();
+    params["glb"] = base64(vsim::to_glb(vsim::make_track_mesh(*track)));
+  }
+  return json{{"jsonrpc", "2.0"}, {"method", "track.mesh"}, {"params", params}}.dump();
 }
 
 std::string notice(const std::string& level, const std::string& text) {
@@ -324,7 +362,8 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
   vsim::ApiServer server(options.port, options.host);
   StateStream stream;
   stream.resolve(sim.bus());
-  server.set_hello(hello_message(sim));
+  std::uint64_t track_generation = 1;
+  server.set_hello(hello_message(sim, track_generation));
   if (const auto error = server.start()) {
     std::cerr << "error: cannot listen on " << options.host << ":" << options.port << ": "
               << *error << "\n";
@@ -416,8 +455,9 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
           stream.resolve(sim.bus());
           rtf_sim_start = sim.time();
           lag = 0.0;
-          server.set_hello(hello_message(sim));
-          server.broadcast(hello_message(sim));
+          ++track_generation;
+          server.set_hello(hello_message(sim, track_generation));
+          server.broadcast(hello_message(sim, track_generation));
           const auto current = sim.track();
           const std::string name = current ? current->name() : std::string("(none)");
           server.broadcast(notice("info", "track: " + name));
@@ -430,6 +470,8 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
         } catch (const std::exception& error) {
           server.broadcast(notice("error", std::string("track rejected: ") + error.what()));
         }
+      } else if (method == "track.mesh") {
+        server.broadcast(track_mesh_message(sim, track_generation));
       } else if (method == "track.get") {
         const auto track = sim.track();
         server.broadcast(json{{"jsonrpc", "2.0"},
@@ -542,6 +584,21 @@ int main(int argc, char** argv) {
     vsim::Simulation sim(vsim::Scenario::load(vsim::path_from_utf8(options->scenario),
                                               options->overrides),
                          sim_options);
+
+    if (!options->export_track.empty()) {
+      const auto track = sim.track();
+      if (!track) {
+        throw std::invalid_argument("the scenario has no track (track.file or track.template)");
+      }
+      std::ofstream out(vsim::path_from_utf8(options->export_track), std::ios::binary);
+      out << vsim::to_glb(vsim::make_track_mesh(*track));
+      if (!out) {
+        throw std::runtime_error("cannot write " + options->export_track);
+      }
+      std::cout << "Track '" << track->name() << "' (" << track->length() << " m) written to "
+                << options->export_track << "\n";
+      return 0;
+    }
 
     const std::string mode = options->mode.empty()
                                  ? sim.scenario().params.get_string("time.mode", "realtime")

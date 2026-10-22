@@ -13,6 +13,7 @@
 
 #include "vsim/sim/simulation.hpp"
 #include "vsim/track/track.hpp"
+#include "vsim/track/track_mesh.hpp"
 #include "vsim/util/paths.hpp"
 #include "vsim/version.hpp"
 
@@ -126,7 +127,10 @@ sees it: the centerline spline resampled every ~0.25 m.
           },
           py::arg("x"), py::arg("y"), "(s, n) of the nearest centerline point; n is positive to the left.")
       .def("warnings", &vsim::Track::warnings)
-      .def("to_json", [](const vsim::Track& track) { return track.definition().to_json(); });
+      .def("to_json", [](const vsim::Track& track) { return track.definition().to_json(); })
+      .def(
+          "to_glb", [](const vsim::Track& track) { return py::bytes(vsim::to_glb(vsim::make_track_mesh(track))); },
+          "3D scenery (road, lines, cones, ground) as glTF binary bytes, y up.");
 
   py::class_<vsim::Simulation>(m, "Simulation", R"doc(
 One run of a scenario. Time advances in fixed steps of `dt`.
