@@ -1,0 +1,21 @@
+# FS 가속 시험: 출발선 0.3 m 뒤에서 풀 스로틀, 75 m 기록.
+name: acceleration
+project: ..
+seed: 1
+
+time:
+  dt: 0.001
+  mode: fast
+  t_end: 8
+
+track:
+  template: acceleration
+  start_distance_m: 0.3
+
+driver:
+  type: maneuver
+  throttle: {type: const, value: 1.0}
+
+logging:
+  rate_hz: 1000
+  signals: ["veh.*", "drv.*", "pt.*", "vcu.*", "track.*"]

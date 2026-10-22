@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "vsim/sim/simulation.hpp"
+#include "vsim/track/track.hpp"
 #include "vsim/util/paths.hpp"
 #include "vsim/version.hpp"
 
@@ -45,12 +46,87 @@ py::array_t<double> to_array(const std::vector<double>& values) {
   return array;
 }
 
+py::dict curve_arrays(const vsim::SampledCurve& curve) {
+  std::vector<double> s, x, y, heading, curvature;
+  for (const vsim::CurveSample& sample : curve.samples()) {
+    s.push_back(sample.s);
+    x.push_back(sample.x);
+    y.push_back(sample.y);
+    heading.push_back(sample.heading);
+    curvature.push_back(sample.curvature);
+  }
+  py::dict out;
+  out["s"] = to_array(s);
+  out["x"] = to_array(x);
+  out["y"] = to_array(y);
+  out["heading"] = to_array(heading);
+  out["curvature"] = to_array(curvature);
+  return out;
+}
+
 }  // namespace
 
 PYBIND11_MODULE(_vsim, m) {
   m.doc() = "C++ simulation core of vsim";
   m.attr("__version__") = vsim::version();
   m.attr("git_commit") = vsim::git_commit();
+
+  py::class_<vsim::Track>(m, "Track", R"doc(
+Track geometry from a *.track.json (or TUMFTM .csv) file, as the simulator
+sees it: the centerline spline resampled every ~0.25 m.
+
+    track = Track("templates/tracks/skidpad.track.json")
+    c = track.centerline()     # {"s", "x", "y", "heading", "curvature", "w_left", "w_right"}
+    track.length, track.warnings()
+)doc")
+      .def(py::init([](const std::filesystem::path& file) {
+             return vsim::Track(vsim::TrackDefinition::from_file(file));
+           }),
+           py::arg("file"))
+      .def_static(
+          "from_json", [](const std::string& text) { return vsim::Track(vsim::TrackDefinition::from_json(text)); },
+          py::arg("text"), "Builds a track from the text of a *.track.json file.")
+      .def_property_readonly("name", &vsim::Track::name)
+      .def_property_readonly("length", &vsim::Track::length)
+      .def_property_readonly("closed", &vsim::Track::closed)
+      .def_property_readonly("start_s", &vsim::Track::start_s)
+      .def_property_readonly("finish_s", &vsim::Track::finish_s)
+      .def_property_readonly("sector_s", &vsim::Track::sector_s)
+      .def(
+          "centerline",
+          [](const vsim::Track& track) {
+            py::dict out = curve_arrays(track);
+            std::vector<double> left, right;
+            for (const vsim::CurveSample& sample : track.samples()) {
+              const vsim::Track::Widths w = track.widths_at(sample.s);
+              left.push_back(w.left);
+              right.push_back(w.right);
+            }
+            out["w_left"] = to_array(left);
+            out["w_right"] = to_array(right);
+            return out;
+          },
+          "Centerline samples and boundary widths as numpy arrays.")
+      .def(
+          "line", [](const vsim::Track& track, const std::string& name) { return curve_arrays(track.line(name)); },
+          py::arg("name") = "center", "A driving line ('center' or one defined in the file) as numpy arrays.")
+      .def("line_names",
+           [](const vsim::Track& track) {
+             std::vector<std::string> names = {"center"};
+             for (const auto& line : track.definition().lines) {
+               names.push_back(line.name);
+             }
+             return names;
+           })
+      .def(
+          "project",
+          [](const vsim::Track& track, double x, double y) {
+            const vsim::CurveProjection p = track.project(x, y);
+            return py::make_tuple(p.s, p.n);
+          },
+          py::arg("x"), py::arg("y"), "(s, n) of the nearest centerline point; n is positive to the left.")
+      .def("warnings", &vsim::Track::warnings)
+      .def("to_json", [](const vsim::Track& track) { return track.definition().to_json(); });
 
   py::class_<vsim::Simulation>(m, "Simulation", R"doc(
 One run of a scenario. Time advances in fixed steps of `dt`.

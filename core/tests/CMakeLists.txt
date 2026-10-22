@@ -2,6 +2,7 @@ add_executable(vsim_tests
   test_driveline.cpp
   test_input.cpp
   test_integrator.cpp
+  test_lap.cpp
   test_params.cpp
   test_powertrain.cpp
   test_rng.cpp
@@ -9,6 +10,7 @@ add_executable(vsim_tests
   test_simulation.cpp
   test_single_track.cpp
   test_tire.cpp
+  test_track.cpp
   test_two_track.cpp)
 target_link_libraries(vsim_tests PRIVATE vsim_core GTest::gtest_main nlohmann_json::nlohmann_json)
 target_compile_definitions(vsim_tests PRIVATE VSIM_SOURCE_DIR="${PROJECT_SOURCE_DIR}")

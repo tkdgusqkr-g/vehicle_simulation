@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string_view>
 
 #include "vsim/sim/input_hub.hpp"
@@ -9,6 +10,8 @@
 #include "vsim/sim/signal_bus.hpp"
 
 namespace vsim {
+
+class Track;
 
 // Services handed to blocks and plant models during init.
 class Context {
@@ -23,6 +26,10 @@ class Context {
   std::uint64_t master_seed() const { return master_seed_; }
   double dt() const { return dt_; }  // plant step [s]
 
+  // The scenario's track, or nullptr when it has none.
+  const std::shared_ptr<const Track>& track() const { return track_; }
+  void set_track(std::shared_ptr<const Track> track) { track_ = std::move(track); }
+
   // Independent random stream; use a stable, unique name per source
   // (e.g. "sensors.imu_main.noise").
   Rng make_rng(std::string_view stream) const { return Rng(derive_seed(master_seed_, stream)); }
@@ -33,6 +40,7 @@ class Context {
   RealismConfig realism_;
   std::uint64_t master_seed_;
   double dt_;
+  std::shared_ptr<const Track> track_;
 };
 
 }  // namespace vsim

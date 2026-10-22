@@ -7,6 +7,7 @@
 #include <ctime>
 #include <fstream>
 #include <limits>
+#include <numbers>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -19,6 +20,8 @@
 #include "vsim/models/vehicle/two_track.hpp"
 #include "vsim/sim/context.hpp"
 #include "vsim/sim/integrator.hpp"
+#include "vsim/track/lap_timer.hpp"
+#include "vsim/track/track.hpp"
 #include "vsim/util/paths.hpp"
 #include "vsim/version.hpp"
 
@@ -101,6 +104,14 @@ struct Simulation::Impl {
   double max_speed = 0.0;
   bool finished = false;
 
+  struct Lap {
+    int number;
+    double time;
+    bool valid;
+  };
+  std::optional<SignalId> lap_id, last_lap_id, last_lap_valid_id;
+  std::vector<Lap> laps;
+
   void build(const Scenario& scenario, const SimulationOptions& options, InputHub& inputs);
   void step_once();
   void log();
@@ -120,6 +131,28 @@ void Simulation::Impl::build(const Scenario& scenario, const SimulationOptions& 
   const auto seed = static_cast<std::uint64_t>(params.get_int("seed", 0));
   context = std::make_unique<Context>(bus, inputs, RealismConfig::from_params(params), seed, dt);
 
+  // Track: from the options (editor), else track.file / track.template.
+  std::shared_ptr<const Track> track = options.track;
+  if (!track) {
+    std::string file = params.get_string("track.file", "");
+    if (file.empty() && params.has("track")) {
+      file = params.get_string("track");
+    }
+    if (const auto path = resolve_track_file(file, params.get_string("track.template", ""),
+                                             scenario.file.parent_path())) {
+      track = std::make_shared<Track>(TrackDefinition::from_file(*path));
+    }
+  }
+  context->set_track(track);
+  // Models see the start pose on the track unless the scenario sets one.
+  ParamTree effective = params;
+  if (track && !params.has("initial.x_m") && !params.has("initial.y_m")) {
+    const TrackPose pose = start_pose(*track, params.get_double("track.start_distance_m", 5.0));
+    effective.set("initial.x_m", std::to_string(pose.x));
+    effective.set("initial.y_m", std::to_string(pose.y));
+    effective.set("initial.yaw_deg", std::to_string(pose.yaw * 180.0 / std::numbers::pi));
+  }
+
   const std::string model = params.get_string("vehicle.model", "two_track");
   if (model == "two_track") {
     plant = std::make_unique<TwoTrackModel>();
@@ -129,14 +162,17 @@ void Simulation::Impl::build(const Scenario& scenario, const SimulationOptions& 
     throw std::invalid_argument("vehicle.model '" + model +
                                 "' is not available (expected two_track or single_track)");
   }
-  plant->init(params, *context);
+  plant->init(effective, *context);
 
-  // Execution order within a tick: driver, then VCU.
+  // Execution order within a tick: driver, VCU, then lap timing.
   std::vector<std::unique_ptr<Block>> ordered;
-  ordered.push_back(make_driver(params));
+  ordered.push_back(make_driver(effective));
   ordered.push_back(std::make_unique<ReferenceVcu>());
+  if (track) {
+    ordered.push_back(std::make_unique<LapTimer>());
+  }
   for (auto& block : ordered) {
-    block->init(params, *context);
+    block->init(effective, *context);
     const std::int64_t period_ticks = ticks_for(block->period(), dt, block->name());
     blocks.push_back({std::move(block), period_ticks});
   }
@@ -145,6 +181,9 @@ void Simulation::Impl::build(const Scenario& scenario, const SimulationOptions& 
   plant->initial_state(state);
   plant->write_outputs(0.0, state, bus);
   speed_id = bus.find("veh.chassis.speed");
+  lap_id = bus.find("track.lap");
+  last_lap_id = bus.find("track.last_lap");
+  last_lap_valid_id = bus.find("track.last_lap_valid");
 
   // Logging: union of the glob patterns, in declaration order.
   std::vector<std::string> patterns = params.get_string_list("logging.signals");
@@ -218,6 +257,9 @@ void Simulation::Impl::step_once() {
     distance += speed * dt;
     max_speed = std::max(max_speed, speed);
   }
+  if (lap_id && bus.get(*lap_id) > static_cast<double>(laps.size())) {
+    laps.push_back({static_cast<int>(laps.size()) + 1, bus.get(*last_lap_id), bus.get(*last_lap_valid_id) > 0.5});
+  }
   if (tick % log_period_ticks == 0) {
     log();
   }
@@ -247,6 +289,19 @@ void Simulation::Impl::finish() {
     summary["ticks"] = tick;
     summary["distance_m"] = distance;
     summary["max_speed_mps"] = max_speed;
+    if (const Track* track = context->track().get()) {
+      summary["track"] = track->name();
+      nlohmann::json laps_json = nlohmann::json::array();
+      double best = 0.0;
+      for (const Lap& lap : laps) {
+        laps_json.push_back({{"lap", lap.number}, {"time_s", lap.time}, {"valid", lap.valid}});
+        if (lap.valid && (best == 0.0 || lap.time < best)) {
+          best = lap.time;
+        }
+      }
+      summary["laps"] = laps_json;
+      summary["best_lap_s"] = best > 0.0 ? nlohmann::json(best) : nlohmann::json(nullptr);
+    }
     write_text(run_path / "summary.json", summary.dump(2) + "\n");
   }
   if (mcap) {
@@ -300,5 +355,12 @@ void Simulation::reset() {
 }
 
 void Simulation::finish() { impl_->finish(); }
+
+std::shared_ptr<const Track> Simulation::track() const { return impl_->context->track(); }
+
+void Simulation::set_track(std::shared_ptr<const Track> track) {
+  options_.track = std::move(track);
+  reset();
+}
 
 }  // namespace vsim

@@ -2,9 +2,11 @@
 
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include "vsim/driver/profile.hpp"
 #include "vsim/sim/block.hpp"
+#include "vsim/track/track.hpp"
 
 namespace vsim {
 
@@ -95,7 +97,41 @@ class DilDriver final : public DriverBlock {
   SignalId wheel_out_ = 0;
 };
 
-// Builds the driver named by driver.type (dil | keyboard | maneuver | external).
+// Autonomous driver (design doc §9.6): pure pursuit steering on a track line
+// with speed-dependent lookahead, PI speed control on a quasi-steady-state
+// speed profile (or a constant target speed). Needs a track.
+//
+//   driver: {type: pursuit, line: racing,          # default: first line of the track, else center
+//            lookahead: {min_m: 2.5, gain_s: 0.12, max_m: 12}, steer_rate_deg_per_s: 800,
+//            profile: {lateral_g: 1.3, accel_g: 0.9, brake_g: 1.2, max_kph: 100},
+//            speed_kph: 40}                         # optional: constant speed instead of the profile
+class PursuitDriver final : public DriverBlock {
+ public:
+  std::string_view name() const override { return "driver.pursuit"; }
+  void step(double t, SignalBus& bus) override;
+
+  const SampledCurve& line() const { return line_; }
+  const std::vector<double>& speed_profile() const { return target_; }
+
+ private:
+  void init_driver(const ParamTree& params, Context& ctx) override;
+
+  SampledCurve line_;
+  std::vector<double> target_;  // [m/s] per line sample
+  double wheelbase_ = 1.5, cg_to_rear_ = 0.7, steering_ratio_ = 4.5;
+  double lookahead_min_ = 2.5, lookahead_gain_ = 0.12, lookahead_max_ = 12.0;
+  double preview_ = 0.3;  // [s] look ahead on the speed profile
+  double steer_rate_ = 0.0;  // [rad/s] at the steering wheel, like a driver's hands
+  DriverCommand command_;
+  double kp_ = 0.6, ki_ = 0.4;
+  double integral_ = 0.0;
+  bool first_ = true;
+  double s_ = 0.0;  // position on the line
+  SignalId x_in_ = 0, y_in_ = 0, yaw_in_ = 0, speed_in_ = 0;
+  SignalId target_out_ = 0, lateral_out_ = 0;
+};
+
+// Builds the driver named by driver.type (dil | keyboard | maneuver | pursuit | external).
 std::unique_ptr<DriverBlock> make_driver(const ParamTree& params);
 
 }  // namespace vsim

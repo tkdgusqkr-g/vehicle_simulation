@@ -1,0 +1,67 @@
+{
+ "schema_version": 1,
+ "name": "acceleration 75 m",
+ "closed": false,
+ "points": [
+  {
+   "x": -5.0,
+   "y": 0.0,
+   "z": 0.0,
+   "w_left": 2.5,
+   "w_right": 2.5,
+   "bank_deg": 0.0
+  },
+  {
+   "x": 0.0,
+   "y": 0.0,
+   "z": 0.0,
+   "w_left": 2.5,
+   "w_right": 2.5,
+   "bank_deg": 0.0
+  },
+  {
+   "x": 25.0,
+   "y": 0.0,
+   "z": 0.0,
+   "w_left": 2.5,
+   "w_right": 2.5,
+   "bank_deg": 0.0
+  },
+  {
+   "x": 50.0,
+   "y": 0.0,
+   "z": 0.0,
+   "w_left": 2.5,
+   "w_right": 2.5,
+   "bank_deg": 0.0
+  },
+  {
+   "x": 75.0,
+   "y": 0.0,
+   "z": 0.0,
+   "w_left": 2.5,
+   "w_right": 2.5,
+   "bank_deg": 0.0
+  },
+  {
+   "x": 125.0,
+   "y": 0.0,
+   "z": 0.0,
+   "w_left": 2.5,
+   "w_right": 2.5,
+   "bank_deg": 0.0
+  },
+  {
+   "x": 175.0,
+   "y": 0.0,
+   "z": 0.0,
+   "w_left": 2.5,
+   "w_right": 2.5,
+   "bank_deg": 0.0
+  }
+ ],
+ "start_point": 1,
+ "finish_point": 4,
+ "sector_points": [],
+ "lines": []
+}

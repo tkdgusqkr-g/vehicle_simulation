@@ -11,12 +11,17 @@
 
 namespace vsim {
 
+class Track;
+
 struct SimulationOptions {
   // Base directory for run outputs; each run gets its own subdirectory.
   // Empty: nothing is written to disk.
   std::filesystem::path log_dir;
   // Keep logged signals in memory (Python access, tests).
   bool record = true;
+  // Replaces the scenario's track (track.file / track.template), e.g. one
+  // sent from the track editor.
+  std::shared_ptr<const Track> track;
 };
 
 // Owns one run of a scenario: the signal bus, the plant, the discrete blocks
@@ -57,6 +62,11 @@ class Simulation {
   void reset();
   // Writes the run summary and closes log files. Safe to call twice.
   void finish();
+
+  // The track in use (nullptr without one).
+  std::shared_ptr<const Track> track() const;
+  // Uses `track` from now on (nullptr: back to the scenario's) and resets.
+  void set_track(std::shared_ptr<const Track> track);
 
  private:
   struct Impl;
