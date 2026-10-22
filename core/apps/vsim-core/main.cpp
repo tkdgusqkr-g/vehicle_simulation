@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
+#include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <chrono>
@@ -59,6 +61,7 @@ struct Options {
   std::string export_track;
   std::string link_name = vsim_link::kStateName;
   bool no_wheel = false;
+  bool virtual_wheel = false;
   bool no_link = false;
   std::optional<double> duration;
   vsim::Scenario::Overrides overrides;
@@ -77,6 +80,7 @@ constexpr const char* kUsage = R"(usage: vsim-core --scenario <file.yaml> [optio
   --no-link            do not publish to shared memory (the Unreal viewer reads it)
   --link-name <name>   shared-memory name (default vsim_state_v1)
   --input-profiles <d> wheel profile directory (default: config/input in the source tree)
+  --virtual-wheel      add a virtual steering wheel driven by input.virtual (UI tests)
   --export-track-glb <file>  write the scenario's track as a 3D model (glTF binary) and exit
   --version            print the version and exit
 
@@ -129,6 +133,8 @@ std::optional<Options> parse_args(const std::vector<std::string>& args) {
       options.host = value();
     } else if (arg == "--no-wheel") {
       options.no_wheel = true;
+    } else if (arg == "--virtual-wheel") {
+      options.virtual_wheel = true;
     } else if (arg == "--no-link") {
       options.no_link = true;
     } else if (arg == "--link-name") {
@@ -342,6 +348,55 @@ std::string notice(const std::string& level, const std::string& text) {
   return json{{"jsonrpc", "2.0"}, {"method", "notice"}, {"params", {{"level", level}, {"text", text}}}}.dump();
 }
 
+#ifdef VSIM_HAS_SDL
+// Wheel profile as JSON with the same keys as the YAML file, so the
+// calibration page can edit it and send it back (JSON is YAML).
+json profile_json(const vsim::WheelProfile& p) {
+  const auto pedal = [](const vsim::PedalAxis& a) {
+    return json{{"axis", a.axis}, {"released", a.released}, {"pressed", a.pressed}, {"deadzone", a.deadzone},
+                {"gamma", a.gamma}};
+  };
+  json usb_ids = json::array();
+  for (const auto& [vendor, product] : p.usb_ids) {
+    char id[16];
+    std::snprintf(id, sizeof id, "%04x:%04x", vendor, product);
+    usb_ids.push_back(id);
+  }
+  return {{"name", p.name},
+          {"priority", p.priority},
+          {"match", {{"names", p.match_names}, {"usb_ids", usb_ids}}},
+          {"steer", {{"axis", p.steer_axis}, {"range_deg", p.steer_range_deg}, {"center", p.steer_center},
+                     {"invert", p.steer_invert}}},
+          {"pedals", {{"throttle", pedal(p.throttle)}, {"brake", pedal(p.brake)}, {"clutch", pedal(p.clutch)}}},
+          {"buttons", {{"reset", p.button_reset}, {"pause", p.button_pause}}},
+          {"ffb", {{"enabled", p.ffb_enabled},
+                   {"invert", p.ffb.invert},
+                   {"gain", p.ffb.gain},
+                   {"max_torque_nm", p.ffb.max_torque},
+                   {"damping_nm_s_per_rad", p.ffb.damping},
+                   {"friction_nm", p.ffb.friction},
+                   {"end_stop_nm_per_rad", p.ffb.end_stop},
+                   {"timeout_s", p.ffb.timeout},
+                   {"fade_s", p.ffb.fade_time},
+                   {"update_hz", p.ffb.update_hz}}}};
+}
+
+std::string profile_file_name(const std::string& name) {
+  std::string file;
+  for (const unsigned char c : name) {
+    if (std::isalnum(c)) {
+      file += static_cast<char>(std::tolower(c));
+    } else if (!file.empty() && file.back() != '_') {
+      file += '_';
+    }
+  }
+  while (!file.empty() && file.back() == '_') {
+    file.pop_back();
+  }
+  return (file.empty() ? std::string("wheel") : file) + ".yaml";
+}
+#endif
+
 void print_summary(const vsim::Simulation& sim, double wall_seconds) {
   const auto speed_id = sim.bus().find("veh.chassis.speed");
   std::cout << "sim time   " << sim.time() << " s\n";
@@ -397,14 +452,15 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
 #ifdef VSIM_HAS_SDL
   // Steering wheel and force feedback for the driver-in-the-loop driver.
   std::unique_ptr<vsim::InputService> wheel_service;
+  std::filesystem::path profile_dir = options.input_profiles.empty() ? vsim::find_resource_dir("config/input")
+                                                                     : vsim::path_from_utf8(options.input_profiles);
   if (!options.no_wheel && sim.scenario().params.get_string("driver.type", "external") == "dil") {
     vsim::InputService::Options input;
-    const std::filesystem::path dir = options.input_profiles.empty()
-                                          ? vsim::find_resource_dir("config/input")
-                                          : vsim::path_from_utf8(options.input_profiles);
+    const std::filesystem::path& dir = profile_dir;
     if (!dir.empty()) {
       input.profiles = vsim::WheelProfile::load_directory(dir);
     }
+    input.virtual_wheel = options.virtual_wheel;
     wheel_service = std::make_unique<vsim::InputService>(sim.inputs(), std::move(input));
     if (const auto error = wheel_service->start()) {
       std::cerr << "warning: steering wheel input unavailable: " << *error << "\n";
@@ -416,6 +472,21 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
     }
   }
   vsim::InputService::Status wheel_status;
+  if (profile_dir.empty()) {
+    profile_dir = std::filesystem::current_path() / "config" / "input";  // where a saved profile goes
+  }
+  const auto send_profile = [&] {
+    json message = {{"available", wheel_service != nullptr}, {"dir", vsim::path_to_utf8(profile_dir)}};
+    if (wheel_service) {
+      const vsim::InputService::Status status = wheel_service->status();
+      message["profile"] = profile_json(wheel_service->profile());
+      message["status"] = {{"connected", status.connected},       {"device", status.device},
+                           {"profile", status.profile},           {"force_feedback", status.force_feedback},
+                           {"ffb_error", status.ffb_error},       {"calibrated", status.calibrated}};
+    }
+    server.broadcast(json{{"jsonrpc", "2.0"}, {"method", "input.profile"}, {"params", message}}.dump());
+  };
+  auto raw_watch_until = Clock::time_point{};
 #endif
   vsim::WheelState last_wheel;
 
@@ -477,56 +548,110 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
       }
       const std::string method = message.value("method", "");
       const json params = message.value("params", json::object());
-      if (method == "input.keys") {
-        browser_keys.throttle = params.value("throttle", false);
-        browser_keys.brake = params.value("brake", false);
-        browser_keys.left = params.value("left", false);
-        browser_keys.right = params.value("right", false);
-        browser_keys.stamp = Clock::now();
-        last_keys = browser_keys.stamp;
-      } else if (method == "sim.reset") {
-        sim.reset();
-        after_reset();
-      } else if (method == "sim.pause") {
-        paused = true;
-      } else if (method == "sim.resume") {
-        paused = false;
-      } else if (method == "sim.toggle_pause") {
-        paused = !paused;
-      } else if (method == "track.set" || method == "track.reset") {
-        // A track from the editor (track.set) or back to the scenario's.
-        try {
-          std::shared_ptr<const vsim::Track> track;
-          if (method == "track.set") {
-            track = std::make_shared<const vsim::Track>(
-                vsim::TrackDefinition::from_json(params.value("track", json::object()).dump()));
-          }
-          sim.set_track(std::move(track));
+      // A bad request must not stop the simulation.
+      try {
+        if (method == "input.keys") {
+          browser_keys.throttle = params.value("throttle", false);
+          browser_keys.brake = params.value("brake", false);
+          browser_keys.left = params.value("left", false);
+          browser_keys.right = params.value("right", false);
+          browser_keys.stamp = Clock::now();
+          last_keys = browser_keys.stamp;
+        } else if (method == "sim.reset") {
+          sim.reset();
           after_reset();
-          publish_track();
-          ++track_generation;
-          server.set_hello(hello_message(sim, track_generation));
-          server.broadcast(hello_message(sim, track_generation));
-          const auto current = sim.track();
-          const std::string name = current ? current->name() : std::string("(none)");
-          server.broadcast(notice("info", "track: " + name));
-          std::cout << "Track: " << name << "\n";
-          if (current) {
-            for (const std::string& warning : current->warnings()) {
-              server.broadcast(notice("warning", warning));
+        } else if (method == "sim.pause") {
+          paused = true;
+        } else if (method == "sim.resume") {
+          paused = false;
+        } else if (method == "sim.toggle_pause") {
+          paused = !paused;
+        } else if (method == "track.set" || method == "track.reset") {
+          // A track from the editor (track.set) or back to the scenario's.
+          try {
+            std::shared_ptr<const vsim::Track> track;
+            if (method == "track.set") {
+              track = std::make_shared<const vsim::Track>(
+                  vsim::TrackDefinition::from_json(params.value("track", json::object()).dump()));
             }
+            sim.set_track(std::move(track));
+            after_reset();
+            publish_track();
+            ++track_generation;
+            server.set_hello(hello_message(sim, track_generation));
+            server.broadcast(hello_message(sim, track_generation));
+            const auto current = sim.track();
+            const std::string name = current ? current->name() : std::string("(none)");
+            server.broadcast(notice("info", "track: " + name));
+            std::cout << "Track: " << name << "\n";
+            if (current) {
+              for (const std::string& warning : current->warnings()) {
+                server.broadcast(notice("warning", warning));
+              }
+            }
+          } catch (const std::exception& error) {
+            server.broadcast(notice("error", std::string("track rejected: ") + error.what()));
           }
-        } catch (const std::exception& error) {
-          server.broadcast(notice("error", std::string("track rejected: ") + error.what()));
+  #ifdef VSIM_HAS_SDL
+        } else if (method == "input.watch") {
+          raw_watch_until = Clock::now() + std::chrono::seconds(3);
+        } else if (method == "input.profile.get") {
+          send_profile();
+        } else if (method == "input.profile.apply") {
+          if (!wheel_service) {
+            server.broadcast(notice("error", "steering wheel input is off: run a driver.type dil scenario without --no-wheel"));
+            continue;
+          }
+          try {
+            vsim::WheelProfile profile = vsim::WheelProfile::from_params(
+                vsim::ParamTree::from_yaml_string(params.value("profile", json::object()).dump()));
+            if (params.value("save", false)) {
+              std::filesystem::create_directories(profile_dir);
+              const std::filesystem::path file = profile_dir / profile_file_name(profile.name);
+              std::ofstream out(file);
+              out << profile.to_yaml();
+              if (!out) {
+                throw std::runtime_error("cannot write " + vsim::path_to_utf8(file));
+              }
+              server.broadcast(notice("info", "profile saved: " + vsim::path_to_utf8(file)));
+              std::cout << "Wheel profile saved: " << vsim::path_to_utf8(file) << "\n";
+            } else {
+              server.broadcast(notice("info", "profile applied (not saved): " + profile.name));
+            }
+            wheel_service->apply_profile(std::move(profile));
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));  // let the input thread take it
+            send_profile();
+          } catch (const std::exception& error) {
+            server.broadcast(notice("error", std::string("profile rejected: ") + error.what()));
+          }
+        } else if (method == "input.ffb_test") {
+          if (wheel_service) {
+            wheel_service->test_force(params.value("level", 0.0), params.value("seconds", 0.5));
+          }
+        } else if (method == "input.virtual") {
+          if (wheel_service) {
+            std::vector<int> axes;
+            std::vector<std::uint8_t> buttons;
+            for (const auto& v : params.value("axes", json::array())) {
+              axes.push_back(v.get<int>());
+            }
+            for (const auto& v : params.value("buttons", json::array())) {
+              buttons.push_back(v.is_boolean() ? v.get<bool>() : v.get<int>() != 0);
+            }
+            wheel_service->set_virtual(axes, buttons);
+          }
+  #endif
+        } else if (method == "track.mesh") {
+          server.broadcast(track_mesh_message(sim, track_generation));
+        } else if (method == "track.get") {
+          const auto track = sim.track();
+          server.broadcast(json{{"jsonrpc", "2.0"},
+                                {"method", "track.definition"},
+                                {"params", {{"track", track ? json::parse(track->definition().to_json()) : json(nullptr)}}}}
+                               .dump());
         }
-      } else if (method == "track.mesh") {
-        server.broadcast(track_mesh_message(sim, track_generation));
-      } else if (method == "track.get") {
-        const auto track = sim.track();
-        server.broadcast(json{{"jsonrpc", "2.0"},
-                              {"method", "track.definition"},
-                              {"params", {{"track", track ? json::parse(track->definition().to_json()) : json(nullptr)}}}}
-                             .dump());
+      } catch (const std::exception& error) {
+        server.broadcast(notice("error", method + ": " + error.what()));
       }
     }
 
@@ -638,6 +763,18 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
         input["ffb_torque"] = wheel_status.ffb_torque;
         input["ffb_clipping"] = wheel_status.ffb_clipping;
         input["ffb_suspended"] = wheel_status.ffb_suspended;
+      }
+      if (now < raw_watch_until) {
+        json raw = {{"available", wheel_service != nullptr}};
+        if (wheel_service) {
+          const vsim::InputService::RawInput r = wheel_service->raw();
+          raw.update({{"connected", r.connected}, {"device", r.device},   {"vendor", r.vendor},
+                      {"product", r.product},     {"axes", r.axes},       {"buttons", r.buttons},
+                      {"steer", wheel.steer},     {"throttle", wheel.throttle}, {"brake", wheel.brake},
+                      {"clutch", wheel.clutch},   {"force_feedback", wheel_status.force_feedback},
+                      {"ffb_torque", wheel_status.ffb_torque}});
+        }
+        server.broadcast(json{{"jsonrpc", "2.0"}, {"method", "input.raw"}, {"params", raw}}.dump());
       }
 #endif
       server.broadcast(stream.message(sim, paused, rtf, {{"input", input}}));

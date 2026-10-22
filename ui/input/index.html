@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vsim 입력 보정</title>
+<style>
+  :root {
+    --bg: #12151a;
+    --panel: #181c22;
+    --panel-2: #1f242c;
+    --border: #2c3440;
+    --text: #e6e9ee;
+    --muted: #8a94a3;
+    --accent: #4fb3ff;
+    --good: #3ecf8e;
+    --bad: #ff5c5c;
+    --warn: #ffb347;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; font-size: 14px; }
+  header { display: flex; align-items: center; gap: 14px; padding: 12px 20px; border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--bad); }
+  .dot.on { background: var(--good); }
+  .muted { color: var(--muted); }
+  main { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.1fr); gap: 16px; padding: 16px 20px;
+    max-width: 1300px; margin: 0 auto; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  h2 { font-size: 14px; margin: 0 0 10px; color: var(--muted); font-weight: 600; letter-spacing: 0.3px; }
+  .axis { display: grid; grid-template-columns: 54px 1fr 112px; align-items: center; gap: 8px; margin: 5px 0;
+    font-variant-numeric: tabular-nums; }
+  .axis .track { position: relative; height: 14px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
+  .axis .track .mid { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--border); }
+  .axis .track .fill { position: absolute; top: 0; bottom: 0; background: var(--accent); }
+  .axis.active .track .fill { background: var(--warn); }
+  .axis .tag { font-size: 11px; color: var(--good); }
+  .buttons { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+  .buttons span { width: 30px; height: 24px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted); }
+  .buttons span.on { background: var(--accent); color: #000; border-color: var(--accent); }
+  .mapped { display: grid; grid-template-columns: 90px 1fr 70px; gap: 8px; align-items: center; margin: 6px 0;
+    font-variant-numeric: tabular-nums; }
+  .bar { height: 12px; background: var(--panel-2); border-radius: 3px; position: relative; overflow: hidden; }
+  .bar div { position: absolute; top: 0; bottom: 0; left: 0; background: var(--good); }
+  .bar.brake div { background: var(--bad); }
+  .bar.steer div { background: var(--accent); }
+  #step-title { font-size: 18px; font-weight: 600; margin: 4px 0 8px; color: var(--text); }
+  #step-body { line-height: 1.7; min-height: 70px; }
+  #step-result { margin-top: 10px; min-height: 22px; font-variant-numeric: tabular-nums; }
+  .good { color: var(--good); }
+  .bad { color: var(--bad); }
+  .warn { color: var(--warn); }
+  .actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+    padding: 7px 14px; font: inherit; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #041018; border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .progress { display: flex; gap: 4px; margin-bottom: 10px; }
+  .progress span { flex: 1; height: 4px; border-radius: 2px; background: var(--panel-2); }
+  .progress span.done { background: var(--good); }
+  .progress span.now { background: var(--accent); }
+  .form { display: grid; grid-template-columns: 170px 1fr 70px; gap: 8px 10px; align-items: center; }
+  .form input[type=text], .form input[type=number] { background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 5px; padding: 5px 8px; font: inherit; width: 100%; }
+  .form input[type=range] { width: 100%; }
+  .form output { font-variant-numeric: tabular-nums; text-align: right; }
+  pre { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 12px;
+    max-height: 220px; overflow: auto; }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); display: none; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; max-width: 80vw; }
+  #toast.error { border-color: var(--bad); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>입력 보정</h1>
+  <span><span id="conn-dot" class="dot"></span><span id="conn">연결 중…</span></span>
+  <span class="muted" id="device-line"></span>
+  <span style="flex:1"></span>
+  <a href="../live/index.html">라이브 뷰</a>
+  <a href="../view3d/index.html">3D 화면</a>
+</header>
+
+<main>
+  <div>
+    <section>
+      <h2>장치 원시 입력</h2>
+      <div id="raw-note" class="muted">vsim-core를 <code>driver.type: dil</code> 시나리오(예: drive.yaml)로 실행하세요.</div>
+      <div id="axes"></div>
+      <div class="buttons" id="buttons"></div>
+    </section>
+    <section style="margin-top:16px">
+      <h2>보정 결과로 본 입력 (적용 전 미리보기)</h2>
+      <div class="mapped"><span>핸들</span><div class="bar steer"><div id="m-steer"></div></div><span id="m-steer-v">-</span></div>
+      <div class="mapped"><span>가속</span><div class="bar"><div id="m-throttle"></div></div><span id="m-throttle-v">-</span></div>
+      <div class="mapped"><span>브레이크</span><div class="bar brake"><div id="m-brake"></div></div><span id="m-brake-v">-</span></div>
+      <div class="mapped"><span>클러치</span><div class="bar"><div id="m-clutch"></div></div><span id="m-clutch-v">-</span></div>
+      <div class="muted" id="sim-line" style="margin-top:8px"></div>
+    </section>
+  </div>
+
+  <div>
+    <section>
+      <div class="progress" id="progress"></div>
+      <h2 id="step-count"></h2>
+      <div id="step-title"></div>
+      <div id="step-body"></div>
+      <div id="step-result"></div>
+      <div class="actions" id="step-actions"></div>
+    </section>
+    <section style="margin-top:16px">
+      <h2>프로필</h2>
+      <div class="form">
+        <label for="f-name">이름</label><input type="text" id="f-name"><span></span>
+        <label for="f-range">핸들 회전 범위 (°)</label><input type="number" id="f-range" min="90" max="2520" step="10"><span class="muted">락-투-락</span>
+        <label for="f-gain">FFB 배율</label><input type="range" id="f-gain" min="0" max="2" step="0.05"><output id="o-gain"></output>
+        <label for="f-max">최대 토크 (N·m)</label><input type="range" id="f-max" min="0.5" max="25" step="0.1"><output id="o-max"></output>
+        <label for="f-damping">감쇠 (N·m·s/rad)</label><input type="range" id="f-damping" min="0" max="0.3" step="0.005"><output id="o-damping"></output>
+        <label for="f-friction">마찰 (N·m)</label><input type="range" id="f-friction" min="0" max="0.5" step="0.01"><output id="o-friction"></output>
+        <label for="f-ffb">FFB 사용</label><span><input type="checkbox" id="f-ffb"> <label for="f-invert">방향 반전</label> <input type="checkbox" id="f-invert"></span><span></span>
+      </div>
+      <div class="actions">
+        <button id="b-load">현재 프로필 불러오기</button>
+        <button id="b-apply">적용 (저장 안 함)</button>
+        <button id="b-save" class="primary">적용하고 저장</button>
+      </div>
+      <div class="muted" id="save-dir" style="margin-top:8px"></div>
+      <details style="margin-top:10px"><summary class="muted">프로필 내용</summary><pre id="profile-json"></pre></details>
+    </section>
+  </div>
+</main>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const wsUrl = params.get("ws") || `ws://${location.hostname || "127.0.0.1"}:8765`;
+
+// --- Profile model (same keys as config/input/*.yaml) --------------------------
+const defaultProfile = () => ({
+  name: "my wheel", priority: 10, match: { names: [], usb_ids: [] },
+  steer: { axis: 0, range_deg: 900, center: 0, invert: true },
+  pedals: {
+    throttle: { axis: 1, released: 32767, pressed: -32768, deadzone: 0.02, gamma: 1 },
+    brake: { axis: 2, released: 32767, pressed: -32768, deadzone: 0.02, gamma: 1 },
+    clutch: { axis: 3, released: 32767, pressed: -32768, deadzone: 0.02, gamma: 1 },
+  },
+  buttons: { reset: -1, pause: -1 },
+  ffb: { enabled: true, invert: false, gain: 0.25, max_torque_nm: 2.5, damping_nm_s_per_rad: 0.04, friction_nm: 0.05,
+    end_stop_nm_per_rad: 20, timeout_s: 0.1, fade_s: 0.5, update_hz: 500 },
+});
+let profile = defaultProfile();
+let raw = null;          // latest input.raw
+let serverStatus = null;
+let profileDir = "";
+
+// Same formulas as WheelProfile::steer_angle and PedalAxis::value.
+function steerAngle(rawValue, p = profile) {
+  const half = 0.5 * p.steer.range_deg * Math.PI / 180;
+  const angle = (rawValue - p.steer.center) / 32768 * half;
+  return p.steer.invert ? -angle : angle;
+}
+function pedalValue(rawValue, pedal) {
+  if (pedal.axis < 0 || rawValue === undefined) return 0;
+  const travel = (rawValue - pedal.released) / (pedal.pressed - pedal.released);
+  const active = Math.min(1, Math.max(0, (travel - pedal.deadzone) / (1 - 2 * pedal.deadzone)));
+  return pedal.gamma === 1 ? active : Math.pow(active, pedal.gamma);
+}
+
+// --- Connection ------------------------------------------------------------------
+let socket = null;
+function connect() {
+  socket = new WebSocket(wsUrl);
+  socket.onopen = () => { setConnected(true); send("input.watch"); send("input.profile.get"); };
+  socket.onclose = () => { setConnected(false); setTimeout(connect, 1000); };
+  socket.onerror = () => socket.close();
+  socket.onmessage = (event) => {
+    const m = JSON.parse(event.data);
+    if (m.method === "input.raw") onRaw(m.params);
+    else if (m.method === "input.profile") onProfile(m.params);
+    else if (m.method === "notice") toast(m.params.text, m.params.level);
+    else if (m.method === "state") $("sim-line").textContent =
+      `시뮬레이션 ${m.params.paused ? "일시정지" : "진행 중"} · ${m.params.t.toFixed(1)} s`;
+  };
+}
+function send(method, p = {}) {
+  if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ jsonrpc: "2.0", method, params: p }));
+}
+function setConnected(on) {
+  $("conn-dot").classList.toggle("on", on);
+  $("conn").textContent = on ? "연결됨" : `연결 끊김 (${wsUrl})`;
+}
+setInterval(() => send("input.watch"), 1000);
+
+function onProfile(p) {
+  profileDir = p.dir || "";
+  $("save-dir").textContent = profileDir ? `저장 위치: ${profileDir}` : "";
+  serverStatus = p.status || null;
+  if (!p.available) {
+    $("raw-note").innerHTML = "휠 입력이 꺼져 있습니다. <code>driver.type: dil</code> 시나리오를 <code>--no-wheel</code> 없이 실행하세요.";
+  }
+  if (p.profile && !wizard.touched) {
+    profile = structuredClone(p.profile);
+    fillForm();
+  }
+  updateDeviceLine();
+}
+
+function updateDeviceLine() {
+  const s = serverStatus;
+  $("device-line").textContent = !s ? "" : !s.connected ? "휠 없음" :
+    `${s.device} · 프로필 ${s.profile}${s.calibrated ? "" : " (기본값)"} · FFB ${s.force_feedback ? "켜짐" : "꺼짐" + (s.ffb_error ? `: ${s.ffb_error}` : "")}`;
+}
+
+// --- Raw input display -----------------------------------------------------------
+function onRaw(r) {
+  raw = r;
+  if (!r.available) return;
+  $("raw-note").textContent = r.connected ? `${r.device} (${hex(r.vendor)}:${hex(r.product)})` : "휠이 연결되지 않았습니다. 연결하면 자동으로 잡힙니다.";
+  const axes = $("axes");
+  const count = r.connected ? r.axes.length : 0;
+  while (axes.children.length < count) {
+    const row = document.createElement("div");
+    row.className = "axis";
+    row.innerHTML = `<span>축 ${axes.children.length}</span><div class="track"><div class="mid"></div><div class="fill"></div></div><span class="v"></span>`;
+    axes.appendChild(row);
+  }
+  while (axes.children.length > count) axes.lastChild.remove();
+  const tags = axisTags();
+  for (let i = 0; i < count; i++) {
+    const v = r.axes[i];
+    const row = axes.children[i];
+    const fill = row.querySelector(".fill");
+    const x = (v + 32768) / 65535;
+    fill.style.left = `${Math.min(x, 0.5) * 100}%`;
+    fill.style.width = `${Math.abs(x - 0.5) * 100}%`;
+    row.querySelector(".v").innerHTML = `${v}${tags[i] ? ` <span class="tag">${tags[i]}</span>` : ""}`;
+    row.classList.toggle("active", wizard.highlight === i);
+  }
+  const buttons = $("buttons");
+  const nb = r.connected ? r.buttons.length : 0;
+  while (buttons.children.length < nb) {
+    const b = document.createElement("span");
+    b.textContent = buttons.children.length;
+    buttons.appendChild(b);
+  }
+  while (buttons.children.length > nb) buttons.lastChild.remove();
+  for (let i = 0; i < nb; i++) buttons.children[i].classList.toggle("on", !!r.buttons[i]);
+
+  // Preview with the profile being edited.
+  if (r.connected) {
+    const a = r.axes;
+    const steer = steerAngle(a[profile.steer.axis] ?? 0);
+    const half = 0.5 * profile.steer.range_deg * Math.PI / 180;
+    const sb = $("m-steer");
+    const x = 0.5 - 0.5 * Math.max(-1, Math.min(1, steer / half));  // left on the left
+    sb.style.left = `${Math.min(x, 0.5) * 100}%`;
+    sb.style.width = `${Math.abs(x - 0.5) * 100}%`;
+    $("m-steer-v").textContent = `${(steer * 180 / Math.PI).toFixed(0)}°`;
+    for (const name of ["throttle", "brake", "clutch"]) {
+      const value = pedalValue(a[profile.pedals[name].axis], profile.pedals[name]);
+      $(`m-${name}`).style.width = `${value * 100}%`;
+      $(`m-${name}-v`).textContent = profile.pedals[name].axis < 0 ? "없음" : `${(value * 100).toFixed(0)}%`;
+    }
+  }
+  wizard.onRaw(r);
+}
+
+function axisTags() {
+  const t = {};
+  t[profile.steer.axis] = "핸들";
+  for (const [name, label] of [["throttle", "가속"], ["brake", "브레이크"], ["clutch", "클러치"]]) {
+    if (profile.pedals[name].axis >= 0) t[profile.pedals[name].axis] = label;
+  }
+  return t;
+}
+const hex = (v) => (v || 0).toString(16).padStart(4, "0");
+
+// --- Wizard ----------------------------------------------------------------------
+// Each step watches the raw stream; "다음" stores what it found in `profile`.
+const MIN_TRAVEL = 8000;  // raw units an axis must move to count
+const wizard = {
+  index: 0, touched: false, highlight: -1,
+  baseline: null, extremes: null, firstButton: -1, ffbSamples: null,
+  steps: [],
+  onRaw(r) { const step = this.steps[this.index]; if (step && step.watch && r.connected) step.watch(r); },
+};
+
+function startRecording(r) {
+  wizard.extremes = r.axes.map((v) => ({ min: v, max: v }));
+}
+function record(r) {
+  if (!wizard.extremes || wizard.extremes.length !== r.axes.length) startRecording(r);
+  r.axes.forEach((v, i) => { const e = wizard.extremes[i]; e.min = Math.min(e.min, v); e.max = Math.max(e.max, v); });
+}
+// Axis that moved furthest from the baseline, skipping `used`.
+function mostMoved(used) {
+  let best = -1, travel = 0;
+  wizard.extremes.forEach((e, i) => {
+    if (used.includes(i)) return;
+    const b = wizard.baseline[i];
+    const t = Math.max(Math.abs(e.max - b), Math.abs(e.min - b));
+    if (t > travel) { travel = t; best = i; }
+  });
+  return { axis: best, travel };
+}
+function usedAxes(except) {
+  const used = [profile.steer.axis];
+  for (const name of ["throttle", "brake", "clutch"]) if (name !== except && profile.pedals[name].axis >= 0) used.push(profile.pedals[name].axis);
+  return used;
+}
+
+function pedalStep(name, label, optional) {
+  return {
+    title: `${label} 페달`,
+    body: `${label} 페달을 <b>끝까지 밟았다가 완전히 떼세요</b>. 그다음 다음을 누르세요.${optional ? " 없으면 건너뛰세요." : ""}`,
+    enter() { startRecording(raw); },
+    watch(r) {
+      record(r);
+      const { axis, travel } = mostMoved(usedAxes(name));
+      wizard.highlight = travel > MIN_TRAVEL ? axis : -1;
+      setResult(travel > MIN_TRAVEL ? `감지: 축 ${axis} (움직임 ${travel})` : "페달을 밟아 보세요…");
+    },
+    next() {
+      const { axis, travel } = mostMoved(usedAxes(name));
+      if (travel < MIN_TRAVEL) { setResult("움직인 축을 찾지 못했습니다. 다시 밟아 보세요.", "bad"); return false; }
+      const released = wizard.baseline[axis];
+      const e = wizard.extremes[axis];
+      const pressed = Math.abs(e.max - released) > Math.abs(e.min - released) ? e.max : e.min;
+      Object.assign(profile.pedals[name], { axis, released, pressed });
+      return true;
+    },
+    skip: optional ? () => { profile.pedals[name].axis = -1; } : null,
+  };
+}
+
+function buttonStep(name, label) {
+  return {
+    title: `${label} 버튼`,
+    body: `${label}에 쓸 휠 버튼을 누르세요. 필요 없으면 건너뛰세요.`,
+    enter() { wizard.firstButton = -1; },
+    watch(r) {
+      if (wizard.firstButton < 0) {
+        const i = r.buttons.findIndex((b, k) => b && !(wizard.baselineButtons || [])[k]);
+        if (i >= 0) wizard.firstButton = i;
+      }
+      setResult(wizard.firstButton >= 0 ? `버튼 ${wizard.firstButton}` : "버튼을 누르세요…");
+    },
+    next() {
+      if (wizard.firstButton < 0) { setResult("눌린 버튼이 없습니다.", "bad"); return false; }
+      profile.buttons[name] = wizard.firstButton;
+      return true;
+    },
+    skip: () => { profile.buttons[name] = -1; },
+  };
+}
+
+wizard.steps = [
+  {
+    title: "시작",
+    body: "휠과 페달을 연결하고, 휠 제조사 프로그램(로지텍 G HUB)에서 회전 범위를 정해 두세요. " +
+      "보정하는 동안 시뮬레이션은 일시정지합니다.",
+    next() {
+      if (!raw || !raw.connected) { setResult("연결된 휠이 없습니다.", "bad"); return false; }
+      send("sim.pause");
+      profile.name = profile.name === "my wheel" || !profile.name ? raw.device : profile.name;
+      profile.match.names = [raw.device];
+      profile.match.usb_ids = raw.vendor ? [`${hex(raw.vendor)}:${hex(raw.product)}`] : [];
+      fillForm();
+      return true;
+    },
+  },
+  {
+    title: "가운데",
+    body: "핸들을 <b>똑바로</b> 두고 모든 페달에서 발을 떼세요. 그다음 다음을 누르세요.",
+    watch() { setResult(""); },
+    next() {
+      wizard.baseline = raw.axes.slice();
+      wizard.baselineButtons = raw.buttons.slice();
+      return true;
+    },
+  },
+  {
+    title: "핸들 축",
+    body: "핸들을 <b>왼쪽 끝까지</b> 돌리고 잡은 채로 다음을 누르세요.",
+    watch(r) {
+      let best = -1, travel = 0;
+      r.axes.forEach((v, i) => { const t = Math.abs(v - wizard.baseline[i]); if (t > travel) { travel = t; best = i; } });
+      wizard.highlight = travel > MIN_TRAVEL ? best : -1;
+      setResult(travel > MIN_TRAVEL ? `감지: 축 ${best}` : "왼쪽으로 돌리세요…");
+    },
+    next() {
+      let best = -1, travel = 0;
+      raw.axes.forEach((v, i) => { const t = Math.abs(v - wizard.baseline[i]); if (t > travel) { travel = t; best = i; } });
+      if (travel < MIN_TRAVEL) { setResult("핸들 축을 찾지 못했습니다.", "bad"); return false; }
+      profile.steer.axis = best;
+      profile.steer.center = wizard.baseline[best];
+      profile.steer.invert = raw.axes[best] < wizard.baseline[best];  // left must be positive
+      profile.steer.range_deg = Number($("f-range").value) || profile.steer.range_deg;
+      return true;
+    },
+  },
+  pedalStep("throttle", "가속", false),
+  pedalStep("brake", "브레이크", false),
+  pedalStep("clutch", "클러치", true),
+  buttonStep("reset", "리셋"),
+  buttonStep("pause", "일시정지"),
+  {
+    title: "포스 피드백 방향",
+    body: "핸들에서 손을 떼고 <b>밀어 보기</b>를 누르세요. 핸들이 잠깐 한쪽으로 돕니다.",
+    actions: [["밀어 보기", () => ffbPush()]],
+    watch(r) {
+      if (wizard.ffbSamples) wizard.ffbSamples.push(steerAngle(r.axes[profile.steer.axis]));
+    },
+    next() { return true; },
+    skip: () => {},
+  },
+  {
+    title: "확인",
+    body: "핸들과 페달을 움직여 왼쪽 미리보기가 맞는지 확인하세요. 오른쪽 아래에서 FFB 세기를 고르고 " +
+      "<b>적용하고 저장</b>을 누르면 다음 실행부터 이 프로필을 씁니다.",
+    next: null,
+  },
+];
+
+function ffbPush() {
+  if (!serverStatus || !serverStatus.force_feedback) {
+    setResult("이 장치는 포스 피드백을 쓸 수 없습니다. 건너뛰세요.", "warn");
+    return;
+  }
+  wizard.ffbSamples = [];
+  const start = raw ? steerAngle(raw.axes[profile.steer.axis]) : 0;
+  send("input.ffb_test", { level: 0.3, seconds: 0.4 });
+  setResult("미는 중…");
+  setTimeout(() => {
+    const samples = wizard.ffbSamples || [];
+    wizard.ffbSamples = null;
+    const moved = samples.reduce((m, a) => (Math.abs(a - start) > Math.abs(m) ? a - start : m), 0);
+    const deg = moved * 180 / Math.PI;
+    if (Math.abs(deg) < 2) {
+      setResult(`핸들이 거의 움직이지 않았습니다 (${deg.toFixed(1)}°). 손을 떼고 다시 해 보거나 아래 '방향 반전'을 직접 고르세요.`, "warn");
+      return;
+    }
+    // Positive raw force should turn the wheel left (positive angle).
+    profile.ffb.invert = moved < 0;
+    fillForm();
+    setResult(`핸들이 ${moved > 0 ? "왼쪽" : "오른쪽"}으로 ${Math.abs(deg).toFixed(0)}° 돌았습니다 → 방향 ${profile.ffb.invert ? "반전" : "그대로"}`, "good");
+  }, 700);
+}
+
+function showStep() {
+  const step = wizard.steps[wizard.index];
+  wizard.highlight = -1;
+  $("progress").innerHTML = wizard.steps.map((_, i) => `<span class="${i < wizard.index ? "done" : i === wizard.index ? "now" : ""}"></span>`).join("");
+  $("step-count").textContent = `단계 ${wizard.index + 1} / ${wizard.steps.length}`;
+  $("step-title").textContent = step.title;
+  $("step-body").innerHTML = step.body;
+  setResult("");
+  const actions = $("step-actions");
+  actions.innerHTML = "";
+  const add = (label, handler, primary) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    if (primary) b.className = "primary";
+    b.onclick = handler;
+    actions.appendChild(b);
+  };
+  if (wizard.index > 0) add("처음부터", () => { wizard.index = 0; showStep(); });
+  for (const [label, handler] of step.actions || []) add(label, handler);
+  if (step.skip) add("건너뛰기", () => { step.skip(); advance(); });
+  if (step.next) add(wizard.index === 0 ? "시작" : "다음", () => { if (step.next()) { wizard.touched = true; advance(); } }, true);
+  if (step.enter && raw && raw.connected) step.enter();
+}
+function advance() {
+  fillForm();
+  wizard.index = Math.min(wizard.index + 1, wizard.steps.length - 1);
+  showStep();
+}
+function setResult(text, cls = "") {
+  const r = $("step-result");
+  r.textContent = text;
+  r.className = cls;
+}
+
+// --- Profile form ------------------------------------------------------------------
+const sliders = [["gain", "gain", 2], ["max", "max_torque_nm", 1], ["damping", "damping_nm_s_per_rad", 3], ["friction", "friction_nm", 2]];
+function fillForm() {
+  $("f-name").value = profile.name;
+  $("f-range").value = profile.steer.range_deg;
+  for (const [id, key, digits] of sliders) {
+    $(`f-${id}`).value = profile.ffb[key];
+    $(`o-${id}`).textContent = Number(profile.ffb[key]).toFixed(digits);
+  }
+  $("f-ffb").checked = profile.ffb.enabled;
+  $("f-invert").checked = profile.ffb.invert;
+  $("profile-json").textContent = JSON.stringify(profile, null, 2);
+}
+function readForm() {
+  profile.name = $("f-name").value.trim() || "my wheel";
+  profile.steer.range_deg = Number($("f-range").value) || 900;
+  for (const [id, key] of sliders) profile.ffb[key] = Number($(`f-${id}`).value);
+  profile.ffb.enabled = $("f-ffb").checked;
+  profile.ffb.invert = $("f-invert").checked;
+  profile.priority = Math.max(profile.priority || 0, 10);
+  fillForm();
+}
+for (const id of ["f-name", "f-range", "f-gain", "f-max", "f-damping", "f-friction", "f-ffb", "f-invert"]) {
+  $(id).addEventListener("input", () => { wizard.touched = true; readForm(); });
+}
+$("b-load").onclick = () => { wizard.touched = false; send("input.profile.get"); };
+$("b-apply").onclick = () => { readForm(); send("input.profile.apply", { profile, save: false }); };
+$("b-save").onclick = () => { readForm(); send("input.profile.apply", { profile, save: true }); };
+
+let toastTimer = null;
+function toast(text, level = "info") {
+  const t = $("toast");
+  t.textContent = text;
+  t.className = level;
+  t.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.style.display = "none"), level === "error" ? 8000 : 4000);
+}
+
+fillForm();
+showStep();
+connect();
+window.vsimInput = { wizard, get profile() { return profile; }, get raw() { return raw; }, send };
+</script>
+</body>
+</html>

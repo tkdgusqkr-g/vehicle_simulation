@@ -158,7 +158,7 @@ WheelProfile WheelProfile::logitech_g29() {
 std::string WheelProfile::to_yaml() const {
   std::ostringstream out;
   out.precision(10);
-  out << "# vsim wheel profile (docs/build.md: steering wheel). Written by vsim-input calibrate.\n";
+  out << "# vsim wheel profile (docs/build.md: steering wheel). Written by vsim-input calibrate or ui/input.\n";
   out << "name: \"" << name << "\"\n";
   out << "priority: " << priority << "                  # higher wins when several profiles match\n";
   out << "match:\n  names: [";

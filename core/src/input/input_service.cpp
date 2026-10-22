@@ -71,6 +71,37 @@ InputService::Status InputService::status() const {
   return status_;
 }
 
+InputService::RawInput InputService::raw() const {
+  std::lock_guard lock(mutex_);
+  return raw_;
+}
+
+WheelProfile InputService::profile() const {
+  std::lock_guard lock(mutex_);
+  return active_profile_;
+}
+
+void InputService::apply_profile(WheelProfile profile) {
+  std::lock_guard lock(mutex_);
+  pending_profile_ = std::move(profile);
+}
+
+void InputService::test_force(double level, double seconds) {
+  std::lock_guard lock(mutex_);
+  test_level_ = std::clamp(level, -1.0, 1.0);
+  test_until_ = Clock::now() + std::chrono::duration_cast<Clock::duration>(
+                                   std::chrono::duration<double>(std::clamp(seconds, 0.0, 5.0)));
+}
+
+void InputService::set_virtual(const std::vector<int>& axes, const std::vector<std::uint8_t>& buttons) {
+  std::lock_guard lock(mutex_);
+  virtual_axes_.resize(std::max(virtual_axes_.size(), axes.size()), 0);
+  std::copy(axes.begin(), axes.end(), virtual_axes_.begin());
+  virtual_buttons_.resize(std::max(virtual_buttons_.size(), buttons.size()), 0);
+  std::copy(buttons.begin(), buttons.end(), virtual_buttons_.begin());
+  virtual_dirty_ = true;
+}
+
 void InputService::open_device(Device& device) {
   const char* name = SDL_GetJoystickName(device.joystick);
   const std::string device_name = name ? name : "unknown";
@@ -87,7 +118,13 @@ void InputService::open_device(Device& device) {
   status.device = device_name;
   status.profile = device.profile.name;
   status.calibrated = device.profile.priority > 0;
+  open_force_feedback(device, status);
+  std::lock_guard lock(mutex_);
+  status_ = status;
+  active_profile_ = device.profile;
+}
 
+void InputService::open_force_feedback(Device& device, Status& status) {
   if (options_.force_feedback && device.profile.ffb_enabled) {
     device.haptic = SDL_OpenHapticFromJoystick(device.joystick);
     if (!device.haptic) {
@@ -121,18 +158,26 @@ void InputService::open_device(Device& device) {
       }
     }
   }
-  std::lock_guard lock(mutex_);
-  status_ = status;
 }
 
-void InputService::close_device(Device& device) {
-  if (device.haptic) {
-    if (device.effect >= 0) {
-      SDL_StopHapticEffect(device.haptic, device.effect);
-      SDL_DestroyHapticEffect(device.haptic, device.effect);
+namespace {
+
+void close_force_feedback(SDL_Haptic*& haptic, SDL_HapticEffectID& effect) {
+  if (haptic) {
+    if (effect >= 0) {
+      SDL_StopHapticEffect(haptic, effect);
+      SDL_DestroyHapticEffect(haptic, effect);
     }
-    SDL_CloseHaptic(device.haptic);
+    SDL_CloseHaptic(haptic);
   }
+  haptic = nullptr;
+  effect = -1;
+}
+
+}  // namespace
+
+void InputService::close_device(Device& device) {
+  close_force_feedback(device.haptic, device.effect);
   if (device.joystick) {
     SDL_CloseJoystick(device.joystick);
   }
@@ -140,6 +185,7 @@ void InputService::close_device(Device& device) {
   hub_.set_wheel({});
   std::lock_guard lock(mutex_);
   status_ = {};
+  raw_ = {};
 }
 
 void InputService::run() {
@@ -153,15 +199,82 @@ void InputService::run() {
   }
   started_ = true;
 
+  // Optional virtual wheel; pedals start released (+32767 as on a G29).
+  SDL_JoystickID virtual_id = 0;
+  SDL_Joystick* virtual_joystick = nullptr;
+  if (options_.virtual_wheel) {
+    SDL_VirtualJoystickDesc desc;
+    SDL_INIT_INTERFACE(&desc);
+    desc.type = SDL_JOYSTICK_TYPE_WHEEL;
+    desc.naxes = 6;
+    desc.nbuttons = 16;
+    desc.name = "vsim virtual wheel";
+    virtual_id = SDL_AttachVirtualJoystick(&desc);
+    virtual_joystick = virtual_id != 0 ? SDL_OpenJoystick(virtual_id) : nullptr;
+    std::lock_guard lock(mutex_);
+    virtual_axes_ = {0, 32767, 32767, 32767, 0, 0};
+    virtual_buttons_.assign(16, 0);
+    virtual_dirty_ = true;
+  }
+
   Device device;
   const auto poll_period = std::chrono::duration<double>(1.0 / options_.poll_hz);
   auto last = Clock::now();
   auto next_scan = last;
   auto next_ffb = last;
 
+  double test_level = 0.0;
+  Clock::time_point test_until{};
   while (!stop_) {
+    std::optional<WheelProfile> new_profile;
+    {
+      std::lock_guard lock(mutex_);
+      new_profile.swap(pending_profile_);
+      test_level = test_level_;
+      test_until = test_until_;
+      if (virtual_joystick && virtual_dirty_) {
+        for (std::size_t i = 0; i < virtual_axes_.size(); ++i) {
+          SDL_SetJoystickVirtualAxis(virtual_joystick, static_cast<int>(i),
+                                     static_cast<Sint16>(std::clamp(virtual_axes_[i], -32768, 32767)));
+        }
+        for (std::size_t i = 0; i < virtual_buttons_.size(); ++i) {
+          SDL_SetJoystickVirtualButton(virtual_joystick, static_cast<int>(i), virtual_buttons_[i] != 0);
+        }
+        virtual_dirty_ = false;
+      }
+    }
     SDL_UpdateJoysticks();
     const auto now = Clock::now();
+
+    if (new_profile) {
+      // Takes over for this device now and after a reconnect.
+      WheelProfile& p = *new_profile;
+      if (device.joystick) {
+        const char* name = SDL_GetJoystickName(device.joystick);
+        if (name && !p.matches(name, SDL_GetJoystickVendor(device.joystick), SDL_GetJoystickProduct(device.joystick))) {
+          p.match_names.emplace_back(name);
+        }
+      }
+      options_.profiles.insert(options_.profiles.begin(), p);
+      Status status = this->status();
+      if (device.joystick) {
+        const bool ffb_changed = p.ffb_enabled != device.profile.ffb_enabled;
+        device.profile = p;
+        device.shaper = std::make_unique<ForceFeedbackShaper>(p.ffb);
+        device.last_level = 0;
+        status.profile = p.name;
+        status.calibrated = p.priority > 0;
+        if (ffb_changed) {
+          close_force_feedback(device.haptic, device.effect);
+          status.force_feedback = false;
+          status.ffb_error.clear();
+          open_force_feedback(device, status);
+        }
+      }
+      std::lock_guard lock(mutex_);
+      status_ = status;
+      active_profile_ = p;
+    }
 
     if (device.joystick && !SDL_JoystickConnected(device.joystick)) {
       close_device(device);
@@ -214,6 +327,23 @@ void InputService::run() {
       wheel.pause = button(p.button_pause);
       wheel.stamp = now;
       hub_.set_wheel(wheel);
+      {
+        RawInput raw;
+        raw.connected = true;
+        raw.device = wheel.device;
+        raw.vendor = SDL_GetJoystickVendor(device.joystick);
+        raw.product = SDL_GetJoystickProduct(device.joystick);
+        const int axes = SDL_GetNumJoystickAxes(device.joystick);
+        for (int i = 0; i < axes; ++i) {
+          raw.axes.push_back(SDL_GetJoystickAxis(device.joystick, i));
+        }
+        const int buttons = SDL_GetNumJoystickButtons(device.joystick);
+        for (int i = 0; i < buttons; ++i) {
+          raw.buttons.push_back(SDL_GetJoystickButton(device.joystick, i) ? 1 : 0);
+        }
+        std::lock_guard lock(mutex_);
+        raw_ = std::move(raw);
+      }
 
       if (device.haptic && now >= next_ffb) {
         const double dt = std::chrono::duration<double>(now - last).count();
@@ -222,7 +352,10 @@ void InputService::run() {
                              std::chrono::duration<double>(1.0 / p.ffb.update_hz));
         const ForceFeedbackRequest request = hub_.force_feedback();
         const bool fresh = std::chrono::duration<double>(now - request.stamp).count() < p.ffb.timeout;
-        const double level = device.shaper->update(dt, wheel.steer, request.torque, request.lock, fresh);
+        double level = device.shaper->update(dt, wheel.steer, request.torque, request.lock, fresh);
+        if (now < test_until) {
+          level = test_level;  // calibration push, raw direction
+        }
         const auto command = static_cast<Sint16>(std::lround(level * 32767.0));
         if (command != device.last_level) {
           device.effect_data.constant.level = command;
@@ -239,6 +372,12 @@ void InputService::run() {
   }
 
   close_device(device);
+  if (virtual_joystick) {
+    SDL_CloseJoystick(virtual_joystick);
+  }
+  if (virtual_id != 0) {
+    SDL_DetachVirtualJoystick(virtual_id);
+  }
   SDL_Quit();
 }
 
