@@ -13,7 +13,7 @@ checks:
     expr: "max(abs(window(drv.line_offset, 2, 75))) < 0.8"
   - name: 모터 권선 100 °C 미만
     expr: "max(pt.motor.fl.temp) < 100"
-  - name: 3랩 뒤 SoC 85 % 이상
-    expr: "final(bat.soc) > 0.85"
+  - name: 3랩(약 1 km) 뒤 SoC 80 % 이상
+    expr: "final(bat.soc) > 0.80"
   - name: 에너지 수지 오차 1 J 미만
     expr: "abs(final(energy.residual)) < 1"

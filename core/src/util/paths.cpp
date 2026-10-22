@@ -36,12 +36,12 @@ std::filesystem::path executable_path() {
 #endif
 }
 
-std::filesystem::path find_resource_dir(std::string_view relative, const std::filesystem::path& near) {
+std::filesystem::path find_resource_dir(std::string_view relative, const std::filesystem::path& nearby) {
   const std::filesystem::path target = path_from_utf8(relative);
   std::vector<std::filesystem::path> starts;
   std::error_code error;
-  if (!near.empty()) {
-    starts.push_back(std::filesystem::absolute(near, error));
+  if (!nearby.empty()) {
+    starts.push_back(std::filesystem::absolute(nearby, error));
   }
   starts.push_back(std::filesystem::current_path(error));
   if (const std::filesystem::path exe = executable_path(); !exe.empty()) {

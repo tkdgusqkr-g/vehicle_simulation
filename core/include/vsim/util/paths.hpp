@@ -16,9 +16,9 @@ std::string path_to_utf8(const std::filesystem::path& path);
 std::filesystem::path executable_path();
 
 // A directory of the source tree such as "config/input", looked up from
-// `near` (if given), the working directory and the executable's directory,
+// `nearby` (if given), the working directory and the executable's directory,
 // each upwards (build trees and projects sit inside the repository). Empty if
 // not found.
-std::filesystem::path find_resource_dir(std::string_view relative, const std::filesystem::path& near = {});
+std::filesystem::path find_resource_dir(std::string_view relative, const std::filesystem::path& nearby = {});
 
 }  // namespace vsim

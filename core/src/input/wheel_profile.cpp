@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
+#include <system_error>
 #include <numbers>
 #include <sstream>
 #include <stdexcept>
@@ -22,13 +24,20 @@ std::string lower(std::string_view text) {
 
 // "046d:c24f" -> (0x046d, 0xc24f)
 std::pair<int, int> parse_usb_id(const std::string& text) {
-  unsigned vendor = 0, product = 0;
-  char tail = 0;
-  if (std::sscanf(text.c_str(), "%x:%x%c", &vendor, &product, &tail) != 2 || vendor > 0xffff ||
-      product > 0xffff) {
-    throw std::invalid_argument("wheel profile: usb id '" + text + "' must look like 046d:c24f");
+  const auto hex = [&](std::string_view part) {
+    int value = 0;
+    const auto [end, error] = std::from_chars(part.data(), part.data() + part.size(), value, 16);
+    if (part.empty() || error != std::errc() || end != part.data() + part.size() || value > 0xffff) {
+      throw std::invalid_argument("wheel profile: usb id '" + text + "' must look like 046d:c24f");
+    }
+    return value;
+  };
+  const auto colon = text.find(':');
+  if (colon == std::string::npos) {
+    hex({});  // throws
   }
-  return {static_cast<int>(vendor), static_cast<int>(product)};
+  const std::string_view view(text);
+  return {hex(view.substr(0, colon)), hex(view.substr(colon + 1))};
 }
 
 PedalAxis read_pedal(const ParamTree& params, const std::string& key) {
