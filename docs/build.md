@@ -1,8 +1,15 @@
 # 빌드와 실행
 
-M2 기준 안내입니다. 설계는 [design.md](design.md)를 보세요.
+M3 기준 안내입니다. 설계는 [design.md](design.md)를 보세요.
 
 ## 지금 되는 것
+
+**M3 (보면서 구른다)**
+- **3D 주행 화면**: 브라우저(`ui/view3d/index.html`, 바로 동작)와 Unreal Engine 5 뷰어(`ui/unreal`, 직접 빌드 필요)
+- 트랙 3D 모델 자동 생성: 아스팔트, 경계선, 출발·구간선, FS 콘(왼쪽 파랑, 오른쪽 노랑, 출발 주황), 잔디. `.glb`로 내보내기 가능
+- 공유 메모리 링크: 차량 상태를 약 1 ms마다 내보내고, 뷰어의 키와 리셋·일시정지를 받음. `vsim-link`로 점검
+- **입력 보정 페이지** (`ui/input/index.html`): 축·페달·버튼·FFB 방향을 보면서 보정하고, 재시작 없이 적용·저장
+- 입력에서 화면까지 지연 측정 (목표 50 ms 미만)
 
 **M2 (트랙 위를 구른다)**
 - 트랙: 센터라인 점 + 폭 + 출발/결승·구간 + 주행 라인. 템플릿(가속, 스키드패드, 원선회, 슬라럼, 더블 레인 체인지, 오토크로스)
@@ -34,6 +41,7 @@ M2 기준 안내입니다. 설계는 [design.md](design.md)를 보세요.
 | Git | |
 | 인터넷 | 처음 빌드할 때 라이브러리(yaml-cpp, SDL3, IXWebSocket 등)를 자동으로 내려받음 |
 | Logitech G HUB | G29를 쓸 때. 로지텍 홈페이지에서 설치 |
+| Unreal Engine 5.4 이상 (선택) | Unreal 뷰어를 쓸 때. Visual Studio에 **"C++를 사용한 게임 개발"** 워크로드도 추가 |
 
 ### 빌드
 
@@ -77,7 +85,9 @@ build\core\Release\vsim-input.exe list
 
 ### 2. 보정 (권장)
 
-기본 프로필 [`config/input/logitech_g29.yaml`](../config/input/logitech_g29.yaml)은 일반적인 축 배치를 가정합니다. 실제 축 번호, 페달 방향, FFB 방향은 PC 설정에 따라 다를 수 있어서 보정 도구로 측정해 두는 것이 안전합니다.
+**보정 페이지(권장)**: `drive.yaml`로 vsim-core를 실행한 채 `ui\input\index.html`을 엽니다. 단계를 따라 하면 핸들 축과 방향, 페달 범위, 리셋·일시정지 버튼, FFB 방향을 잡습니다. 단계마다 축이 움직이는 모습이 보이고, 적용 전에 미리보기로 확인할 수 있습니다. **적용하고 저장**을 누르면 `config/input/<이름>.yaml`에 저장되고, 시뮬레이터를 다시 시작하지 않아도 바로 적용됩니다. FFB 세기(배율, 최대 토크, 감쇠, 마찰)도 이 페이지에서 바꿀 수 있습니다.
+
+**콘솔 도구**: 기본 프로필 [`config/input/logitech_g29.yaml`](../config/input/logitech_g29.yaml)은 일반적인 축 배치를 가정합니다. 실제 축 번호, 페달 방향, FFB 방향은 PC 설정에 따라 다를 수 있어서 보정 도구로 측정해 두는 것이 안전합니다.
 
 ```powershell
 build\core\Release\vsim-input.exe calibrate
@@ -134,6 +144,75 @@ build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/sce
 | + − / 마우스 휠 | 확대·축소 |
 
 휠 버튼으로 리셋·일시정지를 하려면 `vsim-input monitor`로 버튼 번호를 보고 프로필의 `buttons.reset`, `buttons.pause`에 적습니다. 종료는 콘솔에서 Ctrl+C입니다.
+
+---
+
+## 3D 화면
+
+모니터 1대 기준입니다. 3D 화면을 전체 화면으로 띄우고, 라이브 뷰와 편집기는 필요할 때만 엽니다.
+
+### 브라우저 3D 화면
+
+```powershell
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/drive.yaml --set track.template=autocross
+```
+
+`ui\view3d\index.html`을 Chrome이나 Edge로 열면 시뮬레이터가 만든 트랙 3D 모델과 차량이 나옵니다. three.js를 인터넷(cdn.jsdelivr.net)에서 받으므로 처음 열 때 인터넷이 필요합니다.
+
+| 키 | 동작 |
+|---|---|
+| ↑↓←→ / WASD | 운전 (휠이 있으면 휠) |
+| C | 카메라: 추적 → 콕핏 → 노즈 → TV(트랙 옆 카메라) → 위 |
+| R / Space | 리셋 / 일시정지 |
+| H / F | HUD 숨김 / 전체 화면 |
+
+- 왼쪽 위 **키 → 화면**: 가속 키를 누른 순간부터 그 결과가 그려진 프레임까지의 시간입니다. 시뮬레이터, WebSocket, 렌더링이 모두 포함됩니다. 가속 키를 몇 번 눌렀다 떼면 평균이 나옵니다.
+- 상태는 초당 60번 오고, 그 사이 프레임은 속도와 yaw rate로 앞으로 외삽해서 고주사율 모니터에서도 부드럽게 움직입니다.
+- 편집기에서 트랙을 보내면 3D 화면의 트랙도 바로 바뀝니다.
+
+### Unreal Engine 5 뷰어
+
+[`ui/unreal/README.md`](../ui/unreal/README.md)를 보세요. 요약하면 다음과 같습니다.
+1. UE 5.4 이상과 Visual Studio 2022를 설치합니다.
+2. `ui/unreal/VsimViewer/VsimViewer.uproject`를 열고 빌드합니다.
+3. vsim-core를 실시간 모드로 켠 다음 Play를 누릅니다.
+
+맵이나 에셋 없이 코드만으로 장면을 만듭니다. **이 프로젝트는 Unreal이 없는 환경에서 작성해서 실제 빌드는 아직 해 보지 않았습니다.** 첫 빌드에서 오류가 나면 메시지를 알려 주세요.
+
+vsim-core는 실시간 모드에서 항상 공유 메모리(`vsim_state_v1`)로 상태를 내보냅니다. 끄려면 `--no-link`를 씁니다. 연결 점검에는 `vsim-link`를 씁니다.
+
+| 명령 | 내용 |
+|---|---|
+| `vsim-link wait` | 시뮬레이터가 내보내는지 확인 |
+| `vsim-link monitor` | 상태를 초당 2번 출력 (위치, 속도, 랩, 트랙 세대, 지연) |
+| `vsim-link drive throttle --seconds 2` | 뷰어처럼 키를 보내고, 입력이 상태에 반영되기까지의 지연을 잼 |
+| `vsim-link reset` / `pause` | 명령 보내기 |
+
+다른 렌더러(Unity, 자체 프로그램)를 붙이려면 `core/include/vsim/link/vsim_link.h` 하나만 가져가면 됩니다. 표준 C++만 쓰는 헤더입니다.
+
+### 지연 예산 (목표: 입력 → 화면 50 ms 미만)
+
+| 구간 | 크기 |
+|---|---|
+| 휠 읽기 (SDL, 1 kHz) | ≤ 1 ms |
+| 시뮬레이터: 입력 → 상태 공개 | 평균 0.6 ms, 최대 4.5 ms (`vsim-link drive`, 이 개발 환경) |
+| Unreal: 상태 → 프레임 | 프레임 시간 1–2개 (120 fps면 8–17 ms) |
+| 모니터 | vsync 끄면 0–1 프레임, 60 Hz vsync는 +17–50 ms |
+
+Unreal 프로젝트 설정은 vsync를 끄고 프레임 지연을 줄여 둡니다(`r.VSync=0`, `r.OneFrameThreadLag=0`, `r.GTSyncType=1`). 브라우저 화면은 브라우저가 vsync를 강제하므로 Unreal보다 1–2 프레임 깁니다.
+
+### 트랙 3D 모델 내보내기
+
+```powershell
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/autocross_auto.yaml --export-track-glb autocross.glb
+```
+
+```python
+import vsim
+open("skidpad.glb", "wb").write(vsim.Track("templates/tracks/skidpad.track.json").to_glb())
+```
+
+Blender, Unreal(glTF 가져오기), three.js에서 열 수 있습니다. 좌표는 glTF 규약(y가 위쪽)이고, 단위는 m입니다.
 
 ---
 
@@ -323,7 +402,11 @@ build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/sce
 | `--port 9000` | 라이브 뷰 포트 변경. 브라우저 주소에 `?ws=ws://127.0.0.1:9000`을 붙임 |
 | `--host 0.0.0.0` | 다른 PC의 브라우저에서 접속 허용 |
 | `--no-wheel` | 휠을 찾지 않음 |
-| `--input-profiles <폴더>` | 휠 프로필 폴더 지정 (기본: 소스 트리의 `config/input`) |
+| `--input-profiles <폴더>` | 휠 프로필 폴더 지정 (기본: 소스 트리의 `config/input`). 보정 페이지도 여기에 저장 |
+| `--no-link` | 공유 메모리로 내보내지 않음 (Unreal 뷰어 안 씀) |
+| `--link-name <이름>` | 공유 메모리 이름 (기본 `vsim_state_v1`). 시뮬레이터 두 개를 동시에 띄울 때 |
+| `--export-track-glb <파일>` | 시나리오의 트랙을 3D 모델(.glb)로 저장하고 종료 |
+| `--virtual-wheel` | 가상 휠 추가 (`input.virtual` RPC로 조작, UI 시험용) |
 
 ---
 
@@ -413,4 +496,8 @@ Linux에서 휠을 쓰려면 `/dev/input/event*`, `/dev/hidraw*` 읽기 권한�
 | `track.template '...': templates/tracks not found` | 시나리오가 저장소 밖에 있으면 템플릿을 못 찾습니다. `track.file`로 트랙 파일 경로를 직접 지정 |
 | 편집기 "연결할 수 없습니다" | vsim-core를 realtime 모드로 실행 중인지, 주소(`ws://127.0.0.1:8765`)가 맞는지 확인 |
 | `ModuleNotFoundError: No module named 'yaml'` | `python -m pip install pyyaml` (테스트 러너용) |
+| 3D 화면이 검은 화면 / 아무것도 안 나옴 | 인터넷 연결 확인 (three.js를 cdn.jsdelivr.net에서 받음). 브라우저 개발자 도구(F12) 콘솔의 오류를 확인 |
+| 3D 화면이 끊김 | 다른 탭을 닫고, 노트북이면 고성능 GPU로 Chrome 실행. 왼쪽 위 fps 확인 |
+| `shared-memory link off: another simulator ... publishes` | vsim-core가 이미 하나 실행 중. 그쪽을 끄거나 `--link-name`을 다르게 |
+| 보정 페이지 "휠 입력이 꺼져 있습니다" | `driver.type: dil` 시나리오(`drive.yaml`)를 `--no-wheel` 없이 실행 |
 | `import vsim` 실패 | 빌드 후 `python/vsim/` 안에 `_vsim...pyd`(Windows) 또는 `.so`(Linux)가 있는지 확인 |
