@@ -395,14 +395,24 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
             std::cout << "Steering wheel: " << status.device << " (profile " << status.profile
                       << ", force feedback " << (status.force_feedback ? "on" : "off: " + status.ffb_error)
                       << ")\n";
+            if (!status.calibrated) {
+              std::cout << "  default profile: if the wheel pulls away from the centre or the pedals act\n"
+                           "  wrongly, run `vsim-input calibrate` once (docs/build.md)\n";
+            }
           } else {
             std::cout << "Steering wheel: disconnected, using the keyboard\n";
           }
+        }
+        if (status.ffb_suspended && !wheel_status.ffb_suspended) {
+          std::cout << "Force feedback paused: the wheel stayed far past the steering lock. If it was\n"
+                       "  turning there by itself, the FFB direction is reversed (ffb.invert in the\n"
+                       "  profile, or `vsim-input calibrate`). It resumes inside the lock.\n";
         }
         wheel_status = status;
         input["ffb"] = wheel_status.force_feedback;
         input["ffb_torque"] = wheel_status.ffb_torque;
         input["ffb_clipping"] = wheel_status.ffb_clipping;
+        input["ffb_suspended"] = wheel_status.ffb_suspended;
       }
 #endif
       server.broadcast(stream.message(sim, paused, rtf, {{"input", input}}));

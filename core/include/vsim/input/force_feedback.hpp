@@ -18,6 +18,10 @@ struct ForceFeedbackSettings {
 // Damping, friction and the end stop are computed locally from the wheel
 // angle at the input rate, so they stay stable even when the simulation runs
 // slower or pauses; the road torque fades in and out instead of jumping.
+//
+// Safety: if the wheel stays far past the steering lock (a wrong `invert`
+// drives it there by itself), the output is suspended until the wheel comes
+// back inside the lock.
 class ForceFeedbackShaper {
  public:
   explicit ForceFeedbackShaper(const ForceFeedbackSettings& settings) : s_(settings) {}
@@ -32,6 +36,7 @@ class ForceFeedbackShaper {
   double torque() const { return torque_; }   // last device torque [N m], vsim direction
   double fade() const { return fade_; }
   bool clipping() const { return clipping_; }
+  bool suspended() const { return suspended_; }
   double angular_velocity() const { return velocity_; }
 
  private:
@@ -42,6 +47,8 @@ class ForceFeedbackShaper {
   double fade_ = 0.0;
   double torque_ = 0.0;
   bool clipping_ = false;
+  double far_time_ = 0.0;
+  bool suspended_ = false;
 };
 
 }  // namespace vsim

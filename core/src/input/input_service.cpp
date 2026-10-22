@@ -86,6 +86,7 @@ void InputService::open_device(Device& device) {
   status.connected = true;
   status.device = device_name;
   status.profile = device.profile.name;
+  status.calibrated = device.profile.priority > 0;
 
   if (options_.force_feedback && device.profile.ffb_enabled) {
     device.haptic = SDL_OpenHapticFromJoystick(device.joystick);
@@ -230,6 +231,7 @@ void InputService::run() {
         std::lock_guard lock(mutex_);
         status_.ffb_torque = device.shaper->torque();
         status_.ffb_clipping = device.shaper->clipping();
+        status_.ffb_suspended = device.shaper->suspended();
       }
     }
     std::this_thread::sleep_for(poll_period);

@@ -241,7 +241,7 @@ Linux에서 휠을 쓰려면 `/dev/input/event*`, `/dev/hidraw*` 읽기 권한�
 | 핸들을 돌리면 차가 반대로 감 | `vsim-input calibrate`를 다시 하거나 프로필의 `steer.invert`를 바꿈 |
 | 페달을 안 밟아도 가속/브레이크가 들어감 | 페달 방향이 반대. `calibrate`를 다시 하거나 프로필의 `released`/`pressed`를 맞바꿈 |
 | 가속과 브레이크가 한 축으로 합쳐짐 | G HUB에서 "결합된 페달(Combined Pedals)" 끄기 |
-| FFB가 반대로 당김 (핸들이 바깥으로 감김) | 프로필의 `ffb.invert`를 바꾸거나 `calibrate` |
+| FFB가 반대로 당김 (핸들이 바깥으로 감김) | 프로필의 `ffb.invert`를 바꾸거나 `calibrate`. 휠이 조향 한계보다 90° 넘게 0.5초 이상 나가 있으면 FFB가 자동으로 멈추고 콘솔과 라이브 뷰에 안내가 뜹니다 (한계 안으로 돌아오면 재개) |
 | FFB가 너무 세거나 약함 | 프로필의 `ffb.gain` 조절. G HUB의 FFB 강도도 확인 |
 | 조향 각도가 화면과 실제가 다름 | 프로필 `steer.range_deg`를 G HUB 회전 범위와 같게 |
 | `Could not find a package configuration file provided by "pybind11"` | `python -m pip install pybind11`. Python 바인딩이 필요 없으면 `-DVSIM_BUILD_PYTHON=OFF` |

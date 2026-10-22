@@ -200,6 +200,7 @@ function onState(s) {
   document.getElementById("ffb-status").textContent =
     input.ffb === undefined ? "-" :
     !input.ffb ? "꺼짐" :
+    input.ffb_suspended ? "정지 (조향 한계 밖, 방향 확인)" :
     `${input.ffb_torque.toFixed(2)} N·m${input.ffb_clipping ? " (포화)" : ""}`;
   document.getElementById("speed").firstChild.nodeValue = Math.round(s.speed * 3.6);
   // Battery power when the model has a battery (L2), else motor shaft power.

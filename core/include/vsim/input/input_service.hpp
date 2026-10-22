@@ -33,6 +33,8 @@ class InputService {
     std::string ffb_error;        // why not, if it did not
     double ffb_torque = 0.0;      // last device torque [N m], vsim direction
     bool ffb_clipping = false;
+    bool ffb_suspended = false;   // wheel held far past the lock; see ForceFeedbackShaper
+    bool calibrated = false;      // the profile came from vsim-input calibrate (priority > 0)
   };
 
   InputService(InputHub& hub, Options options);

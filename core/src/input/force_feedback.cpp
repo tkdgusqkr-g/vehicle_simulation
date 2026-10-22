@@ -11,6 +11,9 @@ namespace {
 constexpr double kVelocityCutoffHz = 40.0;
 // Speed over which friction builds up to its full value [rad/s].
 constexpr double kFrictionSmoothing = 0.3;
+// Past the lock by this much for this long, the output is suspended.
+constexpr double kRunawayMargin = std::numbers::pi / 2.0;  // [rad]
+constexpr double kRunawayTime = 0.5;                       // [s]
 
 }  // namespace
 
@@ -20,6 +23,8 @@ void ForceFeedbackShaper::reset() {
   fade_ = 0.0;
   torque_ = 0.0;
   clipping_ = false;
+  far_time_ = 0.0;
+  suspended_ = false;
 }
 
 double ForceFeedbackShaper::update(double dt, double angle, double road_torque, double lock, bool fresh) {
@@ -43,6 +48,16 @@ double ForceFeedbackShaper::update(double dt, double angle, double road_torque, 
     } else if (angle < -lock) {
       torque -= s_.end_stop * (angle + lock);
     }
+    far_time_ = std::abs(angle) > lock + kRunawayMargin ? far_time_ + dt : 0.0;
+    if (far_time_ > kRunawayTime) {
+      suspended_ = true;
+    } else if (suspended_ && std::abs(angle) < lock) {
+      suspended_ = false;
+      fade_ = 0.0;  // fade back in
+    }
+  }
+  if (suspended_) {
+    torque = 0.0;
   }
   torque_ = torque;
 

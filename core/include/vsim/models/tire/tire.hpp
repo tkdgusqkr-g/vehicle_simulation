@@ -101,6 +101,7 @@ class MagicFormulaTire final : public TireModel {
   double c(std::string_view name) const;
 
   std::map<std::string, double, std::less<>> k_;
+  std::vector<double> v_;  // the coefficients the formulas use, by index
   double fz0_ = 0.0;
   double r0_ = 0.0;
   double alpha_sign_ = -1.0;  // alpha_iso = alpha_sign * alpha

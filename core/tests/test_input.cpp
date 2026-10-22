@@ -173,6 +173,27 @@ TEST(ForceFeedback, DampingOpposesMotionAndInvertFlipsTheDevice) {
   EXPECT_NEAR(level, 0.25, 1e-3);
 }
 
+TEST(ForceFeedback, SuspendsWhenTheWheelStaysFarPastTheLock) {
+  ForceFeedbackShaper shaper(plain());
+  const double lock = 110.0 * kDegree;
+  const double far = lock + 100.0 * kDegree;
+  double level = 0.0;
+  for (int i = 0; i < 200; ++i) {  // 0.4 s: still pushing back
+    level = shaper.update(0.002, far, 0.0, lock, true);
+  }
+  EXPECT_FALSE(shaper.suspended());
+  EXPECT_LT(level, 0.0);
+  for (int i = 0; i < 100; ++i) {
+    level = shaper.update(0.002, far, 0.0, lock, true);
+  }
+  EXPECT_TRUE(shaper.suspended());
+  EXPECT_EQ(level, 0.0);
+  shaper.update(0.002, lock + 0.1, 0.0, lock, true);  // still outside the lock
+  EXPECT_TRUE(shaper.suspended());
+  shaper.update(0.002, 0.0, 0.0, lock, true);
+  EXPECT_FALSE(shaper.suspended());
+}
+
 // The DIL driver takes the wheel when one is connected, else the keyboard,
 // and posts the road torque for force feedback.
 TEST(DilDriver, UsesTheWheelWhenConnected) {

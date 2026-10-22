@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <fstream>
@@ -11,6 +12,30 @@
 
 namespace vsim {
 namespace {
+
+// Coefficients the formulas use, cached by index at load.
+#define VSIM_MF_COEFFICIENTS(X) \
+  X(LCX) X(LCY) X(LEX) X(LEY) X(LHX) X(LHY) X(LKX) X(LKY) X(LMUX) X(LMUY) X(LRES) X(LS) X(LTR) \
+  X(LVX) X(LVY) X(LVYKA) X(LXAL) X(LYKA) X(PCX1) X(PCY1) X(PDX1) X(PDX2) X(PDY1) X(PDY2) \
+  X(PEX1) X(PEX2) X(PEX3) X(PEX4) X(PEY1) X(PEY2) X(PEY3) X(PHX1) X(PHX2) X(PHY1) X(PHY2) \
+  X(PKX1) X(PKX2) X(PKX3) X(PKY1) X(PKY2) X(PKY4) X(PVX1) X(PVX2) X(PVY1) X(PVY2) X(QBZ1) \
+  X(QBZ10) X(QBZ2) X(QBZ3) X(QBZ9) X(QCZ1) X(QDZ1) X(QDZ2) X(QDZ6) X(QDZ7) X(QEZ1) X(QEZ2) \
+  X(QEZ3) X(QEZ4) X(QHZ1) X(QHZ2) X(RBX1) X(RBX2) X(RBY1) X(RBY2) X(RBY3) X(RCX1) X(RCY1) \
+  X(REX1) X(REX2) X(REY1) X(REY2) X(RHX1) X(RHY1) X(RHY2) X(RVY1) X(RVY2) X(RVY4) X(RVY5) \
+  X(RVY6) X(SSZ1) X(SSZ2)
+
+enum Coefficient : std::size_t {
+#define VSIM_MF_ENUM(name) name,
+  VSIM_MF_COEFFICIENTS(VSIM_MF_ENUM)
+#undef VSIM_MF_ENUM
+  kCoefficientCount
+};
+
+constexpr std::array<const char*, kCoefficientCount> kCoefficientNames = {
+#define VSIM_MF_NAME(name) #name,
+    VSIM_MF_COEFFICIENTS(VSIM_MF_NAME)
+#undef VSIM_MF_NAME
+};
 
 constexpr double kEpsilon = 1e-6;
 // Tangent of the slip angle is used in the formulas; keep it finite.
@@ -102,6 +127,10 @@ MagicFormulaTire::MagicFormulaTire(std::map<std::string, double, std::less<>> co
   if (coefficient("TYRESIDE") != 0.0) {
     notes_.push_back("TYRESIDE ignored (no camber or conicity terms are used)");
   }
+  v_.resize(kCoefficientCount);
+  for (std::size_t i = 0; i < kCoefficientCount; ++i) {
+    v_[i] = c(kCoefficientNames[i]);
+  }
 }
 
 double MagicFormulaTire::coefficient(std::string_view name) const {
@@ -123,11 +152,11 @@ double MagicFormulaTire::c(std::string_view name) const {
 
 double MagicFormulaTire::longitudinal_stiffness(double fz) const {
   const double dfz = (fz - fz0_) / fz0_;
-  return fz * (c("PKX1") + c("PKX2") * dfz) * std::exp(c("PKX3") * dfz) * c("LKX");
+  return fz * (v_[PKX1] + v_[PKX2] * dfz) * std::exp(v_[PKX3] * dfz) * v_[LKX];
 }
 
 double MagicFormulaTire::cornering_stiffness(double fz) const {
-  const double kya = c("PKY1") * fz0_ * std::sin(c("PKY4") * std::atan(fz / (c("PKY2") * fz0_))) * c("LKY");
+  const double kya = v_[PKY1] * fz0_ * std::sin(v_[PKY4] * std::atan(fz / (v_[PKY2] * fz0_))) * v_[LKY];
   return std::abs(kya);
 }
 
@@ -143,48 +172,48 @@ TireForces MagicFormulaTire::evaluate(const TireInput& in) const {
       std::clamp(std::tan(alpha_sign_ * in.slip_angle), -kMaxTanAlpha, kMaxTanAlpha);  // ISO, tan
 
   // --- Pure longitudinal ------------------------------------------------------
-  const double shx = (c("PHX1") + c("PHX2") * dfz) * c("LHX");
+  const double shx = (v_[PHX1] + v_[PHX2] * dfz) * v_[LHX];
   const double kx = kappa + shx;
-  const double cx = c("PCX1") * c("LCX");
-  const double mux = (c("PDX1") + c("PDX2") * dfz) * c("LMUX");
+  const double cx = v_[PCX1] * v_[LCX];
+  const double mux = (v_[PDX1] + v_[PDX2] * dfz) * v_[LMUX];
   const double dx = mux * fz;
-  const double ex = std::min(1.0, (c("PEX1") + c("PEX2") * dfz + c("PEX3") * dfz * dfz) *
-                                      (1.0 - c("PEX4") * sign(kx)) * c("LEX"));
+  const double ex = std::min(1.0, (v_[PEX1] + v_[PEX2] * dfz + v_[PEX3] * dfz * dfz) *
+                                      (1.0 - v_[PEX4] * sign(kx)) * v_[LEX]);
   const double kxk = longitudinal_stiffness(fz);
   const double bx = kxk / (cx * dx + kEpsilon);
-  const double svx = fz * (c("PVX1") + c("PVX2") * dfz) * c("LVX") * c("LMUX");
+  const double svx = fz * (v_[PVX1] + v_[PVX2] * dfz) * v_[LVX] * v_[LMUX];
   const double fx0 = mf(kx, bx, cx, dx, ex) + svx;
 
   // --- Pure lateral -------------------------------------------------------------
-  const double kya = c("PKY1") * fz0_ * std::sin(c("PKY4") * std::atan(fz / (c("PKY2") * fz0_))) * c("LKY");
+  const double kya = v_[PKY1] * fz0_ * std::sin(v_[PKY4] * std::atan(fz / (v_[PKY2] * fz0_))) * v_[LKY];
   const double kya_safe = kya + (kya >= 0.0 ? kEpsilon : -kEpsilon);
-  const double shy = (c("PHY1") + c("PHY2") * dfz) * c("LHY");
-  const double svy = fz * (c("PVY1") + c("PVY2") * dfz) * c("LVY") * c("LMUY");
+  const double shy = (v_[PHY1] + v_[PHY2] * dfz) * v_[LHY];
+  const double svy = fz * (v_[PVY1] + v_[PVY2] * dfz) * v_[LVY] * v_[LMUY];
   const double ay = alpha + shy;
-  const double cy = c("PCY1") * c("LCY");
-  const double muy = (c("PDY1") + c("PDY2") * dfz) * c("LMUY");
+  const double cy = v_[PCY1] * v_[LCY];
+  const double muy = (v_[PDY1] + v_[PDY2] * dfz) * v_[LMUY];
   const double dy = muy * fz;
-  const double ey = std::min(1.0, (c("PEY1") + c("PEY2") * dfz) * (1.0 - c("PEY3") * sign(ay)) * c("LEY"));
+  const double ey = std::min(1.0, (v_[PEY1] + v_[PEY2] * dfz) * (1.0 - v_[PEY3] * sign(ay)) * v_[LEY]);
   const double by = kya / (cy * dy + kEpsilon);
   const double fy0 = mf(ay, by, cy, dy, ey) + svy;
 
   // --- Combined slip --------------------------------------------------------------
-  const double shxa = c("RHX1");
-  const double bxa = c("RBX1") * std::cos(std::atan(c("RBX2") * kappa)) * c("LXAL");
-  const double cxa = c("RCX1");
-  const double exa = std::min(1.0, c("REX1") + c("REX2") * dfz);
+  const double shxa = v_[RHX1];
+  const double bxa = v_[RBX1] * std::cos(std::atan(v_[RBX2] * kappa)) * v_[LXAL];
+  const double cxa = v_[RCX1];
+  const double exa = std::min(1.0, v_[REX1] + v_[REX2] * dfz);
   double gxa = 1.0;
   if (bxa != 0.0 && cxa != 0.0) {
     gxa = weight(alpha + shxa, bxa, cxa, exa) / weight(shxa, bxa, cxa, exa);
   }
   out.fx = gxa * fx0;
 
-  const double dvyk = muy * fz * (c("RVY1") + c("RVY2") * dfz) * std::cos(std::atan(c("RVY4") * alpha));
-  const double svyk = dvyk * std::sin(c("RVY5") * std::atan(c("RVY6") * kappa)) * c("LVYKA");
-  const double shyk = c("RHY1") + c("RHY2") * dfz;
-  const double byk = c("RBY1") * std::cos(std::atan(c("RBY2") * (alpha - c("RBY3")))) * c("LYKA");
-  const double cyk = c("RCY1");
-  const double eyk = std::min(1.0, c("REY1") + c("REY2") * dfz);
+  const double dvyk = muy * fz * (v_[RVY1] + v_[RVY2] * dfz) * std::cos(std::atan(v_[RVY4] * alpha));
+  const double svyk = dvyk * std::sin(v_[RVY5] * std::atan(v_[RVY6] * kappa)) * v_[LVYKA];
+  const double shyk = v_[RHY1] + v_[RHY2] * dfz;
+  const double byk = v_[RBY1] * std::cos(std::atan(v_[RBY2] * (alpha - v_[RBY3]))) * v_[LYKA];
+  const double cyk = v_[RCY1];
+  const double eyk = std::min(1.0, v_[REY1] + v_[REY2] * dfz);
   double gyk = 1.0;
   if (byk != 0.0 && cyk != 0.0) {
     gyk = weight(kappa + shyk, byk, cyk, eyk) / weight(shyk, byk, cyk, eyk);
@@ -193,15 +222,15 @@ TireForces MagicFormulaTire::evaluate(const TireInput& in) const {
 
   // --- Aligning torque -------------------------------------------------------------
   const double cos_alpha = 1.0 / std::sqrt(1.0 + alpha * alpha);
-  const double sht = c("QHZ1") + c("QHZ2") * dfz;
+  const double sht = v_[QHZ1] + v_[QHZ2] * dfz;
   const double alpha_t = alpha + sht;
-  const double bt = (c("QBZ1") + c("QBZ2") * dfz + c("QBZ3") * dfz * dfz) * c("LKY") / c("LMUY");
-  const double ct = c("QCZ1");
-  const double dt = fz * (c("QDZ1") + c("QDZ2") * dfz) * c("LTR") * r0_ / fz0_;
+  const double bt = (v_[QBZ1] + v_[QBZ2] * dfz + v_[QBZ3] * dfz * dfz) * v_[LKY] / v_[LMUY];
+  const double ct = v_[QCZ1];
+  const double dt = fz * (v_[QDZ1] + v_[QDZ2] * dfz) * v_[LTR] * r0_ / fz0_;
   const double shf = shy + svy / kya_safe;
   const double alpha_r = alpha + shf;
-  const double br = c("QBZ9") * c("LKY") / c("LMUY") + c("QBZ10") * by * cy;
-  const double dr = fz * r0_ * (c("QDZ6") + c("QDZ7") * dfz) * c("LRES") * c("LMUY") * cos_alpha;
+  const double br = v_[QBZ9] * v_[LKY] / v_[LMUY] + v_[QBZ10] * by * cy;
+  const double dr = fz * r0_ * (v_[QDZ6] + v_[QDZ7] * dfz) * v_[LRES] * v_[LMUY] * cos_alpha;
 
   // Equivalent slip angles include the longitudinal slip.
   const double ratio = kxk / kya_safe;
@@ -210,11 +239,11 @@ TireForces MagicFormulaTire::evaluate(const TireInput& in) const {
   };
   const double alpha_t_eq = equivalent(alpha_t);
   const double alpha_r_eq = equivalent(alpha_r);
-  const double et = std::min(1.0, (c("QEZ1") + c("QEZ2") * dfz + c("QEZ3") * dfz * dfz) *
-                                      (1.0 + c("QEZ4") * 2.0 / std::numbers::pi * std::atan(bt * ct * alpha_t)));
+  const double et = std::min(1.0, (v_[QEZ1] + v_[QEZ2] * dfz + v_[QEZ3] * dfz * dfz) *
+                                      (1.0 + v_[QEZ4] * 2.0 / std::numbers::pi * std::atan(bt * ct * alpha_t)));
   const double trail = dt * weight(alpha_t_eq, bt, ct, et) * cos_alpha;
   const double residual = dr * std::cos(std::atan(br * alpha_r_eq));
-  const double s = r0_ * (c("SSZ1") + c("SSZ2") * (out.fy / fz0_)) * c("LS");
+  const double s = r0_ * (v_[SSZ1] + v_[SSZ2] * (out.fy / fz0_)) * v_[LS];
   out.mz = -trail * (out.fy - svyk) + residual + s * out.fx;
   return out;
 }
