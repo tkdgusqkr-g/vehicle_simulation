@@ -131,7 +131,9 @@ struct StateRegion {
 // Track mesh region, written once before track_generation points to it.
 // Arrays are referenced by byte offsets from the start of the region:
 // positions and normals 3 floats per vertex, uvs 2 floats, indices uint32
-// (three per triangle, counter-clockwise seen from the front).
+// (three per triangle, counter-clockwise seen from the front). The
+// "asphalt" section has two vertices per row along the track, right edge
+// then left edge, in driving order (renderers use it to place cameras).
 struct TrackSection {
   char name[32];               // asphalt, edge_lines, cones_blue, ...
   float color[4];              // sRGB 0..1

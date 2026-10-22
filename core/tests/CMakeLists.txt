@@ -42,3 +42,9 @@ if(VSIM_BUILD_APP)
     set_tests_properties(vsim_link_e2e PROPERTIES TIMEOUT 60)
   endif()
 endif()
+
+# The Unreal plugin against stand-in engine headers (no Unreal here).
+if(Python3_Interpreter_FOUND AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  add_test(NAME vsim_unreal_plugin_syntax
+           COMMAND Python3::Interpreter ${PROJECT_SOURCE_DIR}/ui/unreal/tests/check_plugin_syntax.py ${CMAKE_CXX_COMPILER})
+endif()
