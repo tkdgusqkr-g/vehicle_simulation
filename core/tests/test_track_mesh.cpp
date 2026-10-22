@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <numbers>
+#include <string>
 
 #include "vsim/track/track_mesh.hpp"
 
@@ -112,6 +113,32 @@ TEST(TrackMesh, OpenTrackHasStartAndFinishLines) {
   ASSERT_TRUE(road);
   EXPECT_EQ(road->vertex_count(), 2u * 151u);
   EXPECT_NEAR(mesh.max[0], 75.0 + 40.0, 1e-4);
+}
+
+// The skidpad runs over itself: no cone may stand on any part of the road.
+TEST(TrackMesh, SelfCrossingCourseKeepsConesOffTheRoad) {
+  const Track track(TrackDefinition::from_file(std::string(VSIM_SOURCE_DIR) + "/templates/tracks/skidpad.track.json"));
+  const TrackMesh mesh = make_track_mesh(track);
+  std::size_t cones = 0;
+  for (const char* name : {"cones_blue", "cones_yellow", "cones_orange"}) {
+    const MeshSection* m = find(mesh, name);
+    ASSERT_TRUE(m) << name;
+    ASSERT_EQ(m->vertex_count() % 41, 0u);
+    for (std::size_t first = 0; first < m->vertex_count(); first += 41) {
+      // Vertex 32 of each cone is the centre of its top.
+      const double x = m->positions[3 * (first + 32)], y = m->positions[3 * (first + 32) + 1];
+      const CurveProjection p = track.project(x, y);
+      const Track::Widths w = track.widths_at(p.s);
+      EXPECT_TRUE(p.n > w.left + 0.1 || p.n < -w.right - 0.1)
+          << name << " cone at (" << x << ", " << y << ") is on the road (n = " << p.n << ")";
+      ++cones;
+    }
+  }
+  EXPECT_GT(cones, 60u);
+  // Edge lines are interrupted where another part of the course crosses.
+  const MeshSection* lines = find(mesh, "edge_lines");
+  ASSERT_TRUE(lines);
+  EXPECT_LT(lines->indices.size(), 2 * 6 * static_cast<std::size_t>(std::ceil(track.length() / 0.5)));
 }
 
 TEST(TrackMesh, GlbIsValidGltf) {

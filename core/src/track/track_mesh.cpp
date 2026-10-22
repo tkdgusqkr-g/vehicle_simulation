@@ -26,15 +26,62 @@ void add_vertex(MeshSection& m, double x, double y, double z, double nx, double 
   m.uvs.insert(m.uvs.end(), {static_cast<float>(u), static_cast<float>(v)});
 }
 
+// Where a course crosses or runs over itself (skidpad), the road of one
+// part covers the boundary of another: no cones or edge lines there.
+class OtherRoad {
+ public:
+  explicit OtherRoad(const Track& track) : track_(track) {
+    for (const CurveSample& q : track.samples()) {
+      cos_.push_back(std::cos(q.heading));
+      sin_.push_back(std::sin(q.heading));
+      widths_.push_back(track.widths_at(q.s));
+    }
+  }
+
+  // Whether (x, y) is within `margin` of the road of a part of the track
+  // more than kGap away (along the track) from s.
+  bool covers(double x, double y, double s, double margin = 0.0) const {
+    const auto& samples = track_.samples();
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+      const CurveSample& q = samples[i];
+      double ds = std::abs(q.s - s);
+      if (track_.closed()) {
+        ds = std::min(ds, track_.length() - ds);
+      }
+      if (ds < kGap) {
+        continue;
+      }
+      const double dx = x - q.x, dy = y - q.y;
+      const double along = cos_[i] * dx + sin_[i] * dy;
+      if (std::abs(along) > 0.5 * Track::kStep + 1e-6) {
+        continue;  // not abreast of this sample
+      }
+      const double n = -sin_[i] * dx + cos_[i] * dy;
+      if (n <= widths_[i].left + margin && n >= -widths_[i].right - margin) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+ private:
+  static constexpr double kGap = 15.0;  // [m] closer parts are the same stretch of road
+  const Track& track_;
+  std::vector<double> cos_, sin_;
+  std::vector<Track::Widths> widths_;
+};
+
 // Strip between two offsets from the centerline (n positive left) over
 // [s0, s1]; a loop joins its last row to the first. The offsets are functions
-// of the local widths so the strip follows them.
-template <typename Right, typename Left>
+// of the local widths so the strip follows them. Segments with a row that
+// `keep(s, x, y)` (middle of the row) rejects are left out.
+template <typename Right, typename Left, typename Keep>
 void add_strip(MeshSection& m, const Track& track, double s0, double s1, bool loop, double step, float z,
-               Right right_of, Left left_of) {
+               Right right_of, Left left_of, Keep keep) {
   const auto count = std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil((s1 - s0) / step - 1e-9)));
   const std::size_t rows = loop ? count : count + 1;
   const auto first = static_cast<std::uint32_t>(m.vertex_count());
+  std::vector<bool> kept(rows);
   for (std::size_t k = 0; k < rows; ++k) {
     const double s = s0 + (s1 - s0) * static_cast<double>(k) / static_cast<double>(count);
     const CurveSample c = track.at(s);
@@ -43,8 +90,12 @@ void add_strip(MeshSection& m, const Track& track, double s0, double s1, bool lo
     const double r = right_of(w), l = left_of(w);
     add_vertex(m, c.x + r * nx, c.y + r * ny, z, 0, 0, 1, 0, s / 4.0);
     add_vertex(m, c.x + l * nx, c.y + l * ny, z, 0, 0, 1, 1, s / 4.0);
+    kept[k] = keep(s, c.x + 0.5 * (r + l) * nx, c.y + 0.5 * (r + l) * ny);
   }
   for (std::size_t k = 0; k < count; ++k) {
+    if (!kept[k] || !kept[(k + 1) % rows]) {
+      continue;
+    }
     // a: right, a + 1: left; counter-clockwise from above.
     const auto a = first + static_cast<std::uint32_t>(2 * k);
     const auto b = first + static_cast<std::uint32_t>(2 * ((k + 1) % rows));
@@ -52,16 +103,18 @@ void add_strip(MeshSection& m, const Track& track, double s0, double s1, bool lo
   }
 }
 
+constexpr auto kKeepAll = [](double, double, double) { return true; };
+
 // Strip along the whole track.
-template <typename Right, typename Left>
-void add_strip(MeshSection& m, const Track& track, double step, float z, Right right_of, Left left_of) {
-  add_strip(m, track, 0.0, track.length(), track.closed(), step, z, right_of, left_of);
+template <typename Right, typename Left, typename Keep>
+void add_strip(MeshSection& m, const Track& track, double step, float z, Right right_of, Left left_of, Keep keep) {
+  add_strip(m, track, 0.0, track.length(), track.closed(), step, z, right_of, left_of, keep);
 }
 
 // A band across the track at s, `width` long along it.
 void add_cross_line(MeshSection& m, const Track& track, double s, double width) {
   add_strip(m, track, s - 0.5 * width, s + 0.5 * width, false, width, kPaintZ,
-            [](const Track::Widths& w) { return -w.right; }, [](const Track::Widths& w) { return w.left; });
+            [](const Track::Widths& w) { return -w.right; }, [](const Track::Widths& w) { return w.left; }, kKeepAll);
 }
 
 // Eight-sided cone frustum with flat-shaded faces and a top cap.
@@ -112,12 +165,14 @@ TrackMesh make_track_mesh(const Track& track, const TrackMeshOptions& o) {
   MeshSection orange = section("cones_orange", 0.98f, 0.45f, 0.08f);
 
   add_strip(asphalt, track, o.step, kRoadZ, [](const Track::Widths& w) { return -w.right; },
-            [](const Track::Widths& w) { return w.left; });
+            [](const Track::Widths& w) { return w.left; }, kKeepAll);
+  const OtherRoad other_road(track);
+  const auto off_other_road = [&](double s, double x, double y) { return !other_road.covers(x, y, s); };
   const double lw = o.line_width;
   add_strip(lines, track, o.step, kPaintZ, [&](const Track::Widths& w) { return w.left - lw; },
-            [](const Track::Widths& w) { return w.left; });
+            [](const Track::Widths& w) { return w.left; }, off_other_road);
   add_strip(lines, track, o.step, kPaintZ, [](const Track::Widths& w) { return -w.right; },
-            [&](const Track::Widths& w) { return -w.right + lw; });
+            [&](const Track::Widths& w) { return -w.right + lw; }, off_other_road);
   add_cross_line(start, track, track.start_s(), 0.3);
   if (!track.closed()) {
     add_cross_line(start, track, track.finish_s(), 0.3);
@@ -141,13 +196,16 @@ TrackMesh make_track_mesh(const Track& track, const TrackMeshOptions& o) {
       const Track::Widths w = track.widths_at(s);
       const double nx = -std::sin(c.heading), ny = std::cos(c.heading);
       const bool at_line = near_line(s, track.start_s()) || (!track.closed() && near_line(s, track.finish_s()));
-      const double left = w.left + o.cone_offset, right = -w.right - o.cone_offset;
-      if (at_line) {
-        add_cone(orange, c.x + left * nx, c.y + left * ny, kBigConeHeight, kBigConeBase, kConeTop);
-        add_cone(orange, c.x + right * nx, c.y + right * ny, kBigConeHeight, kBigConeBase, kConeTop);
-      } else {
-        add_cone(blue, c.x + left * nx, c.y + left * ny, kConeHeight, kConeBase, kConeTop);
-        add_cone(yellow, c.x + right * nx, c.y + right * ny, kConeHeight, kConeBase, kConeTop);
+      for (const double offset : {w.left + o.cone_offset, -w.right - o.cone_offset}) {
+        const double x = c.x + offset * nx, y = c.y + offset * ny;
+        if (other_road.covers(x, y, s, 0.3)) {
+          continue;
+        }
+        if (at_line) {
+          add_cone(orange, x, y, kBigConeHeight, kBigConeBase, kConeTop);
+        } else {
+          add_cone(offset > 0.0 ? blue : yellow, x, y, kConeHeight, kConeBase, kConeTop);
+        }
       }
     }
   }

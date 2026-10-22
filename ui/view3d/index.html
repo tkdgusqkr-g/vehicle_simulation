@@ -455,11 +455,10 @@ function drawMap(s) {
 let socket = null;
 let state = null;
 let stateTime = 0;  // performance.now() when `state` arrived
-let connectedOnce = false;
 
 function connect() {
   socket = new WebSocket(wsUrl);
-  socket.onopen = () => { setConnected(true); connectedOnce = true; };
+  socket.onopen = () => setConnected(true);
   socket.onclose = () => { setConnected(false); setTimeout(connect, 1000); };
   socket.onerror = () => socket.close();
   socket.onmessage = (event) => {
@@ -480,10 +479,11 @@ function setConnected(on) {
   $("conn-dot").classList.toggle("on", on);
   $("conn").textContent = on ? "연결됨" : "연결 끊김, 재시도 중";
   $("connect-url").textContent = wsUrl;
-  $("connect-help").classList.toggle("hidden", on || !connectedOnceTimer);
+  $("connect-help").classList.toggle("hidden", on || !helpDue);
 }
-let connectedOnceTimer = false;
-setTimeout(() => { connectedOnceTimer = true; if (!socket || socket.readyState !== WebSocket.OPEN) setConnected(false); }, 2500);
+// Explain how to start the simulator if it is not there after a moment.
+let helpDue = false;
+setTimeout(() => { helpDue = true; if (!socket || socket.readyState !== WebSocket.OPEN) setConnected(false); }, 2500);
 
 function onHello(p) {
   vehicle = Object.assign({}, vehicle, p.vehicle);
