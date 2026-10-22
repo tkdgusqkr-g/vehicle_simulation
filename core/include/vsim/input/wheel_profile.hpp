@@ -27,6 +27,7 @@ struct PedalAxis {
 // stored as YAML under config/input/. `vsim-input calibrate` writes them.
 struct WheelProfile {
   std::string name;
+  int priority = 0;  // higher wins among matching profiles; calibrate writes 10
   // A device matches if its USB ids are listed or its name contains one of
   // the names (case-insensitive).
   std::vector<std::string> match_names;
@@ -47,7 +48,7 @@ struct WheelProfile {
 
   static WheelProfile from_params(const ParamTree& params);
   static WheelProfile from_yaml_file(const std::filesystem::path& file);
-  // Profiles in a directory (*.yaml), sorted by file name.
+  // Profiles in a directory (*.yaml), highest priority first, then by file name.
   static std::vector<WheelProfile> load_directory(const std::filesystem::path& dir);
   // Built-in defaults, used when no profile file matches.
   static WheelProfile logitech_g29();

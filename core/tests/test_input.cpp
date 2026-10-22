@@ -59,6 +59,7 @@ TEST(WheelProfile, MatchesByUsbIdOrName) {
 TEST(WheelProfile, RoundTripsThroughYaml) {
   WheelProfile p = WheelProfile::logitech_g29();
   p.name = "Test Wheel";
+  p.priority = 10;
   p.steer_axis = 2;
   p.steer_range_deg = 540.0;
   p.steer_invert = false;
@@ -77,6 +78,7 @@ TEST(WheelProfile, RoundTripsThroughYaml) {
   const WheelProfile q = WheelProfile::from_yaml_file(file);
   std::filesystem::remove(file);
   EXPECT_EQ(q.name, "Test Wheel");
+  EXPECT_EQ(q.priority, 10);
   EXPECT_EQ(q.usb_ids, p.usb_ids);
   EXPECT_EQ(q.match_names, p.match_names);
   EXPECT_EQ(q.steer_axis, 2);

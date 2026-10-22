@@ -272,6 +272,21 @@ TEST(TwoTrack, RearOpenDiffDrivesAndDifferentiates) {
   EXPECT_NEAR(signal(sim, "pt.motor.rear.speed"), 14.0 * 0.5 * (left + right), 1e-9);
 }
 
+// The same car on Magic Formula tires from a .tir file drives the same way.
+TEST(TwoTrack, RunsOnMagicFormulaTires) {
+  const auto run = [](const Scenario::Overrides& overrides) {
+    Simulation sim(load_example("sine_steer", overrides));
+    sim.run_for(12.0);
+    return std::pair{signal(sim, "veh.chassis.yaw_rate"), signal(sim, "veh.chassis.vx")};
+  };
+  // The example .tir mirrors the simple tire except for load sensitivity.
+  const auto [r_simple, v_simple] = run({{"vehicle.tire.simple.load_sensitivity", "-0.0625"}});
+  const auto [r_mf, v_mf] = run({{"vehicle.tire.model", "mf"},
+                                 {"vehicle.tire.file", "vehicle/tires/example_fs_10in.tir"}});
+  EXPECT_NEAR(v_mf, v_simple, 0.1);
+  EXPECT_NEAR(r_mf, r_simple, 0.1 * std::abs(r_simple));
+}
+
 TEST(TwoTrack, StaysFiniteUnderAbusiveInputs) {
   Simulation sim(load_example("straight_accel", {{"driver.steer.type", "sine"},
                                                  {"driver.steer.amplitude", "110"},

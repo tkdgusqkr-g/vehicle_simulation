@@ -1,8 +1,12 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
+#include <map>
 #include <memory>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include "vsim/sim/params.hpp"
 
@@ -71,8 +75,45 @@ class SimpleTire final : public TireModel {
   double peak_slip_angle_ = 0.0;
 };
 
+// Pacejka Magic Formula from a TNO/ADAMS .tir file (MF 5.2 / 6.1 subset):
+// pure and combined slip for Fx, Fy and Mz with load dependency and the
+// file's scaling factors; camber and inflation pressure are taken at zero /
+// nominal (design doc §6.4). The file's ISO-W convention is converted to the
+// vsim convention above (alpha_iso = -alpha); files whose cornering stiffness
+// has the opposite sign are detected and flipped, with a note.
+class MagicFormulaTire final : public TireModel {
+ public:
+  static MagicFormulaTire from_file(const std::filesystem::path& file);
+  // Coefficients by name (upper case), e.g. {"PDX1", 1.6}. Missing ones are 0
+  // except the scaling factors (L*), which default to 1.
+  explicit MagicFormulaTire(std::map<std::string, double, std::less<>> coefficients);
+
+  TireForces evaluate(const TireInput& input) const override;
+  double longitudinal_stiffness(double fz) const override;
+  double cornering_stiffness(double fz) const override;
+
+  double coefficient(std::string_view name) const;
+  double nominal_load() const { return fz0_; }
+  double unloaded_radius() const { return r0_; }
+  const std::vector<std::string>& notes() const { return notes_; }
+
+ private:
+  double c(std::string_view name) const;
+
+  std::map<std::string, double, std::less<>> k_;
+  double fz0_ = 0.0;
+  double r0_ = 0.0;
+  double alpha_sign_ = -1.0;  // alpha_iso = alpha_sign * alpha
+  std::vector<std::string> notes_;
+};
+
+// Reads "KEY = value $ comment" lines of a .tir file; section headers,
+// comments and string values (except FITTYP-like numbers) are skipped.
+std::map<std::string, double, std::less<>> read_tir_file(const std::filesystem::path& file);
+
 // Tire for one axle ("front" or "rear") from vehicle.tire.model: simple | mf.
-// File paths are relative to the vehicle project directory.
+// For mf, vehicle.tire.[<axle>.]file names the .tir file, relative to the
+// vehicle project directory.
 std::unique_ptr<TireModel> make_tire(const ParamTree& params, std::string_view axle,
                                      const std::filesystem::path& project_dir);
 

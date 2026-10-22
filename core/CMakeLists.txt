@@ -25,6 +25,7 @@ add_library(vsim_core STATIC
   src/models/driveline/driveline.cpp
   src/models/powertrain/battery.cpp
   src/models/powertrain/motor.cpp
+  src/models/tire/magic_formula_tire.cpp
   src/models/tire/simple_tire.cpp
   src/models/tire/tire_factory.cpp
   src/models/vehicle/corners.cpp

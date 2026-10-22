@@ -304,6 +304,7 @@ int command_calibrate(const Args& args) {
   SDL_Joystick* joystick = open_device(args.device);
   vsim::WheelProfile profile = vsim::WheelProfile::logitech_g29();
   profile.name = SDL_GetJoystickName(joystick);
+  profile.priority = 10;  // ahead of the shipped defaults
   profile.match_names = {profile.name};
   profile.usb_ids = {{SDL_GetJoystickVendor(joystick), SDL_GetJoystickProduct(joystick)}};
   if (profile.usb_ids.front().first == 0) {

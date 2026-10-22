@@ -66,6 +66,7 @@ double PedalAxis::value(double raw) const {
 WheelProfile WheelProfile::from_params(const ParamTree& params) {
   WheelProfile p;
   p.name = params.get_string("name");
+  p.priority = static_cast<int>(params.get_int("priority", 0));
   p.match_names = params.get_string_list("match.names");
   for (const std::string& id : params.get_string_list("match.usb_ids")) {
     p.usb_ids.push_back(parse_usb_id(id));
@@ -123,6 +124,8 @@ std::vector<WheelProfile> WheelProfile::load_directory(const std::filesystem::pa
   for (const auto& file : files) {
     profiles.push_back(from_yaml_file(file));
   }
+  std::stable_sort(profiles.begin(), profiles.end(),
+                   [](const WheelProfile& a, const WheelProfile& b) { return a.priority > b.priority; });
   return profiles;
 }
 
@@ -148,6 +151,7 @@ std::string WheelProfile::to_yaml() const {
   out.precision(10);
   out << "# vsim wheel profile (docs/build.md: steering wheel). Written by vsim-input calibrate.\n";
   out << "name: \"" << name << "\"\n";
+  out << "priority: " << priority << "                  # higher wins when several profiles match\n";
   out << "match:\n  names: [";
   for (std::size_t i = 0; i < match_names.size(); ++i) {
     out << (i ? ", " : "") << '"' << match_names[i] << '"';

@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <stdexcept>
 
 #include "vsim/models/tire/tire.hpp"
@@ -137,6 +139,85 @@ vehicle:
 
   const ParamTree unknown = ParamTree::from_yaml_string("vehicle: {tire: {model: brush}}");
   EXPECT_THROW(make_tire(unknown, "front", {}), std::invalid_argument);
+}
+
+// --- Magic Formula (.tir) ---------------------------------------------------------
+
+std::filesystem::path example_tir() {
+  return std::filesystem::path(VSIM_SOURCE_DIR) /
+         "templates/projects/example_fs_ev/vehicle/tires/example_fs_10in.tir";
+}
+
+TEST(TirFile, ParsesKeysAndSkipsCommentsAndStrings) {
+  const auto values = read_tir_file(example_tir());
+  EXPECT_DOUBLE_EQ(values.at("FNOMIN"), 700.0);
+  EXPECT_DOUBLE_EQ(values.at("PKY1"), -33.6);
+  EXPECT_DOUBLE_EQ(values.at("FITTYP"), 61.0);
+  EXPECT_EQ(values.count("TYRESIDE"), 0u);  // a string
+  EXPECT_EQ(values.count("FILE_TYPE"), 0u);
+  EXPECT_THROW(read_tir_file("no/such/file.tir"), std::invalid_argument);
+}
+
+TEST(MagicFormulaTire, PureSlipMatchesTheCoefficients) {
+  const MagicFormulaTire tire = MagicFormulaTire::from_file(example_tir());
+  EXPECT_TRUE(tire.notes().empty());
+  const double fz = tire.nominal_load();
+  double peak_x = 0.0, peak_y = 0.0;
+  for (int i = 1; i <= 2000; ++i) {
+    const double slip = i * 0.0005;
+    peak_x = std::max(peak_x, tire.evaluate({fz, slip, 0.0}).fx);
+    peak_y = std::max(peak_y, tire.evaluate({fz, 0.0, slip}).fy);
+  }
+  EXPECT_NEAR(peak_x, 1.6 * fz, 1e-3 * fz);
+  EXPECT_NEAR(peak_y, 1.6 * fz, 1e-3 * fz);
+  const double small = 1e-6;
+  EXPECT_NEAR(tire.evaluate({fz, small, 0.0}).fx / small, 31.7 * fz, 0.01 * 31.7 * fz);
+  EXPECT_NEAR(tire.longitudinal_stiffness(fz), 31.7 * fz, 1e-9);
+  // ISO file, vsim convention: positive slip angle -> positive (leftward) force.
+  const double ky = 33.6 * fz * std::sin(2.0 * std::atan(0.5));
+  EXPECT_NEAR(tire.cornering_stiffness(fz), ky, 1e-6 * ky);
+  EXPECT_NEAR(tire.evaluate({fz, 0.0, small}).fy / small, ky, 0.01 * ky);
+  // Load sensitivity from PDX2/PDY2: less friction per newton at twice the load.
+  double peak_heavy = 0.0;
+  for (int i = 1; i <= 2000; ++i) {
+    peak_heavy = std::max(peak_heavy, tire.evaluate({2.0 * fz, 0.0, i * 0.0005}).fy);
+  }
+  EXPECT_NEAR(peak_heavy, 1.5 * 2.0 * fz, 2e-3 * fz);
+}
+
+TEST(MagicFormulaTire, AligningTorqueAndCombinedSlip) {
+  const MagicFormulaTire tire = MagicFormulaTire::from_file(example_tir());
+  const double fz = tire.nominal_load();
+  const TireForces small = tire.evaluate({fz, 0.0, 0.01});
+  EXPECT_LT(small.mz, 0.0);
+  // Trail at zero slip: QDZ1 * R0.
+  EXPECT_NEAR(-small.mz / small.fy, 0.096 * tire.unloaded_radius(), 2e-3 * tire.unloaded_radius());
+  // Combined slip costs force in both directions.
+  const TireForces both = tire.evaluate({fz, 0.08, 0.06});
+  EXPECT_LT(both.fy, tire.evaluate({fz, 0.0, 0.06}).fy);
+  EXPECT_LT(both.fx, tire.evaluate({fz, 0.08, 0.0}).fx);
+  const TireForces mirrored = tire.evaluate({fz, 0.08, -0.06});
+  EXPECT_NEAR(mirrored.fy, -both.fy, 1e-9);
+  EXPECT_NEAR(mirrored.fx, both.fx, 1e-9);
+  EXPECT_EQ(tire.evaluate({0.0, 0.1, 0.1}).fx, 0.0);
+}
+
+TEST(MagicFormulaTire, DetectsTheSaeSign) {
+  auto values = read_tir_file(example_tir());
+  values["PKY1"] = 33.6;
+  const MagicFormulaTire tire(values);
+  ASSERT_EQ(tire.notes().size(), 1u);
+  EXPECT_GT(tire.evaluate({700.0, 0.0, 0.02}).fy, 0.0);
+  values.erase("FNOMIN");
+  EXPECT_THROW(MagicFormulaTire{values}, std::invalid_argument);
+}
+
+TEST(TireFactory, LoadsATirFileRelativeToTheProject) {
+  const ParamTree params = ParamTree::from_yaml_string("vehicle: {tire: {model: mf, file: vehicle/tires/example_fs_10in.tir}}");
+  const auto tire = make_tire(params, "front", std::filesystem::path(VSIM_SOURCE_DIR) / "templates/projects/example_fs_ev");
+  EXPECT_NE(dynamic_cast<const MagicFormulaTire*>(tire.get()), nullptr);
+  const ParamTree missing = ParamTree::from_yaml_string("vehicle: {tire: {model: mf}}");
+  EXPECT_THROW(make_tire(missing, "front", {}), std::invalid_argument);
 }
 
 }  // namespace

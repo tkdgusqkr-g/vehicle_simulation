@@ -1,7 +1,9 @@
 # 로지텍 G29 기본 프로필. 축 번호나 FFB 방향이 다르면
 #   vsim-input calibrate
-# 로 이 폴더에 새 프로필을 만드세요 (같은 장치에 맞는 프로필 중 파일 이름순으로 첫 번째를 씁니다).
+# 로 이 폴더에 새 프로필을 만드세요. 같은 장치에 맞는 프로필이 여럿이면 priority가 높은 것을 씁니다
+# (calibrate가 만든 프로필은 10이라서 이 기본 프로필보다 우선합니다).
 name: "Logitech G29"
+priority: 0
 match:
   names: ["G29"]
   usb_ids: ["046d:c24f", "046d:c260"]   # PS3 모드, PS4 모드
