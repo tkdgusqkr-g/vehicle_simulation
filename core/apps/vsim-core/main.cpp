@@ -33,6 +33,7 @@
 #include "vsim/input/input_service.hpp"
 #endif
 #include "vsim/sim/simulation.hpp"
+#include "vsim/track/track.hpp"
 #include "vsim/util/paths.hpp"
 #include "vsim/version.hpp"
 
@@ -179,6 +180,19 @@ struct StateStream {
       {"regen", "vcu.regen", {}},
       {"ffb", "veh.ffb.torque_sw", {}},
       {"wheel", "drv.input.wheel", {}},
+      {"target_speed", "drv.target_speed", {}},
+      {"track_s", "track.s", {}},
+      {"track_n", "track.n", {}},
+      {"lap", "track.lap", {}},
+      {"lap_time", "track.lap_time", {}},
+      {"last_lap", "track.last_lap", {}},
+      {"best_lap", "track.best_lap", {}},
+      {"last_lap_valid", "track.last_lap_valid", {}},
+      {"lap_valid", "track.lap_valid", {}},
+      {"sector", "track.sector", {}},
+      {"last_sector", "track.last_sector", {}},
+      {"off_track", "track.off_track", {}},
+      {"finished", "track.finished", {}},
   };
   std::vector<vsim::SignalId> motor_temps;
 
@@ -210,6 +224,45 @@ struct StateStream {
   }
 };
 
+// Track outline for drawing: centerline, boundaries and lines every ~1 m,
+// start/finish and sector lines.
+json track_geometry(const vsim::Track& track) {
+  const auto every = static_cast<std::size_t>(std::max(1.0, std::round(1.0 / vsim::Track::kStep)));
+  const auto round_cm = [](double v) { return std::round(v * 100.0) / 100.0; };
+  json center = json::array(), left = json::array(), right = json::array();
+  for (std::size_t i = 0; i < track.samples().size(); i += every) {
+    const vsim::CurveSample& c = track.samples()[i];
+    const vsim::Track::Widths w = track.widths_at(c.s);
+    const double nx = -std::sin(c.heading);
+    const double ny = std::cos(c.heading);
+    center.push_back({round_cm(c.x), round_cm(c.y)});
+    left.push_back({round_cm(c.x + w.left * nx), round_cm(c.y + w.left * ny)});
+    right.push_back({round_cm(c.x - w.right * nx), round_cm(c.y - w.right * ny)});
+  }
+  json lines = json::object();
+  for (const auto& definition : track.definition().lines) {
+    const vsim::SampledCurve line = track.line(definition.name);
+    json points = json::array();
+    for (std::size_t i = 0; i < line.samples().size(); i += every) {
+      points.push_back({round_cm(line.samples()[i].x), round_cm(line.samples()[i].y)});
+    }
+    lines[definition.name] = points;
+  }
+  const auto marker = [&](double s) {
+    const vsim::CurveSample c = track.at(s);
+    const vsim::Track::Widths w = track.widths_at(s);
+    return json{{"x", c.x}, {"y", c.y}, {"heading", c.heading}, {"left", w.left}, {"right", w.right}};
+  };
+  json sectors = json::array();
+  for (const double s : track.sector_s()) {
+    sectors.push_back(marker(s));
+  }
+  return {{"name", track.name()},   {"closed", track.closed()},     {"length", track.length()},
+          {"center", center},       {"left", left},                 {"right", right},
+          {"lines", lines},         {"start", marker(track.start_s())}, {"finish", marker(track.finish_s())},
+          {"sectors", sectors}};
+}
+
 std::string hello_message(const vsim::Simulation& sim) {
   const vsim::ParamTree& params = sim.scenario().params;
   json vehicle;
@@ -227,7 +280,13 @@ std::string hello_message(const vsim::Simulation& sim) {
   hello["driver"] = params.get_string("driver.type", "external");
   hello["dt"] = sim.dt();
   hello["vehicle"] = vehicle;
+  const std::shared_ptr<const vsim::Track> track = sim.track();
+  hello["track"] = track ? track_geometry(*track) : json(nullptr);
   return json{{"jsonrpc", "2.0"}, {"method", "hello"}, {"params", hello}}.dump();
+}
+
+std::string notice(const std::string& level, const std::string& text) {
+  return json{{"jsonrpc", "2.0"}, {"method", "notice"}, {"params", {{"level", level}, {"text", text}}}}.dump();
 }
 
 void print_summary(const vsim::Simulation& sim, double wall_seconds) {
@@ -345,6 +404,38 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
         paused = false;
       } else if (method == "sim.toggle_pause") {
         paused = !paused;
+      } else if (method == "track.set" || method == "track.reset") {
+        // A track from the editor (track.set) or back to the scenario's.
+        try {
+          std::shared_ptr<const vsim::Track> track;
+          if (method == "track.set") {
+            track = std::make_shared<const vsim::Track>(
+                vsim::TrackDefinition::from_json(params.value("track", json::object()).dump()));
+          }
+          sim.set_track(std::move(track));
+          stream.resolve(sim.bus());
+          rtf_sim_start = sim.time();
+          lag = 0.0;
+          server.set_hello(hello_message(sim));
+          server.broadcast(hello_message(sim));
+          const auto current = sim.track();
+          const std::string name = current ? current->name() : std::string("(none)");
+          server.broadcast(notice("info", "track: " + name));
+          std::cout << "Track: " << name << "\n";
+          if (current) {
+            for (const std::string& warning : current->warnings()) {
+              server.broadcast(notice("warning", warning));
+            }
+          }
+        } catch (const std::exception& error) {
+          server.broadcast(notice("error", std::string("track rejected: ") + error.what()));
+        }
+      } else if (method == "track.get") {
+        const auto track = sim.track();
+        server.broadcast(json{{"jsonrpc", "2.0"},
+                              {"method", "track.definition"},
+                              {"params", {{"track", track ? json::parse(track->definition().to_json()) : json(nullptr)}}}}
+                             .dump());
       }
     }
 

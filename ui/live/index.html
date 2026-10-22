@@ -19,6 +19,11 @@
     --trail: rgba(79, 179, 255, 0.55);
     --car: #f2f4f7;
     --tire: #0b0d10;
+    --asphalt: #262b33;
+    --kerb: #d8dde5;
+    --centerline: #4a5361;
+    --racing: #ffb347;
+    --sector: #ffd84d;
   }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
     font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; overflow: hidden; }
@@ -44,6 +49,14 @@
   #wheel { width: 64px; height: 64px; }
   #numbers { font-variant-numeric: tabular-nums; color: var(--muted); }
   #numbers b { color: var(--text); font-weight: 500; }
+  #laps { top: 12px; left: 50%; transform: translateX(-50%); display: none; gap: 18px; align-items: baseline;
+    font-variant-numeric: tabular-nums; }
+  #laps .big { font-size: 26px; font-weight: 600; }
+  #laps .label { color: var(--muted); margin-right: 4px; }
+  #laps .bad { color: var(--brake); }
+  #laps .good { color: var(--throttle); }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); display: none; }
+  #toast.error { border-color: var(--brake); }
   #paused { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 28px;
     letter-spacing: 4px; color: var(--muted); display: none; pointer-events: none; }
 </style>
@@ -65,7 +78,7 @@
   <div><kbd>↑</kbd>/<kbd>W</kbd> 가속 &nbsp; <kbd>↓</kbd>/<kbd>S</kbd> 브레이크</div>
   <div><kbd>←</kbd><kbd>→</kbd>/<kbd>A</kbd><kbd>D</kbd> 조향</div>
   <div><kbd>Space</kbd> 일시정지 &nbsp; <kbd>R</kbd> 리셋</div>
-  <div><kbd>C</kbd> 카메라 &nbsp; <kbd>+</kbd><kbd>-</kbd>/휠 확대</div>
+  <div><kbd>C</kbd> 카메라 &nbsp; <kbd>M</kbd> 트랙 전체 &nbsp; <kbd>+</kbd><kbd>-</kbd>/휠 확대</div>
 </div>
 
 <div id="dash" class="panel">
@@ -94,6 +107,15 @@
   </div>
 </div>
 
+<div id="laps" class="panel">
+  <span><span class="label">랩</span><span id="lap-no" class="big">-</span></span>
+  <span><span class="label">현재</span><span id="lap-time" class="big">-</span></span>
+  <span><span class="label">지난</span><span id="last-lap">-</span></span>
+  <span><span class="label">베스트</span><span id="best-lap">-</span></span>
+  <span><span class="label">구간</span><span id="sector">-</span> <span id="last-sector"></span></span>
+  <span id="lap-flag"></span>
+</div>
+<div id="toast" class="panel"></div>
 <div id="paused">일시정지</div>
 
 <script>
@@ -108,6 +130,8 @@ const color = (name) => css.getPropertyValue(name).trim();
 let vehicle = { wheelbase: 1.53, cg_to_front: 0.8, track_front: 1.22, track_rear: 1.18, steering_ratio: 4.5 };
 let state = null;
 let trail = [];
+let track = null;      // outline from the hello message
+let overview = false;  // whole track on screen
 let headingUp = true;
 let pixelsPerMeter = 28;
 
@@ -127,8 +151,13 @@ function connect() {
       vehicle = Object.assign(vehicle, message.params.vehicle);
       document.getElementById("scenario").textContent = message.params.scenario;
       document.getElementById("driver").textContent = message.params.driver;
+      track = message.params.track || null;
+      trail = [];
+      document.getElementById("laps").style.display = track ? "flex" : "none";
     } else if (message.method === "state") {
       onState(message.params);
+    } else if (message.method === "notice") {
+      toast(message.params.text, message.params.level);
     }
   };
 }
@@ -165,7 +194,8 @@ window.addEventListener("keydown", (event) => {
   if (event.repeat) return;
   if (event.code === "Space" || event.code === "KeyP") { event.preventDefault(); send("sim.toggle_pause"); }
   else if (event.code === "KeyR") { send("sim.reset"); trail = []; }
-  else if (event.code === "KeyC") { headingUp = !headingUp; }
+  else if (event.code === "KeyC") { headingUp = !headingUp; overview = false; }
+  else if (event.code === "KeyM") { overview = !overview; }
   else if (event.key === "+" || event.key === "=") { zoom(1.25); }
   else if (event.key === "-") { zoom(0.8); }
 });
@@ -196,7 +226,8 @@ function onState(s) {
   document.getElementById("time").textContent = `${s.t.toFixed(2)} s`;
   document.getElementById("rtf").textContent = s.rtf ? `${s.rtf.toFixed(2)}×` : "-";
   const input = s.input || {};
-  document.getElementById("input").textContent = s.wheel > 0.5 ? (input.device || "휠") : "키보드";
+  document.getElementById("input").textContent =
+    s.wheel === undefined ? "-" : s.wheel > 0.5 ? (input.device || "휠") : "키보드";
   document.getElementById("ffb-status").textContent =
     input.ffb === undefined ? "-" :
     !input.ffb ? "꺼짐" :
@@ -225,6 +256,40 @@ function onState(s) {
   document.getElementById("wheel-rot").setAttribute("transform", `rotate(${-steerDeg})`);
   document.getElementById("steer-deg").textContent = `${steerDeg.toFixed(0)}°`;
   document.getElementById("paused").style.display = s.paused ? "block" : "none";
+  if (track && s.lap !== undefined) updateLaps(s);
+}
+
+const lapTime = (seconds) => {
+  if (!(seconds > 0)) return "-";
+  const m = Math.floor(seconds / 60);
+  const rest = (seconds - 60 * m).toFixed(3).padStart(6, "0");
+  return m > 0 ? `${m}:${rest}` : (seconds).toFixed(3);
+};
+
+function updateLaps(s) {
+  const open = !track.closed;
+  document.getElementById("lap-no").textContent = open ? (s.finished > 0.5 ? "완주" : "-") : String(s.lap + 1);
+  document.getElementById("lap-time").textContent = lapTime(s.lap_time);
+  const last = document.getElementById("last-lap");
+  last.textContent = lapTime(s.last_lap);
+  last.className = s.last_lap > 0 && s.last_lap_valid < 0.5 ? "bad" : "";
+  document.getElementById("best-lap").textContent = lapTime(s.best_lap);
+  document.getElementById("sector").textContent = String(s.sector + 1);
+  document.getElementById("last-sector").textContent = s.last_sector > 0 ? `(${s.last_sector.toFixed(2)})` : "";
+  const flag = document.getElementById("lap-flag");
+  if (s.off_track > 0.5) { flag.textContent = "코스 이탈"; flag.className = "bad"; }
+  else if (s.lap_valid < 0.5 && s.lap_time > 0) { flag.textContent = "무효 랩"; flag.className = "bad"; }
+  else { flag.textContent = ""; flag.className = ""; }
+}
+
+let toastTimer = null;
+function toast(text, level) {
+  const el = document.getElementById("toast");
+  el.textContent = text;
+  el.className = `panel ${level || ""}`;
+  el.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.style.display = "none"; }, level === "error" ? 8000 : 4000);
 }
 
 // --- Drawing ------------------------------------------------------------------
@@ -237,16 +302,89 @@ function resize() {
 window.addEventListener("resize", resize);
 resize();
 
-// World (east, north) -> screen pixels, centred on the car.
+// World (east, north) -> screen pixels, centred on the car (or on the whole
+// track in overview).
 function makeProjection(center, yaw) {
+  let scale = pixelsPerMeter;
+  let up = headingUp;
+  if (overview && track) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const [x, y] of track.left.concat(track.right)) {
+      minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+    }
+    center = [(minX + maxX) / 2, (minY + maxY) / 2];
+    scale = 0.85 * Math.min(window.innerWidth / (maxX - minX + 1), window.innerHeight / (maxY - minY + 1));
+    up = false;
+  }
   const cx = window.innerWidth / 2;
-  const cy = window.innerHeight * (headingUp ? 0.62 : 0.5);
-  const angle = headingUp ? Math.PI / 2 - yaw : 0;
+  const cy = window.innerHeight * (up ? 0.62 : 0.5);
+  const angle = up ? Math.PI / 2 - yaw : 0;
   const c = Math.cos(angle), s = Math.sin(angle);
-  return (x, y) => {
+  const project = (x, y) => {
     const dx = x - center[0], dy = y - center[1];
-    return [cx + pixelsPerMeter * (dx * c - dy * s), cy - pixelsPerMeter * (dx * s + dy * c)];
+    return [cx + scale * (dx * c - dy * s), cy - scale * (dx * s + dy * c)];
   };
+  project.scale = scale;
+  project.center = center;
+  return project;
+}
+
+function polyline(p, points, closed) {
+  points.forEach(([x, y], i) => {
+    const [sx, sy] = p(x, y);
+    if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+  });
+  if (closed) ctx.closePath();
+}
+
+// Line across the track at a marker {x, y, heading, left, right}.
+function crossLine(p, m) {
+  const nx = -Math.sin(m.heading), ny = Math.cos(m.heading);
+  line(p, [m.x + nx * m.left, m.y + ny * m.left], [m.x - nx * m.right, m.y - ny * m.right]);
+}
+
+function drawTrack(p) {
+  if (!track) return;
+  // Surface: between the boundaries (even-odd for loops).
+  ctx.beginPath();
+  if (track.closed) {
+    polyline(p, track.left, true);
+    polyline(p, track.right, true);
+  } else {
+    polyline(p, track.left.concat(track.right.slice().reverse()), true);
+  }
+  ctx.fillStyle = color("--asphalt");
+  ctx.fill("evenodd");
+  ctx.lineWidth = Math.max(1, 0.15 * p.scale);
+  ctx.strokeStyle = color("--kerb");
+  ctx.beginPath();
+  polyline(p, track.left, track.closed);
+  polyline(p, track.right, track.closed);
+  ctx.stroke();
+  ctx.setLineDash([6, 6]);
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = color("--centerline");
+  ctx.beginPath();
+  polyline(p, track.center, track.closed);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.strokeStyle = color("--racing");
+  ctx.lineWidth = 1.5;
+  for (const points of Object.values(track.lines || {})) {
+    ctx.beginPath();
+    polyline(p, points, track.closed);
+    ctx.stroke();
+  }
+  ctx.lineWidth = Math.max(2, 0.3 * p.scale);
+  ctx.strokeStyle = color("--sector");
+  ctx.beginPath();
+  for (const m of track.sectors) crossLine(p, m);
+  ctx.stroke();
+  ctx.strokeStyle = "#ffffff";
+  ctx.beginPath();
+  crossLine(p, track.start);
+  if (!track.closed) crossLine(p, track.finish);
+  ctx.stroke();
 }
 
 function line(p, a, b) {
@@ -257,9 +395,9 @@ function line(p, a, b) {
 }
 
 function drawGrid(p, center) {
-  const reach = Math.hypot(window.innerWidth, window.innerHeight) / pixelsPerMeter;
+  const reach = Math.hypot(window.innerWidth, window.innerHeight) / p.scale;
   for (const [step, stroke] of [[1, color("--grid-minor")], [10, color("--grid-major")]]) {
-    if (step === 1 && pixelsPerMeter < 8) continue;
+    if (step === 1 && p.scale < 8) continue;
     ctx.beginPath();
     ctx.strokeStyle = stroke;
     ctx.lineWidth = 1;
@@ -335,7 +473,8 @@ function frame() {
   ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
   const s = state || { x: 0, y: 0, yaw: 0, delta: 0 };
   const p = makeProjection([s.x, s.y], s.yaw);
-  drawGrid(p, [s.x, s.y]);
+  drawGrid(p, p.center);
+  drawTrack(p);
   drawTrail(p);
   drawCar(p, s);
   requestAnimationFrame(frame);
