@@ -1,0 +1,1023 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vsim 트랙 편집기</title>
+<style>
+  :root {
+    --bg: #12151a;
+    --grid-minor: #1b2027;
+    --grid-major: #28303b;
+    --panel: #171b21;
+    --panel-border: #2c3440;
+    --text: #e6e9ee;
+    --muted: #8a94a3;
+    --accent: #4fb3ff;
+    --ok: #3ecf8e;
+    --bad: #ff5c5c;
+    --warn: #ffb347;
+    --asphalt: #262b33;
+    --kerb: #d8dde5;
+    --centerline: #5a6475;
+    --racing: #ffb347;
+    --sector: #ffd84d;
+    --point: #4fb3ff;
+    --selected: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; font-size: 13px; }
+  body { display: grid; grid-template-columns: 1fr 330px; grid-template-rows: auto 1fr auto; height: 100vh; }
+  #toolbar { grid-column: 1 / 3; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 10px;
+    background: var(--panel); border-bottom: 1px solid var(--panel-border); }
+  #toolbar .group { display: flex; gap: 4px; align-items: center; padding-right: 8px; margin-right: 4px;
+    border-right: 1px solid var(--panel-border); }
+  #toolbar .group:last-child { border-right: none; }
+  button, select, input { font: inherit; color: var(--text); background: #222833; border: 1px solid var(--panel-border);
+    border-radius: 5px; padding: 4px 8px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.active { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  input[type="number"] { width: 66px; }
+  input[type="text"] { width: 100%; }
+  #wrap { position: relative; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+  #side { background: var(--panel); border-left: 1px solid var(--panel-border); overflow-y: auto; padding: 10px 12px; }
+  #side h2 { font-size: 12px; text-transform: none; color: var(--muted); font-weight: 600; margin: 14px 0 6px;
+    letter-spacing: 0.5px; }
+  #side h2:first-child { margin-top: 0; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 4px 0; }
+  .row label { color: var(--muted); }
+  .muted { color: var(--muted); }
+  .warnings { margin: 0; padding-left: 16px; }
+  .warnings li { color: var(--warn); margin: 3px 0; }
+  .warnings li.ok { color: var(--ok); list-style: none; margin-left: -16px; }
+  #statusbar { grid-column: 1 / 3; display: flex; gap: 18px; padding: 5px 10px; background: var(--panel);
+    border-top: 1px solid var(--panel-border); color: var(--muted); font-variant-numeric: tabular-nums; }
+  #hint { flex: 1; }
+  #legend { position: absolute; right: 10px; bottom: 10px; background: rgba(23, 27, 33, 0.85);
+    border: 1px solid var(--panel-border); border-radius: 6px; padding: 6px 8px; display: none; }
+  #legend .bar { width: 140px; height: 8px; border-radius: 3px;
+    background: linear-gradient(90deg, hsl(220,80%,60%), hsl(120,70%,50%), hsl(50,90%,55%), hsl(0,85%,55%)); }
+  #legend .ticks { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; }
+  #sim-notice { margin-top: 6px; min-height: 18px; }
+  .notice-error { color: var(--bad); }
+  .notice-warning { color: var(--warn); }
+  .notice-info { color: var(--ok); }
+  kbd { color: var(--text); background: #222833; border: 1px solid var(--panel-border); border-radius: 4px;
+    padding: 0 4px; font-family: inherit; font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <div class="group">
+    <button id="btn-new" title="빈 트랙으로 새로 시작">새로</button>
+    <button id="btn-open" title="*.track.json 또는 TUMFTM CSV 열기">열기</button>
+    <button id="btn-save" title="*.track.json으로 저장 (다운로드)">저장</button>
+    <input id="file" type="file" accept=".json,.csv" hidden>
+  </div>
+  <div class="group" id="tools">
+    <button data-tool="select" class="active" title="점 선택·이동, 빈 곳 드래그로 화면 이동 (V)">선택 <kbd>V</kbd></button>
+    <button data-tool="add" title="빈 곳: 끝에 점 추가 / 선 위: 사이에 삽입 (A)">점 추가 <kbd>A</kbd></button>
+    <button data-tool="start" title="점 클릭: 출발선, Shift+클릭: 결승선(열린 트랙) (S)">출발·결승 <kbd>S</kbd></button>
+    <button data-tool="sector" title="점 클릭: 구간 경계 추가/제거 (K)">구간 <kbd>K</kbd></button>
+    <button data-tool="line" title="주행 라인 핸들 드래그, 트랙 클릭으로 핸들 추가 (L)">주행 라인 <kbd>L</kbd></button>
+  </div>
+  <div class="group">
+    <button id="btn-undo" title="되돌리기 (Ctrl+Z)">되돌리기</button>
+    <button id="btn-redo" title="다시 실행 (Ctrl+Y)">다시</button>
+  </div>
+  <div class="group">
+    <button id="btn-fit" title="트랙 전체 보기 (F)">전체 보기 <kbd>F</kbd></button>
+    <button id="btn-curv" title="센터라인을 곡률로 색칠">곡률 색</button>
+  </div>
+</div>
+
+<div id="wrap">
+  <canvas id="view"></canvas>
+  <div id="legend"><div class="bar"></div><div class="ticks"><span>R ∞</span><span>30</span><span>15</span><span>≤7 m</span></div></div>
+</div>
+
+<aside id="side">
+  <h2>트랙</h2>
+  <div class="row"><input id="name" type="text" placeholder="트랙 이름"></div>
+  <div class="row"><label for="closed">닫힌 트랙 (서킷)</label><input id="closed" type="checkbox"></div>
+  <div class="row"><label>길이</label><span id="length">-</span></div>
+  <div class="row"><label>점 / 최소 반경</label><span id="info">-</span></div>
+  <div class="row"><label>모든 점 폭 좌/우 (m)</label>
+    <span><input id="all-wl" type="number" step="0.1" min="0.5" value="1.75" style="width:62px">
+    <input id="all-wr" type="number" step="0.1" min="0.5" value="1.75" style="width:62px">
+    <button id="btn-all-w">적용</button></span></div>
+
+  <h2>선택한 점 <span id="sel-index" class="muted"></span></h2>
+  <div id="point-fields">
+    <div class="row"><label>x / y (m)</label><span><input id="p-x" type="number" step="0.1"> <input id="p-y" type="number" step="0.1"></span></div>
+    <div class="row"><label>폭 좌 / 우 (m)</label><span><input id="p-wl" type="number" step="0.1" min="0.3"> <input id="p-wr" type="number" step="0.1" min="0.3"></span></div>
+    <div class="row"><label>고도 z (m) / 뱅크 (°)</label><span><input id="p-z" type="number" step="0.1"> <input id="p-bank" type="number" step="0.5"></span></div>
+    <div class="row"><span class="muted">고도·뱅크는 저장만 됩니다 (L3 모델에서 사용)</span></div>
+    <div class="row"><span></span><button id="btn-del">점 삭제</button></div>
+  </div>
+
+  <h2>주행 라인</h2>
+  <div class="row"><select id="line-select" style="flex:1"></select><button id="btn-line-new">새 라인</button></div>
+  <div class="row"><button id="btn-line-opt" style="flex:1">최소 곡률 라인 계산</button><button id="btn-line-del">삭제</button></div>
+  <div class="row"><label>경계 여유 (m)</label><input id="line-margin" type="number" step="0.1" min="0" value="1.0"></div>
+  <div class="muted" id="line-info">주행 라인 도구(L)에서 핸들을 끌어 옆으로 옮기고, 트랙을 클릭하면 핸들이 추가됩니다.</div>
+
+  <h2>검사</h2>
+  <ul class="warnings" id="warnings"></ul>
+
+  <h2>시뮬레이터</h2>
+  <div class="row"><input id="ws-url" type="text" value="ws://127.0.0.1:8765"></div>
+  <div class="row"><button id="btn-send" style="flex:1" title="실행 중인 vsim-core에 이 트랙을 보내고 처음부터 다시 시작">시뮬레이터로 보내기</button>
+    <button id="btn-fetch" title="vsim-core가 쓰고 있는 트랙 가져오기">가져오기</button></div>
+  <div class="row"><button id="btn-reset-track" style="flex:1" title="시나리오에 지정된 원래 트랙으로">시나리오 트랙으로 되돌리기</button></div>
+  <div id="sim-notice" class="muted">vsim-core를 realtime으로 실행 중이어야 합니다.</div>
+</aside>
+
+<div id="statusbar"><span id="cursor">x -, y -</span><span id="hint"></span><span id="dirty"></span></div>
+
+<script>
+"use strict";
+// Geometry here mirrors core/src/track/track.cpp (chord-length cubic spline,
+// periodic when closed, 0.25 m resampling, widths linear between points,
+// line offsets as a spline in u = s / length) so what you see is what the
+// simulator drives.
+
+const STEP = 0.25;
+const css = getComputedStyle(document.documentElement);
+const color = (name) => css.getPropertyValue(name).trim();
+const $ = (id) => document.getElementById(id);
+
+// --- Spline -----------------------------------------------------------------------
+function solveTridiagonal(sub, diag, sup, rhs) {
+  const n = diag.length;
+  diag = diag.slice(); rhs = rhs.slice();
+  for (let i = 1; i < n; i++) {
+    const w = sub[i] / diag[i - 1];
+    diag[i] -= w * sup[i - 1];
+    rhs[i] -= w * rhs[i - 1];
+  }
+  const x = new Array(n);
+  x[n - 1] = rhs[n - 1] / diag[n - 1];
+  for (let i = n - 2; i >= 0; i--) x[i] = (rhs[i] - sup[i] * x[i + 1]) / diag[i];
+  return x;
+}
+
+// Second derivatives of a cubic spline through (t[i], y[i]); natural when
+// open, periodic when closed (t has one extra knot, y[n] == y[0]).
+function splineMoments(t, y, closed) {
+  const n = closed ? t.length - 1 : t.length;
+  const m = new Array(t.length).fill(0);
+  if (!closed && n < 3) return m;
+  const unknowns = closed ? n : n - 2;
+  const a = [], b = [], c = [], d = [];
+  for (let k = 0; k < unknowns; k++) {
+    const i = closed ? k : k + 1;
+    const prev = closed ? (i + n - 1) % n : i - 1;
+    const h0 = closed && i === 0 ? t[n] - t[n - 1] : t[i] - t[prev];
+    const h1 = t[i + 1] - t[i];
+    const yPrev = closed && i === 0 ? y[n - 1] : y[prev];
+    a.push(h0); b.push(2 * (h0 + h1)); c.push(h1);
+    d.push(6 * ((y[i + 1] - y[i]) / h1 - (y[i] - yPrev) / h0));
+  }
+  if (!closed) {
+    a[0] = 0; c[unknowns - 1] = 0;
+    const x = solveTridiagonal(a, b, c, d);
+    for (let k = 0; k < unknowns; k++) m[k + 1] = x[k];
+    return m;
+  }
+  const alpha = a[0], beta = c[n - 1], gamma = -b[0];
+  const diag = b.slice();
+  diag[0] -= gamma;
+  diag[n - 1] -= alpha * beta / gamma;
+  const sub = a.slice(), sup = c.slice();
+  sub[0] = 0; sup[n - 1] = 0;
+  const x = solveTridiagonal(sub, diag, sup, d);
+  const u = new Array(n).fill(0);
+  u[0] = gamma; u[n - 1] = beta;
+  const z = solveTridiagonal(sub, diag, sup, u);
+  const factor = (x[0] + alpha * x[n - 1] / gamma) / (1 + z[0] + alpha * z[n - 1] / gamma);
+  for (let i = 0; i < n; i++) m[i] = x[i] - factor * z[i];
+  m[n] = m[0];
+  return m;
+}
+
+function splineEval(t0, t1, y0, y1, m0, m1, t) {
+  const h = t1 - t0, a = t1 - t, b = t - t0;
+  return {
+    v: m0 * a * a * a / (6 * h) + m1 * b * b * b / (6 * h) + (y0 / h - m0 * h / 6) * a + (y1 / h - m1 * h / 6) * b,
+    d1: -m0 * a * a / (2 * h) + m1 * b * b / (2 * h) - (y0 / h - m0 * h / 6) + (y1 / h - m1 * h / 6),
+    d2: m0 * a / h + m1 * b / h,
+  };
+}
+
+const wrapAngle = (a) => a - 2 * Math.PI * Math.round(a / (2 * Math.PI));
+
+// Resampled centerline: {samples: [{s, x, y, heading, curvature, wl, wr}], length, pointS}
+function buildGeometry(doc) {
+  const pts = doc.points, n = pts.length, closed = doc.closed;
+  if (n < (closed ? 3 : 2)) return null;
+  for (let i = 0; i < n; i++) {
+    const j = i + 1 < n ? i + 1 : (closed ? 0 : -1);
+    if (j >= 0 && Math.hypot(pts[j].x - pts[i].x, pts[j].y - pts[i].y) < 1e-3) return null;
+  }
+  const knots = closed ? n + 1 : n;
+  const t = [], xs = [], ys = [];
+  for (let i = 0; i < knots; i++) {
+    const p = pts[i % n];
+    xs.push(p.x); ys.push(p.y);
+    t.push(i === 0 ? 0 : t[i - 1] + Math.hypot(p.x - xs[i - 1], p.y - ys[i - 1]));
+  }
+  const mx = splineMoments(t, xs, closed), my = splineMoments(t, ys, closed);
+  const dense = [];
+  const pointS = new Array(n).fill(0);
+  let s = 0;
+  for (let i = 0; i + 1 < knots; i++) {
+    const h = t[i + 1] - t[i];
+    const steps = Math.max(16, Math.ceil(h / 0.02));
+    for (let k = 0; k <= steps; k++) {
+      if (k === 0 && i > 0) continue;
+      const tt = t[i] + h * k / steps;
+      const vx = splineEval(t[i], t[i + 1], xs[i], xs[i + 1], mx[i], mx[i + 1], tt);
+      const vy = splineEval(t[i], t[i + 1], ys[i], ys[i + 1], my[i], my[i + 1], tt);
+      const speed = Math.hypot(vx.d1, vy.d1);
+      if (dense.length) {
+        const prev = dense[dense.length - 1];
+        s += Math.hypot(vx.v - prev.x, vy.v - prev.y);
+      }
+      const curvature = speed > 1e-12 ? (vx.d1 * vy.d2 - vy.d1 * vx.d2) / (speed * speed * speed) : 0;
+      dense.push({ s, x: vx.v, y: vy.v, heading: Math.atan2(vy.d1, vx.d1), curvature, segment: i });
+    }
+    if (i + 1 < n) pointS[i + 1] = s;
+  }
+  const total = s;
+  if (closed) dense.pop();
+  const count = Math.max(2, Math.round(total / STEP));
+  const ds = total / count;
+  const samples = [];
+  let j = 0;
+  for (let k = 0; k < (closed ? count : count + 1); k++) {
+    const sk = Math.min(k * ds, total);
+    while (j + 1 < dense.length && dense[j + 1].s < sk) j++;
+    const a = dense[j], b = j + 1 < dense.length ? dense[j + 1] : dense[j];
+    const span = b.s - a.s;
+    const f = span > 0 ? Math.min(1, Math.max(0, (sk - a.s) / span)) : 0;
+    const seg = a.segment;
+    const segStart = pointS[seg % n], segEnd = seg + 1 < n ? pointS[seg + 1] : total;
+    const g = segEnd > segStart ? Math.min(1, Math.max(0, (sk - segStart) / (segEnd - segStart))) : 0;
+    const p0 = pts[seg % n], p1 = pts[(seg + 1) % n];
+    samples.push({
+      s: sk, x: a.x + f * (b.x - a.x), y: a.y + f * (b.y - a.y),
+      heading: a.heading + f * wrapAngle(b.heading - a.heading),
+      curvature: a.curvature + f * (b.curvature - a.curvature),
+      wl: p0.w_left + g * (p1.w_left - p0.w_left), wr: p0.w_right + g * (p1.w_right - p0.w_right),
+    });
+  }
+  return { samples, length: total, pointS, closed };
+}
+
+// Offset of a line at centerline s (core: Track::line_offset).
+function lineOffset(geom, offsets, s) {
+  if (!offsets.length) return 0;
+  if (offsets.length === 1) return offsets[0][1];
+  const sorted = offsets.slice().sort((p, q) => p[0] - q[0]);
+  const ku = [], kn = [];
+  for (const [u, n] of sorted) {
+    if (ku.length && u - ku[ku.length - 1] < 1e-9) continue;
+    ku.push(u); kn.push(n);
+  }
+  let u = s / geom.length;
+  if (geom.closed) u -= Math.floor(u);
+  const evalAt = (knotsU, values, m, uu) => {
+    let i = 0;
+    while (i + 2 < knotsU.length && knotsU[i + 1] < uu) i++;
+    return splineEval(knotsU[i], knotsU[i + 1], values[i], values[i + 1], m[i], m[i + 1], uu).v;
+  };
+  if (geom.closed && ku.length >= 3) {
+    const kuu = ku.concat([ku[0] + 1]), knn = kn.concat([kn[0]]);
+    const m = splineMoments(kuu, knn, true);
+    return evalAt(kuu, knn, m, u < kuu[0] ? u + 1 : u);
+  }
+  if (ku.length >= 3) {
+    if (u <= ku[0]) return kn[0];
+    if (u >= ku[ku.length - 1]) return kn[kn.length - 1];
+    return evalAt(ku, kn, splineMoments(ku, kn, false), u);
+  }
+  const [u0, n0, u1, n1] = [ku[0], kn[0], ku[1], kn[1]];
+  if (!geom.closed) return n0 + (n1 - n0) * Math.min(1, Math.max(0, (u - u0) / (u1 - u0)));
+  if (u >= u0 && u <= u1) return n0 + (n1 - n0) * (u - u0) / (u1 - u0);
+  const gap = 1 - (u1 - u0);
+  const along = u > u1 ? u - u1 : u + 1 - u1;
+  return n1 + (n0 - n1) * along / gap;
+}
+
+function linePoints(geom, line) {
+  return geom.samples.map((c) => {
+    const n = lineOffset(geom, line.offsets, c.s);
+    return [c.x - n * Math.sin(c.heading), c.y + n * Math.cos(c.heading)];
+  });
+}
+
+// Nearest resampled point at arc length s (wrapped on closed tracks).
+function sampleAt(geom, s) {
+  const count = geom.closed ? geom.samples.length : geom.samples.length - 1;
+  if (geom.closed) s = ((s % geom.length) + geom.length) % geom.length;
+  const k = Math.round(s / (geom.length / count));
+  return geom.samples[geom.closed ? k % geom.samples.length : Math.min(geom.samples.length - 1, Math.max(0, k))];
+}
+
+// Racing line of approximately minimum curvature (K1999 path optimiser, as
+// in python/vsim/tracks.py).
+function minimumCurvatureOffsets(geom, margin, spacing = 2, iterations = 300) {
+  const step = Math.max(1, Math.round(spacing / STEP));
+  const idx = [];
+  for (let i = 0; i < geom.samples.length; i += step) idx.push(i);
+  const c = idx.map((i) => geom.samples[i]);
+  const count = c.length;
+  const lo = c.map((p) => Math.min(0, -p.wr + margin)), hi = c.map((p) => Math.max(0, p.wl - margin));
+  const n = new Array(count).fill(0);
+  const closed = geom.closed;
+  const point = (k, offset) => {
+    k = closed ? ((k % count) + count) % count : Math.min(Math.max(k, 0), count - 1);
+    const o = offset === undefined ? n[k] : offset;
+    return [c[k].x - o * Math.sin(c[k].heading), c[k].y + o * Math.cos(c[k].heading)];
+  };
+  const curv = (a, b, d) => {
+    const abx = b[0] - a[0], aby = b[1] - a[1], bcx = d[0] - b[0], bcy = d[1] - b[1];
+    const cross = abx * bcy - aby * bcx;
+    const den = Math.hypot(abx, aby) * Math.hypot(bcx, bcy) * Math.hypot(d[0] - a[0], d[1] - a[1]);
+    return den > 1e-12 ? 2 * cross / den : 0;
+  };
+  const curvature = (k, offset) => curv(point(k - 1), point(k, offset), point(k + 1));
+  const first = closed ? 0 : 2, last = closed ? count : count - 2;
+  for (let it = 0; it < iterations; it++) {
+    for (let k = first; k < last; k++) {
+      const target = 0.5 * (curvature(k - 1) + curvature(k + 1));
+      const now = curvature(k);
+      const slope = (curvature(k, n[k] + 1e-3) - now) / 1e-3;
+      if (Math.abs(slope) > 1e-9) n[k] = Math.min(Math.max(n[k] + 0.8 * (target - now) / slope, lo[k]), hi[k]);
+    }
+  }
+  const every = Math.max(1, Math.round(5 / spacing));
+  const out = [];
+  for (let k = 0; k < count; k += every) out.push([+(c[k].s / geom.length).toFixed(6), +n[k].toFixed(3)]);
+  return out;
+}
+
+// --- Checks ---------------------------------------------------------------------------
+function segmentsIntersect(a, b, c, d) {
+  const o = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0;
+}
+
+function checks(doc, geom) {
+  const out = [];
+  if (!geom) {
+    out.push(doc.points.length < (doc.closed ? 3 : 2)
+      ? `점이 부족합니다 (${doc.closed ? "닫힌 트랙 3개" : "열린 트랙 2개"} 이상)` : "겹친 점이 있습니다");
+    return out;
+  }
+  let tightest = 0, folded = -1;
+  for (const p of geom.samples) {
+    if (Math.abs(p.curvature) > Math.abs(tightest)) tightest = p.curvature;
+    const inner = p.curvature > 0 ? p.wl : p.wr;
+    if (folded < 0 && Math.abs(p.curvature) * inner > 0.95) folded = p.s;
+  }
+  if (Math.abs(tightest) > 1 / 4.5) out.push(`최소 반경 ${(1 / Math.abs(tightest)).toFixed(1)} m: 포뮬러 차량 회전 반경(약 4.5 m)보다 작습니다`);
+  if (folded >= 0) out.push(`s = ${folded.toFixed(0)} m 근처: 안쪽 경계가 접힙니다 (폭이 반경보다 큼)`);
+  const narrow = geom.samples.find((p) => p.wl + p.wr < 3);
+  if (narrow) out.push(`s = ${narrow.s.toFixed(0)} m 근처: 폭 ${(narrow.wl + narrow.wr).toFixed(1)} m (FS 최소 3 m)`);
+  // Self intersection of the centerline (every 2 m; a skidpad crosses on purpose).
+  const pts = geom.samples.filter((_, i) => i % 8 === 0).map((p) => [p.x, p.y]);
+  let crossing = null;
+  for (let i = 0; i + 1 < pts.length && !crossing; i++) {
+    for (let j = i + 2; j + 1 < pts.length; j++) {
+      if (segmentsIntersect(pts[i], pts[i + 1], pts[j], pts[j + 1])) { crossing = pts[i]; break; }
+    }
+  }
+  if (crossing) out.push(`센터라인이 (${crossing[0].toFixed(0)}, ${crossing[1].toFixed(0)}) 근처에서 교차합니다 (스키드패드처럼 의도한 경우 무시)`);
+  return out;
+}
+
+// --- Document and history ----------------------------------------------------------------
+const emptyTrack = () => ({ schema_version: 1, name: "새 트랙", closed: true, points: [], start_point: 0,
+  finish_point: -1, sector_points: [], lines: [] });
+let doc = emptyTrack();
+let geom = null;
+let undoStack = [], redoStack = [];
+let savedJson = JSON.stringify(doc);
+let selected = -1;
+let selectedHandle = -1;
+let currentLine = "";
+let tool = "select";
+let showCurvature = false;
+
+function normalize(d) {
+  const t = Object.assign(emptyTrack(), d);
+  t.points = (t.points || []).map((p) => ({ x: +p.x, y: +p.y, z: +(p.z || 0), w_left: +(p.w_left ?? 1.5),
+    w_right: +(p.w_right ?? 1.5), bank_deg: +(p.bank_deg || 0) }));
+  t.lines = (t.lines || []).map((l) => ({ name: String(l.name), offsets: (l.offsets || []).map((o) => [+o[0], +o[1]]) }));
+  t.sector_points = (t.sector_points || []).map(Number);
+  return t;
+}
+
+function commit() {
+  const text = JSON.stringify(doc);
+  const last = undoStack[undoStack.length - 1];
+  if (last !== text) { undoStack.push(text); if (undoStack.length > 200) undoStack.shift(); redoStack = []; }
+  refresh();
+}
+
+function restore(text) {
+  doc = normalize(JSON.parse(text));
+  if (selected >= doc.points.length) selected = -1;
+  refresh();
+}
+
+function undo() {
+  if (undoStack.length < 2) return;
+  redoStack.push(undoStack.pop());
+  restore(undoStack[undoStack.length - 1]);
+}
+function redo() {
+  if (!redoStack.length) return;
+  const text = redoStack.pop();
+  undoStack.push(text);
+  restore(text);
+}
+
+function load(d, fit = true) {
+  doc = normalize(d);
+  selected = -1; selectedHandle = -1;
+  currentLine = doc.lines.length ? doc.lines[0].name : "";
+  undoStack = [JSON.stringify(doc)]; redoStack = [];
+  savedJson = JSON.stringify(doc);
+  refresh();
+  if (fit) fitView();
+}
+
+// Index bookkeeping when points are inserted or removed.
+function shiftIndices(at, delta) {
+  const fix = (i) => (i >= at ? i + delta : i);
+  doc.start_point = Math.max(0, fix(doc.start_point));
+  if (doc.finish_point >= 0) doc.finish_point = fix(doc.finish_point);
+  doc.sector_points = doc.sector_points.map(fix);
+}
+
+function deletePoint(i) {
+  doc.points.splice(i, 1);
+  doc.sector_points = doc.sector_points.filter((k) => k !== i);
+  if (doc.finish_point === i) doc.finish_point = -1;
+  if (doc.start_point === i) doc.start_point = 0;
+  shiftIndices(i + 1, -1);
+  doc.start_point = Math.min(doc.start_point, Math.max(0, doc.points.length - 1));
+  selected = -1;
+  commit();
+}
+
+// --- View ---------------------------------------------------------------------------------
+const canvas = $("view");
+const ctx = canvas.getContext("2d");
+let view = { cx: 0, cy: 0, scale: 6 };  // world point at the canvas centre, px per m
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(canvas.clientWidth * dpr);
+  canvas.height = Math.round(canvas.clientHeight * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  render();
+}
+window.addEventListener("resize", resize);
+
+const toScreen = (x, y) => [canvas.clientWidth / 2 + (x - view.cx) * view.scale, canvas.clientHeight / 2 - (y - view.cy) * view.scale];
+const toWorld = (sx, sy) => [view.cx + (sx - canvas.clientWidth / 2) / view.scale, view.cy - (sy - canvas.clientHeight / 2) / view.scale];
+
+function fitView() {
+  const xs = doc.points.map((p) => p.x), ys = doc.points.map((p) => p.y);
+  if (!xs.length) { view = { cx: 0, cy: 0, scale: 6 }; render(); return; }
+  const margin = 10;
+  const w = Math.max(...xs) - Math.min(...xs) + 2 * margin, h = Math.max(...ys) - Math.min(...ys) + 2 * margin;
+  view.cx = (Math.max(...xs) + Math.min(...xs)) / 2;
+  view.cy = (Math.max(...ys) + Math.min(...ys)) / 2;
+  view.scale = Math.min(canvas.clientWidth / w, canvas.clientHeight / h);
+  render();
+}
+
+function path(points, closed) {
+  ctx.beginPath();
+  points.forEach(([x, y], i) => { const [sx, sy] = toScreen(x, y); if (i) ctx.lineTo(sx, sy); else ctx.moveTo(sx, sy); });
+  if (closed) ctx.closePath();
+}
+
+function boundaries() {
+  const left = [], right = [];
+  for (const p of geom.samples) {
+    const nx = -Math.sin(p.heading), ny = Math.cos(p.heading);
+    left.push([p.x + p.wl * nx, p.y + p.wl * ny]);
+    right.push([p.x - p.wr * nx, p.y - p.wr * ny]);
+  }
+  return { left, right };
+}
+
+function curvatureColor(k) {
+  const r = Math.abs(k) > 1e-6 ? 1 / Math.abs(k) : Infinity;
+  const f = Math.min(1, Math.max(0, (60 - Math.min(r, 60)) / 53));  // 60 m -> 0, 7 m -> 1
+  return `hsl(${220 - 220 * f}, 80%, 58%)`;
+}
+
+function crossLine(s, style, width) {
+  const p = sampleAt(geom, s);
+  const nx = -Math.sin(p.heading), ny = Math.cos(p.heading);
+  ctx.strokeStyle = style;
+  ctx.lineWidth = width;
+  path([[p.x + p.wl * nx, p.y + p.wl * ny], [p.x - p.wr * nx, p.y - p.wr * ny]], false);
+  ctx.stroke();
+}
+
+function drawGrid() {
+  const [x0, y1] = toWorld(0, 0), [x1, y0] = toWorld(canvas.clientWidth, canvas.clientHeight);
+  for (const [step, style] of [[1, color("--grid-minor")], [10, color("--grid-major")]]) {
+    if (step * view.scale < 6) continue;
+    ctx.strokeStyle = style;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = Math.floor(x0 / step) * step; x <= x1; x += step) {
+      const [sx] = toScreen(x, 0); ctx.moveTo(sx, 0); ctx.lineTo(sx, canvas.clientHeight);
+    }
+    for (let y = Math.floor(y0 / step) * step; y <= y1; y += step) {
+      const [, sy] = toScreen(0, y); ctx.moveTo(0, sy); ctx.lineTo(canvas.clientWidth, sy);
+    }
+    ctx.stroke();
+  }
+  const [ox, oy] = toScreen(0, 0);
+  ctx.strokeStyle = color("--accent");
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(ox - 6, oy); ctx.lineTo(ox + 6, oy); ctx.moveTo(ox, oy - 6); ctx.lineTo(ox, oy + 6); ctx.stroke();
+}
+
+function lineHandles(line) {
+  return line.offsets.map(([u, n]) => {
+    const p = sampleAt(geom, u * geom.length);
+    return [p.x - n * Math.sin(p.heading), p.y + n * Math.cos(p.heading)];
+  });
+}
+
+function render() {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  ctx.fillStyle = color("--bg");
+  ctx.fillRect(0, 0, w, h);
+  drawGrid();
+  if (geom) {
+    const { left, right } = boundaries();
+    ctx.fillStyle = color("--asphalt");
+    if (doc.closed) {
+      ctx.beginPath();
+      for (const ring of [left, right]) ring.forEach(([x, y], i) => { const [sx, sy] = toScreen(x, y); if (i) ctx.lineTo(sx, sy); else ctx.moveTo(sx, sy); });
+      ctx.fill("evenodd");
+    } else {
+      path(left.concat(right.slice().reverse()), true);
+      ctx.fill();
+    }
+    ctx.strokeStyle = color("--kerb");
+    ctx.lineWidth = Math.max(1, 0.12 * view.scale);
+    path(left, doc.closed); ctx.stroke();
+    path(right, doc.closed); ctx.stroke();
+    // Centerline, optionally coloured by curvature.
+    if (showCurvature) {
+      ctx.lineWidth = 3;
+      for (let i = 0; i + 1 < geom.samples.length; i++) {
+        const a = geom.samples[i], b = geom.samples[i + 1];
+        ctx.strokeStyle = curvatureColor(a.curvature);
+        path([[a.x, a.y], [b.x, b.y]], false); ctx.stroke();
+      }
+    } else {
+      ctx.setLineDash([5, 5]);
+      ctx.strokeStyle = color("--centerline");
+      ctx.lineWidth = 1;
+      path(geom.samples.map((p) => [p.x, p.y]), doc.closed); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    // Driving lines; the current one stronger.
+    for (const line of doc.lines) {
+      const active = line.name === currentLine;
+      ctx.strokeStyle = color("--racing");
+      ctx.globalAlpha = active ? 1 : 0.35;
+      ctx.lineWidth = active ? 2 : 1;
+      path(linePoints(geom, line), doc.closed); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    // Start, finish, sectors.
+    for (const k of doc.sector_points) if (k < doc.points.length) crossLine(geom.pointS[k], color("--sector"), 3);
+    crossLine(geom.pointS[Math.min(doc.start_point, doc.points.length - 1)], "#ffffff", 4);
+    if (!doc.closed) {
+      const finish = doc.finish_point >= 0 ? geom.pointS[doc.finish_point] : geom.length;
+      crossLine(finish, "#ffffff", 4);
+      const [fx, fy] = toScreen(sampleAt(geom, finish).x, sampleAt(geom, finish).y);
+      ctx.fillStyle = color("--text"); ctx.font = "11px system-ui"; ctx.fillText("결승", fx + 6, fy - 6);
+    }
+    const sp = sampleAt(geom, geom.pointS[Math.min(doc.start_point, doc.points.length - 1)]);
+    const [sx, sy] = toScreen(sp.x, sp.y);
+    ctx.fillStyle = color("--text"); ctx.font = "11px system-ui";
+    ctx.fillText(doc.closed ? "출발/결승" : "출발", sx + 6, sy - 6);
+    // Direction arrow after the start.
+    const a = sampleAt(geom, Math.min(geom.length, geom.pointS[Math.min(doc.start_point, doc.points.length - 1)] + 4));
+    const [ax, ay] = toScreen(a.x, a.y);
+    ctx.save(); ctx.translate(ax, ay); ctx.rotate(-a.heading);
+    ctx.fillStyle = color("--accent");
+    ctx.beginPath(); ctx.moveTo(8, 0); ctx.lineTo(-5, 5); ctx.lineTo(-5, -5); ctx.closePath(); ctx.fill();
+    ctx.restore();
+    // Line handles in line mode.
+    const line = doc.lines.find((l) => l.name === currentLine);
+    if (tool === "line" && line) {
+      lineHandles(line).forEach(([x, y], i) => {
+        const [hx, hy] = toScreen(x, y);
+        ctx.fillStyle = i === selectedHandle ? color("--selected") : color("--racing");
+        ctx.beginPath(); ctx.arc(hx, hy, 5, 0, 2 * Math.PI); ctx.fill();
+      });
+    }
+  } else if (doc.points.length >= 2) {
+    ctx.strokeStyle = color("--centerline");
+    path(doc.points.map((p) => [p.x, p.y]), false); ctx.stroke();
+  }
+  // Control points.
+  doc.points.forEach((p, i) => {
+    const [px, py] = toScreen(p.x, p.y);
+    ctx.fillStyle = i === selected ? color("--selected") : color("--point");
+    ctx.globalAlpha = tool === "line" ? 0.4 : 1;
+    ctx.beginPath(); ctx.arc(px, py, i === selected ? 6 : 4.5, 0, 2 * Math.PI); ctx.fill();
+    ctx.globalAlpha = 1;
+    if (doc.sector_points.includes(i)) {
+      ctx.strokeStyle = color("--sector"); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(px, py, 8, 0, 2 * Math.PI); ctx.stroke();
+    }
+  });
+  $("legend").style.display = showCurvature ? "block" : "none";
+}
+
+// --- Panel ----------------------------------------------------------------------------------
+function refresh() {
+  geom = buildGeometry(doc);
+  $("name").value = doc.name;
+  $("closed").checked = doc.closed;
+  $("length").textContent = geom ? `${geom.length.toFixed(1)} m` : "-";
+  let tightest = 0;
+  if (geom) for (const p of geom.samples) tightest = Math.max(tightest, Math.abs(p.curvature));
+  $("info").textContent = `${doc.points.length} / ${tightest > 1e-6 ? (1 / tightest).toFixed(1) + " m" : "-"}`;
+  const p = doc.points[selected];
+  $("sel-index").textContent = p ? `#${selected}` : "(없음)";
+  for (const [id, key] of [["p-x", "x"], ["p-y", "y"], ["p-wl", "w_left"], ["p-wr", "w_right"], ["p-z", "z"], ["p-bank", "bank_deg"]]) {
+    const el = $(id);
+    el.disabled = !p;
+    if (document.activeElement !== el) el.value = p ? +p[key].toFixed(3) : "";
+  }
+  $("btn-del").disabled = !p;
+  const select = $("line-select");
+  select.innerHTML = "";
+  if (!doc.lines.length) select.append(new Option("(라인 없음: 자동 주행은 센터라인)", ""));
+  for (const l of doc.lines) select.append(new Option(`${l.name} (핸들 ${l.offsets.length})`, l.name));
+  if (!doc.lines.some((l) => l.name === currentLine)) currentLine = doc.lines.length ? doc.lines[0].name : "";
+  select.value = currentLine;
+  $("btn-line-opt").disabled = !geom;
+  $("btn-line-del").disabled = !currentLine;
+  const list = $("warnings");
+  list.innerHTML = "";
+  const found = checks(doc, geom);
+  if (!found.length) { const li = document.createElement("li"); li.className = "ok"; li.textContent = "문제 없음"; list.append(li); }
+  for (const w of found) { const li = document.createElement("li"); li.textContent = w; list.append(li); }
+  $("btn-undo").disabled = undoStack.length < 2;
+  $("btn-redo").disabled = !redoStack.length;
+  $("dirty").textContent = JSON.stringify(doc) !== savedJson ? "저장 안 됨" : "";
+  render();
+}
+
+for (const [id, key] of [["p-x", "x"], ["p-y", "y"], ["p-wl", "w_left"], ["p-wr", "w_right"], ["p-z", "z"], ["p-bank", "bank_deg"]]) {
+  $(id).addEventListener("change", () => {
+    const p = doc.points[selected];
+    const v = parseFloat($(id).value);
+    if (!p || !isFinite(v)) return;
+    p[key] = key.startsWith("w_") ? Math.max(0.3, v) : v;
+    commit();
+  });
+}
+$("name").addEventListener("change", () => { doc.name = $("name").value; commit(); });
+$("closed").addEventListener("change", () => {
+  doc.closed = $("closed").checked;
+  if (doc.closed) doc.finish_point = -1;
+  commit();
+});
+$("btn-all-w").addEventListener("click", () => {
+  const wl = Math.max(0.3, parseFloat($("all-wl").value)), wr = Math.max(0.3, parseFloat($("all-wr").value));
+  if (!isFinite(wl) || !isFinite(wr)) return;
+  for (const p of doc.points) { p.w_left = wl; p.w_right = wr; }
+  commit();
+});
+$("btn-del").addEventListener("click", () => { if (selected >= 0) deletePoint(selected); });
+
+$("line-select").addEventListener("change", () => { currentLine = $("line-select").value; selectedHandle = -1; refresh(); });
+$("btn-line-new").addEventListener("click", () => {
+  let name = prompt("새 라인 이름 (예: racing, wet)", doc.lines.length ? `line${doc.lines.length + 1}` : "racing");
+  if (!name) return;
+  name = name.trim();
+  if (name === "center" || doc.lines.some((l) => l.name === name)) { alert("이미 있거나 쓸 수 없는 이름입니다 ('center'는 예약어)"); return; }
+  doc.lines.push({ name, offsets: [] });
+  currentLine = name;
+  commit();
+  setTool("line");
+});
+$("btn-line-del").addEventListener("click", () => {
+  if (!currentLine || !confirm(`라인 '${currentLine}'을 삭제할까요?`)) return;
+  doc.lines = doc.lines.filter((l) => l.name !== currentLine);
+  currentLine = "";
+  commit();
+});
+$("btn-line-opt").addEventListener("click", () => {
+  if (!geom) return;
+  if (!currentLine) {
+    doc.lines.push({ name: "racing", offsets: [] });
+    currentLine = doc.lines.some((l) => l.name === "racing") ? "racing" : currentLine;
+  }
+  const line = doc.lines.find((l) => l.name === currentLine);
+  $("line-info").textContent = "계산 중…";
+  setTimeout(() => {
+    line.offsets = minimumCurvatureOffsets(geom, Math.max(0, parseFloat($("line-margin").value) || 0));
+    $("line-info").textContent = `핸들 ${line.offsets.length}개로 계산했습니다. 주행 라인 도구(L)로 다듬을 수 있습니다.`;
+    commit();
+  }, 10);
+});
+
+// --- Tools and mouse ---------------------------------------------------------------------------
+const hints = {
+  select: "점 드래그: 이동 · 빈 곳 드래그: 화면 이동 · 휠: 확대 · Delete: 선택한 점 삭제",
+  add: "빈 곳 클릭: 마지막 점 뒤에 추가 · 트랙 위 클릭: 가까운 두 점 사이에 삽입",
+  start: "점 클릭: 출발선 (닫힌 트랙은 출발=결승) · Shift+클릭: 결승선 (열린 트랙)",
+  sector: "점 클릭: 구간 경계 추가/제거",
+  line: "핸들 드래그: 라인을 옆으로 이동 · 트랙 클릭: 핸들 추가 · Delete: 선택한 핸들 삭제",
+};
+function setTool(name) {
+  tool = name;
+  for (const b of document.querySelectorAll("#tools button")) b.classList.toggle("active", b.dataset.tool === name);
+  $("hint").textContent = hints[name];
+  if (name === "line" && !doc.lines.length) $("line-info").textContent = "먼저 '새 라인'을 만들거나 '최소 곡률 라인 계산'을 누르세요.";
+  render();
+}
+for (const b of document.querySelectorAll("#tools button")) b.addEventListener("click", () => setTool(b.dataset.tool));
+
+function pickPoint(sx, sy) {
+  let best = -1, bestD = 10;
+  doc.points.forEach((p, i) => {
+    const [px, py] = toScreen(p.x, p.y);
+    const d = Math.hypot(px - sx, py - sy);
+    if (d < bestD) { best = i; bestD = d; }
+  });
+  return best;
+}
+
+function pickHandle(sx, sy) {
+  const line = doc.lines.find((l) => l.name === currentLine);
+  if (!line || !geom) return -1;
+  let best = -1, bestD = 10;
+  lineHandles(line).forEach(([x, y], i) => {
+    const [hx, hy] = toScreen(x, y);
+    const d = Math.hypot(hx - sx, hy - sy);
+    if (d < bestD) { best = i; bestD = d; }
+  });
+  return best;
+}
+
+// Nearest centerline sample to a world point: {sample, n}.
+function projectWorld(x, y) {
+  let best = null, bestD = Infinity;
+  for (const p of geom.samples) {
+    const d = (p.x - x) ** 2 + (p.y - y) ** 2;
+    if (d < bestD) { bestD = d; best = p; }
+  }
+  return { sample: best, n: -(x - best.x) * Math.sin(best.heading) + (y - best.y) * Math.cos(best.heading), distance: Math.sqrt(bestD) };
+}
+
+let drag = null;  // {kind: "point" | "pan" | "handle", ...}
+
+canvas.addEventListener("mousedown", (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  const [wx, wy] = toWorld(sx, sy);
+  if (e.button === 1 || e.button === 2) { drag = { kind: "pan", sx, sy, cx: view.cx, cy: view.cy }; return; }
+  if (tool === "select") {
+    const i = pickPoint(sx, sy);
+    selected = i;
+    drag = i >= 0 ? { kind: "point", index: i, moved: false } : { kind: "pan", sx, sy, cx: view.cx, cy: view.cy };
+    refresh();
+  } else if (tool === "add") {
+    const near = geom ? projectWorld(wx, wy) : null;
+    // On or beside the track: insert there; elsewhere: append after the last point.
+    const reach = Math.max(near ? Math.max(near.sample.wl, near.sample.wr) + 5 : 0, 15 / view.scale);
+    if (near && near.distance < reach && doc.points.length >= 2) {
+      // Insert between the control points around this s.
+      let k = geom.pointS.findIndex((s) => s > near.sample.s);
+      if (k < 0) k = doc.closed ? doc.points.length : doc.points.length - 1;
+      const prev = doc.points[(k - 1 + doc.points.length) % doc.points.length];
+      doc.points.splice(k, 0, { x: wx, y: wy, z: 0, w_left: prev.w_left, w_right: prev.w_right, bank_deg: 0 });
+      shiftIndices(k, 1);
+      selected = k;
+    } else {
+      const last = doc.points[doc.points.length - 1];
+      doc.points.push({ x: wx, y: wy, z: 0, w_left: last ? last.w_left : 1.75, w_right: last ? last.w_right : 1.75, bank_deg: 0 });
+      selected = doc.points.length - 1;
+    }
+    drag = { kind: "point", index: selected, moved: true };
+    refresh();
+  } else if (tool === "start" || tool === "sector") {
+    const i = pickPoint(sx, sy);
+    if (i < 0) return;
+    if (tool === "start") {
+      if (e.shiftKey && !doc.closed) doc.finish_point = i;
+      else doc.start_point = i;
+    } else {
+      doc.sector_points = doc.sector_points.includes(i) ? doc.sector_points.filter((k) => k !== i)
+        : doc.sector_points.concat([i]).sort((a, b) => a - b);
+    }
+    commit();
+  } else if (tool === "line") {
+    const line = doc.lines.find((l) => l.name === currentLine);
+    if (!line || !geom) return;
+    const h = pickHandle(sx, sy);
+    if (h >= 0) { selectedHandle = h; drag = { kind: "handle", index: h }; render(); return; }
+    const near = projectWorld(wx, wy);
+    if (near.distance > Math.max(near.sample.wl, near.sample.wr) + 2) { drag = { kind: "pan", sx, sy, cx: view.cx, cy: view.cy }; return; }
+    const n = Math.min(near.sample.wl, Math.max(-near.sample.wr, near.n));
+    line.offsets.push([+(near.sample.s / geom.length).toFixed(6), +n.toFixed(3)]);
+    line.offsets.sort((a, b) => a[0] - b[0]);
+    selectedHandle = line.offsets.findIndex((o) => o[1] === +n.toFixed(3) && Math.abs(o[0] - near.sample.s / geom.length) < 1e-6);
+    drag = { kind: "handle", index: selectedHandle };
+    commit();
+  }
+});
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+window.addEventListener("mousemove", (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  const [wx, wy] = toWorld(sx, sy);
+  $("cursor").textContent = `x ${wx.toFixed(1)}, y ${wy.toFixed(1)} m`;
+  if (!drag) return;
+  if (drag.kind === "pan") {
+    view.cx = drag.cx - (sx - drag.sx) / view.scale;
+    view.cy = drag.cy + (sy - drag.sy) / view.scale;
+    render();
+  } else if (drag.kind === "point") {
+    const p = doc.points[drag.index];
+    p.x = +wx.toFixed(3); p.y = +wy.toFixed(3);
+    drag.moved = true;
+    geom = buildGeometry(doc);
+    render();
+  } else if (drag.kind === "handle") {
+    const line = doc.lines.find((l) => l.name === currentLine);
+    const [u] = line.offsets[drag.index];
+    const c = sampleAt(geom, u * geom.length);
+    const n = -(wx - c.x) * Math.sin(c.heading) + (wy - c.y) * Math.cos(c.heading);
+    line.offsets[drag.index][1] = +Math.min(c.wl, Math.max(-c.wr, n)).toFixed(3);
+    drag.moved = true;
+    render();
+  }
+});
+
+window.addEventListener("mouseup", () => {
+  if (drag && (drag.kind === "point" || drag.kind === "handle") && drag.moved) commit();
+  drag = null;
+});
+
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  const [wx, wy] = toWorld(sx, sy);
+  view.scale = Math.min(200, Math.max(0.2, view.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+  const [nx, ny] = toWorld(sx, sy);
+  view.cx += wx - nx; view.cy += wy - ny;
+  render();
+}, { passive: false });
+
+window.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); redo(); return; }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); save(); return; }
+  if (e.key === "Delete" || e.key === "Backspace") {
+    if (tool === "line" && selectedHandle >= 0) {
+      const line = doc.lines.find((l) => l.name === currentLine);
+      if (line) { line.offsets.splice(selectedHandle, 1); selectedHandle = -1; commit(); }
+    } else if (selected >= 0) deletePoint(selected);
+    return;
+  }
+  const tools = { v: "select", a: "add", s: "start", k: "sector", l: "line" };
+  if (tools[e.key.toLowerCase()]) setTool(tools[e.key.toLowerCase()]);
+  else if (e.key.toLowerCase() === "f") fitView();
+});
+
+// --- Files -------------------------------------------------------------------------------------
+function save() {
+  const text = JSON.stringify(Object.assign({}, doc, { finish_point: doc.closed ? -1 : doc.finish_point }), null, 1) + "\n";
+  const blob = new Blob([text], { type: "application/json" });
+  const a = document.createElement("a");
+  const base = (doc.name || "track").trim().replace(/[\\/:*?"<>|\s]+/g, "_") || "track";
+  a.href = URL.createObjectURL(blob);
+  a.download = `${base}.track.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  savedJson = JSON.stringify(doc);
+  refresh();
+}
+
+function parseCsv(text, name) {
+  // TUMFTM racetrack-database: x_m, y_m, w_tr_right_m, w_tr_left_m (closed).
+  const points = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const v = line.split(/[,\s]+/).map(Number);
+    if (v.length < 4 || v.some((x) => !isFinite(x))) throw new Error(`CSV 형식이 아닙니다: '${line}'`);
+    points.push({ x: v[0], y: v[1], w_right: v[2], w_left: v[3] });
+  }
+  return { name, closed: true, points };
+}
+
+$("btn-open").addEventListener("click", () => $("file").click());
+$("file").addEventListener("change", async () => {
+  const file = $("file").files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const d = file.name.toLowerCase().endsWith(".csv") ? parseCsv(text, file.name.replace(/\.csv$/i, "")) : JSON.parse(text);
+    if (d.schema_version !== undefined && d.schema_version !== 1) throw new Error(`schema_version ${d.schema_version}는 읽을 수 없습니다`);
+    load(d);
+  } catch (err) {
+    alert(`열 수 없습니다: ${err.message}`);
+  }
+  $("file").value = "";
+});
+$("btn-save").addEventListener("click", save);
+$("btn-new").addEventListener("click", () => {
+  if (JSON.stringify(doc) !== savedJson && !confirm("저장하지 않은 변경이 있습니다. 새로 시작할까요?")) return;
+  load(emptyTrack());
+  setTool("add");
+});
+$("btn-undo").addEventListener("click", undo);
+$("btn-redo").addEventListener("click", redo);
+$("btn-fit").addEventListener("click", fitView);
+$("btn-curv").addEventListener("click", () => { showCurvature = !showCurvature; $("btn-curv").classList.toggle("active", showCurvature); render(); });
+window.addEventListener("beforeunload", (e) => { if (JSON.stringify(doc) !== savedJson) { e.preventDefault(); e.returnValue = ""; } });
+
+// --- Simulator --------------------------------------------------------------------------------
+let socket = null;
+let pending = null;  // message to send once connected
+
+function notice(text, level = "info") {
+  const el = $("sim-notice");
+  el.textContent = text;
+  el.className = `notice-${level}`;
+}
+
+function simSend(method, params = {}) {
+  const message = JSON.stringify({ jsonrpc: "2.0", method, params });
+  const url = $("ws-url").value.trim();
+  if (socket && socket.readyState === WebSocket.OPEN && socket.url.replace(/\/$/, "") === url.replace(/\/$/, "")) {
+    socket.send(message);
+    return;
+  }
+  pending = message;
+  try { if (socket) socket.close(); } catch (_) { /* ignore */ }
+  notice(`${url}에 연결 중…`, "info");
+  socket = new WebSocket(url);
+  socket.onopen = () => { if (pending) { socket.send(pending); pending = null; } };
+  socket.onerror = () => notice(`${url}에 연결할 수 없습니다. vsim-core를 realtime 모드로 실행했는지 확인하세요.`, "error");
+  socket.onmessage = (event) => {
+    const m = JSON.parse(event.data);
+    if (m.method === "notice") notice(m.params.text, m.params.level);
+    else if (m.method === "track.definition") {
+      if (!m.params.track) { notice("시뮬레이터에 트랙이 없습니다", "warning"); return; }
+      if (JSON.stringify(doc) !== savedJson && !confirm("저장하지 않은 변경이 있습니다. 시뮬레이터 트랙으로 바꿀까요?")) return;
+      load(m.params.track);
+      notice(`시뮬레이터 트랙 '${doc.name}'을 불러왔습니다`, "info");
+    }
+  };
+}
+
+$("btn-send").addEventListener("click", () => {
+  if (!geom) { notice("트랙이 완성되지 않았습니다 (검사 항목 확인)", "error"); return; }
+  simSend("track.set", { track: Object.assign({}, doc, { finish_point: doc.closed ? -1 : doc.finish_point }) });
+});
+$("btn-fetch").addEventListener("click", () => simSend("track.get"));
+$("btn-reset-track").addEventListener("click", () => simSend("track.reset"));
+
+// --- Start: a small sample loop so the page is not empty --------------------------------------
+load({ name: "예제", closed: true, points: [
+  { x: 0, y: 0 }, { x: 40, y: 0 }, { x: 60, y: 12 }, { x: 55, y: 35 }, { x: 25, y: 40 }, { x: 10, y: 25 }, { x: -12, y: 18 }, { x: -15, y: 4 },
+].map((p) => Object.assign({ z: 0, w_left: 1.75, w_right: 1.75, bank_deg: 0 }, p)) }, false);
+setTool("select");
+resize();
+fitView();
+</script>
+</body>
+</html>
