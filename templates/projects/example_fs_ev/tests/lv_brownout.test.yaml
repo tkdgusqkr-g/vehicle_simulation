@@ -1,0 +1,30 @@
+test: lv_brownout
+description: >
+  DC-DC가 고장 난 채 LV 배터리가 거의 비었고(초기 SoC 3 %) 주 LV 배선 단자가 부식(0.12 Ω)된
+  상태로 가속합니다. 모터 온도 60 °C에서 냉각팬이 켜지면 기동 전류로 LV 전압이 처져 VCU와
+  인버터 제어보드가 리셋되고(브라운아웃, PH-07), VCU의 CAN 노드가 멈춰 인버터가 토크 명령
+  타임아웃으로 0 토크가 됩니다.
+scenario: ../scenarios/acceleration.yaml
+overrides:
+  electrical.enabled: true
+  initial.motor_temp_c: 59.5
+  initial.lv_soc: 0.03
+  electrical.faults.0.type: open
+  electrical.faults.0.target: DCDC
+  electrical.faults.1.type: contact_resistance
+  electrical.faults.1.target: W_GLV
+  electrical.faults.1.r_ohm: 0.12
+  can.enabled: true
+  can.fidelity: timing
+duration_s: 4
+checks:
+  - name: 팬이 켜지기 전 LV 전압은 정상
+    expr: "at(elec.VCU.v, 0.5) > 9.5"
+  - name: 팬 기동 순간 VCU 전원이 리셋 전압 아래로
+    expr: "max(elec.FANS.on) == 1 and min(window(elec.VCU.v, 0.5, 4.0)) < 6.5"
+  - name: VCU와 인버터 제어보드 리셋
+    expr: "max(elec.VCU.resets) >= 1 and max(elec.INV_LOGIC.resets) >= 1"
+  - name: VCU가 꺼진 동안 토크 명령 프레임이 끊겨 인버터가 타임아웃
+    expr: "max(can.VCU_TorqueCmd.timeout) == 1"
+  - name: 정상 차량(3.52초)보다 75 m가 느림
+    expr: "final(track.last_lap) == 0 or final(track.last_lap) > 3.7"

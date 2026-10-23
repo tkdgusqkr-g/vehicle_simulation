@@ -1,0 +1,198 @@
+# 전기 네트워크 (설계 문서 §12.3): 고전압(트랙티브 시스템), 셧다운 회로, 저전압(GLV),
+# 센서 배선. FSAE EV 구조의 대표 예이며 특정 실차가 아닙니다.
+#
+# 켜면 배터리 ↔ 인버터가 직결이 아니라 이 회로를 거칩니다. AIR(컨택터)가 붙어야 모터에
+# 전기가 가고, LV 전압이 떨어지면 ECU가 리셋되고, 페달 센서 값은 배선을 거쳐 VCU에
+# 들어갑니다. 시나리오에서 켜기: --set electrical.enabled=true
+#
+# 망 이름(a, b, pos, neg ...)은 자유롭게 짓습니다. GND는 차체(기준), HV는 차체와 절연.
+# 신호 이름에서는 +가 _P, -가 _N이 됩니다 (ACC+ → elec.v.ACC_P).
+enabled: false
+level: E2            # E1: 저항만(정상상태), E2: 과도(커패시터·코일·응답)
+initial: active      # active: 프리차지 끝난 상태로 시작, off: 모두 꺼진 상태에서 시작
+harness:
+  contact_r_ohm: 0.002   # 커넥터 핀 하나의 접촉 저항
+
+components:
+  # --- 트랙티브 시스템 (HV) ----------------------------------------------------------
+  - {id: ACC, type: battery_model, pos: ACC+, neg: ACC-}          # vehicle.battery의 셀 모델
+  - {id: F_ACC, type: fuse, a: ACC+, b: ACC_F, rating_a: 250}
+  - {id: AIR_P, type: contactor, a: ACC_F, b: TS+, coil_a: AIRP_DRV, coil_b: GND, rating_a: 250}
+  - {id: AIR_N, type: contactor, a: ACC-, b: TS-, coil_a: SDC_END, coil_b: GND, rating_a: 250}
+  - {id: PRE_K, type: relay, a: ACC_F, b: PRE_MID, coil_a: PRE_DRV, coil_b: GND}
+  - {id: PRE_R, type: resistor, a: PRE_MID, b: TS+, r_ohm: 600}    # τ = 600 Ω × 600 µF = 0.36 s
+  - {id: DIS_K, type: relay, a: TS+, b: DIS_MID, coil_a: SDC_END, coil_b: GND, normally: closed}
+  - {id: DIS_R, type: resistor, a: DIS_MID, b: TS-, r_ohm: 2000}   # 셧다운 시 방전
+  - {id: HV_P, type: wire, a: TS+, b: INV_DC+, area_mm2: 16,
+     route: [[-0.40, 0.15, 0.25], [-0.70, 0.20, 0.25], [-0.90, 0.15, 0.30]]}
+  - {id: HV_N, type: wire, a: TS-, b: INV_DC-, area_mm2: 16,
+     route: [[-0.40, -0.15, 0.25], [-0.70, -0.20, 0.25], [-0.90, -0.15, 0.30]]}
+  - {id: C_LINK, type: capacitor, a: INV_DC+, b: INV_DC-, c_f: 600e-6, esr_ohm: 0.002}
+  # 인버터: 프리차지가 끝나야(DC on) 구동, DC 링크 250 V 아래·620 V 위에서 꺼짐, 제어보드 전원 필요
+  - {id: INV_F, type: inverter, pos: INV_DC+, neg: INV_DC-, motors: [fl, fr], v_min: 250, v_max: 620,
+     logic: INV_LOGIC, enable: {signal: elec.PCC.state, above: 2.5}}
+  - {id: INV_R, type: inverter, pos: INV_DC+, neg: INV_DC-, motors: [rl, rr], v_min: 250, v_max: 620,
+     logic: INV_LOGIC, enable: {signal: elec.PCC.state, above: 2.5}}
+  - {id: PCC, type: precharge, supply: SDC_END, pack: [ACC_F, ACC-], link: [INV_DC+, INV_DC-],
+     pre_out: [SDC_END, PRE_DRV], air_out: [SDC_END, AIRP_DRV], threshold: 0.95, timeout_s: 4, air_relay: AIR_P}
+  # HV → LV 변환기: 프리차지 저항으로는 출력을 감당할 수 없으므로 프리차지가 끝난 뒤 켬
+  - {id: DCDC, type: dcdc, in_pos: INV_DC+, in_neg: INV_DC-, out_pos: GLV, out_neg: GND,
+     v_out: 13.5, i_max_a: 25, efficiency: 0.9, v_in_min: 200, response_s: 0.002,
+     enable: {signal: elec.PCC.state, above: 2.5}}
+
+  # --- 셧다운 회로: GLV → 직렬 스위치 → AIR 코일 -----------------------------------------
+  - {id: W_SDC, type: wire, a: GLV, b: SDC_1, length_m: 6, area_mm2: 0.5}   # 루프 전체 배선
+  - {id: BOTS, type: switch, a: SDC_1, b: SDC_2}                           # 브레이크 오버트래블
+  - {id: INERTIA, type: switch, a: SDC_2, b: SDC_3,
+     open_when: {signal: veh.chassis.ax, below: -60, latch: true}}
+  - {id: ESTOP, type: switch, a: SDC_3, b: SDC_4}                          # 콕핏·좌우 버튼
+  - {id: BSPD, type: switch, a: SDC_4, b: SDC_5,                           # 강한 제동 + 5 kW, 0.5초
+     open_when: {all: [{signal: veh.brake.pressure, above: 20}, {signal: pt.power_elec, above: 5000}],
+                 delay_s: 0.5, latch: true}}
+  - {id: BMS_OK, type: switch, a: SDC_5, b: SDC_6,
+     open_when: {signal: bat.temp, above: 60, delay_s: 1.0, latch: true}}
+  - {id: IMD_OK, type: switch, a: SDC_6, b: SDC_7}
+  - {id: TSMS, type: switch, a: SDC_7, b: SDC_END}                         # 트랙티브 시스템 마스터 스위치
+
+  # --- 저전압 (GLV) -----------------------------------------------------------------------
+  - {id: LV_BAT, type: lv_battery, pos: LVB+, neg: GND, capacity_ah: 4, r_ohm: 0.03, soc: 0.9,
+     ocv_soc: [0.0, 0.1, 0.5, 0.9, 1.0], ocv_v: [11.0, 12.8, 13.1, 13.3, 13.6]}   # LiFePO4 4S
+  - {id: F_LV, type: fuse, a: LVB+, b: LV_MAIN, rating_a: 30}
+  - {id: GLVMS, type: switch, a: LV_MAIN, b: GLV_IN}                       # GLV 마스터 스위치
+  - {id: W_GLV, type: wire, a: GLV_IN, b: GLV, length_m: 1.5, area_mm2: 2.5}
+  - {id: F_VCU, type: fuse, a: GLV, b: VCU_F, rating_a: 5}
+  - {id: W_VCU, type: wire, a: VCU_F, b: VCU_V, length_m: 1.5, area_mm2: 0.75, pins: [X1.1]}
+  - {id: W_VCU_G, type: wire, a: VCU_G, b: GND, length_m: 1.5, area_mm2: 0.75, pins: [X1.2]}
+  - {id: VCU, type: ecu, a: VCU_V, b: VCU_G, i_a: 0.35, v_min: 6.5, boot_s: 0.25,
+     can_node: VCU, forces: ["pt.motor.*.torque_cmd"]}
+  - {id: F_ECU, type: fuse, a: GLV, b: ECU_BUS, rating_a: 10}
+  - {id: BMS, type: ecu, a: ECU_BUS, b: GND, i_a: 0.3, v_min: 8.0, can_node: BMS}
+  - {id: IMU, type: ecu, a: ECU_BUS, b: GND, i_a: 0.08, v_min: 6.0, can_node: IMU}
+  - {id: INV_LOGIC, type: ecu, a: ECU_BUS, b: GND, i_a: 1.6, v_min: 9.0, boot_s: 0.5,
+     can_node: [INV_FL, INV_FR, INV_RL, INV_RR]}                          # 인버터 제어보드 4개
+  - {id: DASH, type: load, a: ECU_BUS, b: GND, p_w: 6}
+  - {id: TSAL, type: load, a: ECU_BUS, b: GND, p_w: 4, control: elec.ts_active}
+  - {id: BRAKE_LIGHT, type: load, a: ECU_BUS, b: GND, p_w: 5, control: {signal: drv.cmd.brake, above: 0.05}}
+  - {id: F_COOL, type: fuse, a: GLV, b: COOL_BUS, rating_a: 25}
+  - {id: W_COOL, type: wire, a: COOL_BUS, b: COOL, length_m: 2.0, area_mm2: 1.5}
+  - {id: PUMP, type: load, a: COOL, b: GND, p_w: 60, inrush: {factor: 5, tau_s: 0.3}, control: elec.ts_active}
+  - {id: FANS, type: load, a: COOL, b: GND, p_w: 160, inrush: {factor: 4, tau_s: 0.3},
+     control: {signal: pt.motor.rl.temp, above: 60, hysteresis: 5}}   # 60 °C에 켜고 55 °C에 끔
+
+  # --- 센서 배선: VCU 5 V → 페달 박스 APPS 두 개 (배선·접지 따로) → VCU ADC ------------------
+  - {id: VCU_5V, type: regulator, in: VCU_V, out: V5, gnd: VCU_G, v_out: 5.0, dropout_v: 1.2}
+  - {id: W_A1_SUP, type: wire, a: V5, b: A1_SUP, length_m: 1.4, area_mm2: 0.35, pins: [X5.1]}
+  - {id: W_A1_GND, type: wire, a: A1_GND, b: VCU_G, length_m: 1.4, area_mm2: 0.35, pins: [X5.2]}
+  - {id: W_A1_SIG, type: wire, a: A1_W, b: A1_IN, length_m: 1.4, area_mm2: 0.35, pins: [X5.3]}
+  - {id: APPS1, type: potentiometer, a: A1_SUP, b: A1_GND, wiper: A1_W, r_ohm: 5000, sensor: apps, channel: ch1}
+  - {id: ADC_A1, type: adc, a: A1_IN, ref: VCU_G, pull_down_ohm: 100e3, vref: V5, sensor: apps, channel: ch1}
+  - {id: W_A2_SUP, type: wire, a: V5, b: A2_SUP, length_m: 1.4, area_mm2: 0.35, pins: [X6.1]}
+  - {id: W_A2_GND, type: wire, a: A2_GND, b: VCU_G, length_m: 1.4, area_mm2: 0.35, pins: [X6.2]}
+  - {id: W_A2_SIG, type: wire, a: A2_W, b: A2_IN, length_m: 1.4, area_mm2: 0.35, pins: [X6.3]}
+  - {id: APPS2, type: potentiometer, a: A2_SUP, b: A2_GND, wiper: A2_W, r_ohm: 5000, sensor: apps, channel: ch2}
+  - {id: ADC_A2, type: adc, a: A2_IN, ref: VCU_G, pull_down_ohm: 100e3, vref: V5, sensor: apps, channel: ch2}
+
+# 고장 주입 (시간은 시나리오 시작 기준). target: 부품 id, 커넥터 핀 conn.<커넥터>.<핀>,
+# short는 망 이름이나 <id>.<단자>.
+faults: []
+#  - {type: contact_resistance, target: conn.X5.2, r_ohm: 400, at_s: 2.0}   # APPS1 접지 핀 부식 (PH-10)
+#  - {type: open, target: W_A2_SIG, at_s: 3.0}                              # APPS2 신호선 단선
+#  - {type: open, target: PRE_R, at_s: 0}                                   # 프리차지 저항 단선 (PH-16)
+#  - {type: stuck_closed, target: AIR_P, at_s: 0}                           # AIR 융착
+#  - {type: short, target: COOL, to: GND, r_ohm: 0.05, at_s: 5.0}           # 냉각 배선 단락 → 퓨즈
+#  - {type: open, target: W_SDC, at_s: 4.0, intermittent: {rate_hz: 2, duration_s: 0.02}}  # 접촉 불량
+
+layout:   # 회로 편집기의 배치 (해석에는 쓰지 않음)
+  components:
+    ACC: [0, 0]
+    F_ACC: [175, 0]
+    AIR_P: [700, 0]
+    AIR_N: [585, 190]
+    PRE_K: [350, 0]
+    PRE_R: [525, 0]
+    DIS_K: [875, 0]
+    DIS_R: [1050, 0]
+    HV_P: [1225, 0]
+    HV_N: [410, 190]
+    C_LINK: [1400, 0]
+    INV_F: [60, 190]
+    INV_R: [235, 190]
+    PCC: [760, 190]
+    DCDC: [935, 190]
+    W_SDC: [0, 380]
+    BOTS: [175, 380]
+    INERTIA: [350, 380]
+    ESTOP: [525, 380]
+    BSPD: [700, 380]
+    BMS_OK: [875, 380]
+    IMD_OK: [1050, 380]
+    TSMS: [1225, 380]
+    LV_BAT: [0, 570]
+    F_LV: [175, 570]
+    GLVMS: [350, 570]
+    W_GLV: [525, 570]
+    F_VCU: [700, 570]
+    W_VCU: [875, 570]
+    W_VCU_G: [1225, 570]
+    VCU: [1050, 570]
+    F_ECU: [1400, 570]
+    BMS: [1575, 570]
+    IMU: [60, 760]
+    INV_LOGIC: [235, 760]
+    DASH: [410, 760]
+    TSAL: [585, 760]
+    BRAKE_LIGHT: [760, 760]
+    F_COOL: [935, 760]
+    W_COOL: [1110, 760]
+    PUMP: [1285, 760]
+    FANS: [1460, 760]
+    VCU_5V: [0, 950]
+    W_A1_SUP: [175, 950]
+    W_A1_GND: [525, 950]
+    W_A1_SIG: [700, 950]
+    APPS1: [350, 950]
+    ADC_A1: [875, 950]
+    W_A2_SUP: [60, 1140]
+    W_A2_GND: [410, 1140]
+    W_A2_SIG: [585, 1140]
+    APPS2: [235, 1140]
+    ADC_A2: [760, 1140]
+  nets:
+    ACC+: [148, -55]
+    ACC-: [508, 50]
+    ACC_F: [596, 50]
+    TS+: [891, -55]
+    AIRP_DRV: [950, 50]
+    TS-: [862, 50]
+    SDC_END: [888, 145]
+    PRE_MID: [498, -55]
+    PRE_DRV: [695, 50]
+    DIS_MID: [1022, -55]
+    INV_DC+: [1029, 50]
+    INV_DC-: [773, 50]
+    GLV: [809, 430]
+    SDC_1: [148, 325]
+    SDC_2: [322, 325]
+    SDC_3: [498, 325]
+    SDC_4: [672, 325]
+    SDC_5: [848, 325]
+    SDC_6: [1022, 325]
+    SDC_7: [1198, 325]
+    LVB+: [148, 515]
+    LV_MAIN: [322, 515]
+    GLV_IN: [498, 515]
+    VCU_F: [848, 515]
+    VCU_V: [702, 715]
+    VCU_G: [752, 810]
+    ECU_BUS: [778, 620]
+    COOL_BUS: [1082, 705]
+    COOL: [1345, 705]
+    V5: [434, 1000]
+    A1_SUP: [322, 895]
+    A1_GND: [498, 895]
+    A1_W: [585, 895]
+    A1_IN: [848, 895]
+    A2_SUP: [208, 1085]
+    A2_GND: [382, 1085]
+    A2_W: [470, 1085]
+    A2_IN: [732, 1085]

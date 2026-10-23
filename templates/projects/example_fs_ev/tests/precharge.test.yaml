@@ -1,0 +1,19 @@
+test: precharge_sequence
+description: >
+  모두 꺼진 상태(electrical.initial: off)에서 출발합니다. 셧다운 회로가 닫히면 AIR−와 프리차지
+  릴레이가 붙고, DC 링크가 팩 전압의 95 %에 닿으면 AIR+가 붙은 뒤 프리차지 릴레이가 떨어집니다.
+  그 전에는 인버터가 구동하지 않습니다 (FSAE EV.5, PH-16, electrical/netlist.yaml).
+scenario: ../scenarios/acceleration.yaml
+overrides: {electrical.enabled: true, electrical.initial: "off"}
+duration_s: 6
+checks:
+  - name: 프리차지 1.5초 안에 완료
+    expr: "time_to(elec.PCC.state, 3) < 1.5"
+  - name: AIR+는 팩 전압의 90 % 이상에서 붙음
+    expr: "final(elec.PCC.close_ratio) >= 0.9 and max(elec.PCC.violation) == 0"
+  - name: 프리차지 중에는 구동하지 않음
+    expr: "at(veh.chassis.vx, 0.8) < 0.1"
+  - name: 컨택터 채터링 없음
+    expr: "max(elec.AIR_P.chatter) == 0 and max(elec.AIR_N.chatter) == 0"
+  - name: 프리차지를 포함해 75 m를 5초 안에
+    expr: "final(track.last_lap) > 0 and final(track.last_lap) < 5.0"

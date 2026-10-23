@@ -37,6 +37,11 @@ struct Node {
   std::int64_t task_k = 0;
   double next_task = kInf;
   SignalId tec_out = 0, bus_off_out = 0;
+  // Supply from the electrical network (elec.can_node.<name>.on): without it
+  // the node is silent; at power-up its schedule restarts from that moment.
+  std::optional<SignalId> power_in;
+  bool powered = true;
+  double epoch = 0.0;  // node-clock time its schedule counts from
 };
 
 struct SignalMap {
@@ -159,7 +164,7 @@ struct CanNetwork::Impl {
 
   void schedule_next(Message& m) {
     Node* node = m.node ? &nodes[*m.node] : nullptr;
-    const double local = (node ? node->offset : 0.0) + static_cast<double>(m.k) * m.cycle;
+    const double local = (node ? node->epoch + node->offset : 0.0) + static_cast<double>(m.k) * m.cycle;
     m.next_request = clock_to_sim(node, local) + draw_jitter(node);
   }
 
@@ -207,7 +212,44 @@ struct CanNetwork::Impl {
       n.bus_off = false;
       n.tec = 0;
     }
-    return n.bus_off || forced_bus_off(node, t);
+    return n.bus_off || !n.powered || forced_bus_off(node, t);
+  }
+
+  // Nodes losing power drop what they had queued; nodes getting it back boot
+  // and start their message and task schedules afresh.
+  void update_power(double t, const SignalBus& bus) {
+    for (std::size_t ni = 0; ni < nodes.size(); ++ni) {
+      Node& n = nodes[ni];
+      if (!n.power_in) {
+        continue;
+      }
+      const bool powered = bus.get(*n.power_in) > 0.5;
+      if (powered == n.powered) {
+        continue;
+      }
+      n.powered = powered;
+      if (!powered) {
+        for (Bus& b : buses) {
+          std::erase_if(b.pending, [&](const Pending& p) {
+            return messages[p.message].node && *messages[p.message].node == ni;
+          });
+        }
+        continue;
+      }
+      n.epoch = timing ? t * (1.0 + n.ppm * 1e-6) : t;
+      n.tec = 0;
+      n.bus_off = false;
+      for (Message& m : messages) {
+        if (m.node && *m.node == ni && m.cycle > 0.0) {
+          m.k = 0;
+          schedule_next(m);
+        }
+      }
+      if (n.task > 0.0) {
+        n.task_k = 0;
+        n.next_task = clock_to_sim(&n, n.epoch + n.offset) + draw_jitter(&n);
+      }
+    }
   }
 
   CanFrame build_frame(Message& m, const SignalBus& bus) {
@@ -438,10 +480,14 @@ struct CanNetwork::Impl {
   void tasks(double t, SignalBus& bus) {
     for (std::size_t ni = 0; ni < nodes.size(); ++ni) {
       Node& n = nodes[ni];
+      if (!n.powered) {
+        continue;  // in reset: no task runs (restarted at power-up)
+      }
       while (n.task > 0.0 && n.next_task <= t + kEps) {
         const double boundary = n.next_task;
         ++n.task_k;
-        n.next_task = clock_to_sim(&n, n.offset + static_cast<double>(n.task_k) * n.task) + draw_jitter(&n);
+        n.next_task =
+            clock_to_sim(&n, n.epoch + n.offset + static_cast<double>(n.task_k) * n.task) + draw_jitter(&n);
         for (Message& m : messages) {
           if (!m.task_node || *m.task_node != ni) {
             continue;
@@ -591,6 +637,7 @@ void CanNetwork::init(const ParamTree& params, Context& ctx) {
     n.rng.emplace(ctx.make_rng("can.node." + n.name));
     n.tec_out = bus.declare("can." + n.name + ".tec", "-", "transmit error counter");
     n.bus_off_out = bus.declare("can." + n.name + ".bus_off", "-", "1 while the node is bus-off");
+    n.power_in = bus.find("elec.can_node." + n.name + ".on");
     if (n.task > 0.0) {
       n.next_task = s.clock_to_sim(&n, n.offset) + s.draw_jitter(&n);
     }
@@ -761,6 +808,7 @@ void CanNetwork::init(const ParamTree& params, Context& ctx) {
 
 void CanNetwork::before_controllers(double t, SignalBus& bus) {
   Impl& s = *impl_;
+  s.update_power(t, bus);
   s.send(t, bus, false);
   s.deliver(t, bus, true);
   s.apply(t, bus, true);
@@ -769,6 +817,7 @@ void CanNetwork::before_controllers(double t, SignalBus& bus) {
 
 void CanNetwork::after_controllers(double t, SignalBus& bus) {
   Impl& s = *impl_;
+  s.update_power(t, bus);
   s.send(t, bus, true);
   s.deliver(t, bus, false);
   s.apply(t, bus, false);

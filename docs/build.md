@@ -1,8 +1,18 @@
 # 빌드와 실행
 
-M5 기준 안내입니다. 설계는 [design.md](design.md)를 보세요.
+M9 기준 안내입니다. 설계는 [design.md](design.md)를 보세요.
 
 ## 지금 되는 것
+
+**M9 (전기가 흐른다)**
+- **전기 네트워크**: 프로젝트의 `electrical/netlist.yaml`로 고전압(축전지·퓨즈·AIR·프리차지·방전·HV 케이블·DC 링크·인버터), 셧다운 회로, 저전압(LV 배터리·DC-DC·퓨즈·ECU·펌프·팬), 센서 배선(5 V 레귤레이터·APPS 포텐셔미터·커넥터 핀·ADC)을 정하면, 매 1 ms 수정 절점 해석(MNA)으로 풉니다
+- 켜면 배터리 ↔ 인버터가 직결이 아닙니다: AIR가 붙어야 모터에 전기가 가고, DC 링크 전압으로 모터 출력이 정해지고, 배터리 전류는 회로에서 나옵니다
+- **프리차지·셧다운**: 셧다운 회로가 닫히면 AIR−·프리차지 릴레이 → DC 링크 95 % → AIR+ 순서. 규정(90 %) 위반·실패(타임아웃)·컨택터 채터링 감지 (PH-16)
+- **ECU 전원**: 최소 전압 아래로 떨어지면 리셋, 부팅 시간 뒤 재시작. 꺼진 동안 그 ECU의 CAN 노드가 멈추고 출력은 0 (PH-07)
+- **센서 배선**: APPS 신호가 배선·커넥터 핀·접지를 거쳐 VCU ADC로. 접촉 저항·단선이 APPS 타당성 검사로 이어짐 (PH-10)
+- **고장 주입**: 단선, 단락, 접촉 저항(커넥터 핀), 퓨즈 단선, 릴레이 고착, 간헐 접촉
+- 전선 저항·온도 상승·허용 전류, 전압 강하, LV 전력 예산, DC-DC 여유 → `summary.json`의 `electrical`
+- **회로 편집기** (`ui/elec/index.html`): 회로도에서 부품을 끌고 단자를 망에 연결, 속성 편집, 동작점 검사, 실행 중 전압·전류·접점 상태, 고장·하네스·LV 전력 예산·이벤트 탭
 
 **M8 (CAN으로 말한다)**
 - **가상 CAN**: 프로젝트의 DBC와 `can/network.yaml`로 버스·노드·신호 연결을 정하면, VCU의 토크 명령은 CAN 프레임으로 인버터(플랜트)에, 모터 속도·BMS 한계·IMU 값은 CAN 프레임으로 VCU에 갑니다
@@ -435,6 +445,80 @@ build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/sce
 - "빈 연결 자동 제안": 메시지·신호 이름과 시뮬레이터 신호 이름이 겹치는 단어와 단위로 후보를 채움
 - DBC 올리기(프로젝트 `can/`에 저장), 새 DBC, 내보내기(.dbc 다운로드). 저장하면 시뮬레이터가 다시 시작하고, 불러오지 못하면 이전 파일로 되돌립니다. 편집기로 저장한 `network.yaml`에는 주석이 남지 않습니다
 
+## 전기 네트워크
+
+예제 프로젝트의 `electrical/netlist.yaml`은 FSAE EV 구조(140S 축전지, AIR 두 개, 프리차지 600 Ω × DC 링크 600 µF, 인버터 두 개(앞·뒤), DC-DC, 4S LiFePO4 LV 배터리, 셧다운 회로 직렬 스위치 7개, VCU·BMS·IMU·인버터 제어보드, 펌프·팬, APPS 배선)이고 기본으로 꺼져 있습니다.
+
+```powershell
+# 프리차지된 상태로 출발 (ui\elec\index.html로 회로와 실시간 값 보기)
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/autocross_auto.yaml --set electrical.enabled=true
+# 모두 꺼진 상태에서: 셧다운 회로 → 프리차지(약 1.1초) → AIR+ → 구동 (PH-16)
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/acceleration.yaml --mode fast --log-dir runs `
+  --set electrical.enabled=true --set electrical.initial=off
+# 고장: APPS2 접지 핀 부식 (PH-10) → APPS 불일치로 토크 차단
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/acceleration.yaml --mode fast --log-dir runs `
+  --set electrical.enabled=true --set electrical.faults.0.type=contact_resistance --set electrical.faults.0.target=conn.X6.2 `
+  --set electrical.faults.0.r_ohm=1500 --set electrical.faults.0.at_s=1
+```
+
+| `electrical/netlist.yaml` | 내용 |
+|---|---|
+| `enabled` | 켜기 |
+| `level` | `E1` 저항만(커패시터 없음, 정상상태) \| `E2` 과도(커패시터·인덕터·DC-DC 응답). 없으면 E2, 시나리오가 `realism.electrical: ideal`이면 꺼짐(E0) |
+| `initial` | `active`: 프리차지가 끝나고 릴레이·ECU가 전원대로 있는 상태에서 시작 \| `off`: 커패시터가 비고 모두 꺼진 상태에서 시작 |
+| `dt_s` | 해석 간격 (기본 물리 스텝 1 ms, `time.dt`를 나누어떨어지게) |
+| `components` | 부품 목록 `{id, type, 단자: 망 이름, 값...}`. 망 이름은 자유(GND·0은 접지). HV처럼 차체와 절연된 망은 10 MΩ으로 차체에 묶입니다 |
+| `faults` | `[{type, target, at_s, until_s, r_ohm, to, intermittent: {rate_hz, duration_s}}]` |
+| `harness.contact_r_ohm` | 커넥터 핀 하나의 접촉 저항 (기본 2 mΩ) |
+| `layout` | 회로 편집기의 배치 (해석에는 안 씀) |
+
+| 부품 `type` | 단자 | 주요 값 |
+|---|---|---|
+| `battery_model` | pos, neg | 차량 셀 모델(`vehicle.battery`)의 개방전압 + 팩 저항. 하나만. 있으면 모든 모터에 `inverter`가 있어야 함 |
+| `inverter` | pos, neg | `motors: [fl, fr]`, `v_min`(이 아래면 꺼짐), `v_on`, `v_max`, `logic`(제어보드 전원 ECU), `enable`(조건, 예: 프리차지 완료) |
+| `contactor`, `relay` | a, b, coil_a, coil_b | `coil_r_ohm`, `pull_in_v`, `drop_out_v`, `close_ms`, `open_ms`, `r_on_ohm`, `normally: open \| closed`, `rating_a` |
+| `precharge` | supply, ref | `pack: [+, −]`, `link: [+, −]`, `pre_out`·`air_out: [망, 망]`(제어기가 닫는 출력), `threshold`, `mode: voltage \| time`, `time_s`, `timeout_s`, `air_relay`(규정 검사), `rule_ratio` |
+| `dcdc` | in_pos, in_neg, out_pos, out_neg | `v_out`, `i_max_a`, `efficiency`, `r_out_ohm`, `response_s`, `v_in_min`, `v_in_on`, `enable` |
+| `lv_battery` | pos, neg | `capacity_ah`, `r_ohm`, `soc`(시나리오 `initial.lv_soc`가 우선), `ocv_soc`·`ocv_v` 또는 `v_empty`·`v_full` |
+| `ecu` | a, b | `i_a` 또는 `p_w`, `v_min`(리셋), `v_on`, `boot_s`, `can_node`(하나 또는 목록), `forces`(꺼진 동안 0이 되는 신호, `*` 가능) |
+| `load` | a, b | `p_w` \| `i_a` \| `r_ohm`, `inrush: {factor, tau_s}`(모터 기동 전류), `control`(조건) |
+| `fuse` | a, b | `rating_a`, `i2t_a2s`(기본 1.6 × 정격²), `r_ohm` |
+| `wire` | a, b | `length_m` 또는 `route: [[x, y, z], ...]`(차량 좌표 m, `slack` 1.1), `area_mm2`, `material`, `pins: [X1.3]`, `rating_a`(기본: 단면적 표), `thermal` |
+| `switch` | a, b | `closed`, `open_when`·`closed_when`(조건), `r_on_ohm` |
+| `regulator` | in, out, gnd | `v_out`, `dropout_v`, `r_out_ohm`, `i_max_a`, `i_q_a` |
+| `potentiometer` | a, b, wiper | `r_ohm`, `sensor`·`channel`(페달 센서의 전압 맵을 따름) 또는 `signal`·`ratio` |
+| `adc` | a, ref, vref(선택) | `r_in_ohm`, `pull_down_ohm`, `pull_up: {to, r_ohm}`, `sensor`·`channel`(그 센서 채널이 이 전압을 읽음) |
+| `resistor`, `capacitor`, `inductor`, `diode`, `voltage_source`, `current_source` | a, b / pos, neg | `r_ohm` / `c_f`, `esr_ohm`, `v0` / `l_h`, `r_ohm` / `v_f`, `r_on_ohm` / `v`, `r_ohm`, `signal` / `i_a` |
+
+- **조건** (`control`, `enable`, `open_when`, `closed_when`): 신호 이름 하나(0.5 초과), 또는 `{signal, above | below, hysteresis, delay_s, latch}`, `{all: [...]}`, `{any: [...]}`. 예: BSPD `{all: [{signal: veh.brake.pressure, above: 20}, {signal: pt.power_elec, above: 5000}], delay_s: 0.5, latch: true}`, 팬 `{signal: pt.motor.rl.temp, above: 60, hysteresis: 5}`
+- **고장 대상**: `open`(전선·저항·퓨즈·스위치·릴레이·부하·DC-DC·전원·커넥터 핀), `contact_resistance`(전선·저항·퓨즈·핀 `conn.X6.2`), `short`(망 이름이나 `<id>.<단자>`를 `to`(기본 GND)로, `r_ohm` 기본 1 mΩ), `stuck_closed`·`stuck_open`(릴레이·컨택터·스위치), `blow`(퓨즈)
+- 시점: 해석은 드라이버 다음, 센서 앞에서 [t, t + 1 ms)를 풉니다(플랜트의 모터 전력과 제어기 명령은 1 ms 전 값). ECU 전원 상태는 VCU 다음, CAN 송신 전에 반영됩니다
+
+| 신호 | 내용 |
+|---|---|
+| `elec.v.<망>` | 망 전압 (차체 기준). 망 이름의 `+`는 `_P`, `-`는 `_N` (`ACC+` → `elec.v.ACC_P`) |
+| `elec.<id>.i`, `.p` | 부품 전류(a → b, 전원은 pos에서 나가는 방향), 전력 |
+| `elec.<id>.closed`, `.coil_v`, `.closes`, `.chatter` | 릴레이·컨택터·스위치 접점, 코일 전압, 닫힌 횟수, 채터링(1초에 3번 이상) |
+| `elec.<id>.on`, `.v`, `.resets` | ECU 동작 여부(리셋·부팅 중 0), 전원 전압, 리셋 횟수 |
+| `elec.<id>.state`, `.ratio`, `.close_ratio`, `.violation` | 프리차지: 0 꺼짐·1 프리차지·2 닫는 중·3 완료·4 실패, DC 링크/팩 전압, AIR+가 붙을 때 비율, 규정 위반 |
+| `elec.<id>.blown`, `.heat` | 퓨즈 단선, 용단 적분 / I²t |
+| `elec.<id>.drop`, `.temp`, `.overload` | 전선 전압 강하, 도체 온도, 정격 온도 초과 |
+| `elec.<id>.i_out`, `.p_out`, `.limited`, `.on` | DC-DC |
+| `elec.bat.current`, `elec.motor.<m>.dc_voltage`, `.enabled` | 플랜트로 가는 축전지 전류, 인버터 DC 링크 전압, 구동 가능 |
+| `elec.ts_voltage`, `elec.ts_active` | 인버터 DC 링크 최고 전압, 60 V 초과(TSAL) |
+| `elec.sensor.<센서>.<채널>` | 배선을 거쳐 ECU ADC에 들어온 센서 전압 |
+
+`summary.json`의 `electrical`: 이벤트(ECU 리셋, 퓨즈, 채터링, 프리차지 위반·실패, 전선 과열, DC-DC 정지), 전선별 최대·실효 전류·허용 대비 사용률·최대 강하(V, %)·최고 온도·손실, 부하·ECU·인버터 평균·최대 전력, LV 전력 예산, DC-DC 여유, ECU 최저 전압·리셋, 릴레이 닫힘 횟수, 프리차지 시간·비율, 해석기 통계. `python -m vsim.phenomena`도 같은 이벤트를 보여 줍니다. Python에서 동작점만: `vsim.electrical_operating_point(시나리오, {"electrical.enabled": "true"})`.
+
+### 회로 편집기
+
+`vsim-core`를 실시간으로 띄우고 `ui\elec\index.html`을 엽니다.
+
+- 왼쪽: 부품 추가(HV·LV·배선·수동 부품), 부품 목록. 가운데: 회로도. 부품을 끌어 옮기고, **단자를 끌어 망(점)이나 다른 단자에 놓으면 연결**, 빈 곳에 놓으면 새 망. 휠로 확대, 빈 곳을 끌어 이동. 오른쪽: 선택한 부품의 단자·값·기타 설정(조건·목록·경로는 YAML)
+- 값 표시: "동작점 검사"(편집 중인 회로를 저장하지 않고 풀어서 망 전압·전류·접점 상태를 그림에 표시) 또는 "실행 중"(시뮬레이터의 실시간 값). HV(60 V 이상) 주황, LV 파랑, 센서 신호 초록
+- 아래 탭: 고장 주입 표, 하네스·전선(길이·단면적·저항·허용 전류·실행 중 최대 전류·사용률·강하·온도, 경로를 준 전선의 위에서 본 배치), LV 전력 예산(설계값 합계와 실행 평균, DC-DC 여유, ECU 최저 전압·리셋), 이벤트, 망 전압
+- 저장하면 시뮬레이터가 다시 시작하고, 불러오지 못하는 회로(값 오류 등)는 저장하지 않고 이유를 알립니다. 편집기로 저장한 파일에는 주석이 남지 않습니다
+
 ---
 
 ## 센서와 현상 탐지
@@ -659,6 +743,7 @@ build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/sce
 | `vcu.*` | 출력 한계, 회생 비율, 바퀴별 슬립과 슬립 제어 계수, 센서로 판단한 페달·차속, 타당성 검사 상태 |
 | `sens.<센서>.*` | 센서 출력 (위 "센서와 현상 탐지") |
 | `can.*` | 가상 CAN: 버스 부하, 받은 신호, 메시지 지연·타임아웃 (위 "가상 CAN") |
+| `elec.*` | 전기 네트워크: 망 전압, 부품 전류, 접점·ECU·퓨즈·프리차지 상태 (위 "전기 네트워크") |
 | `energy.*` | 에너지 흐름 누적값 (배터리 화학 에너지, 각 손실, 운동에너지, `residual`은 수지 오차) |
 
 ### 자주 쓰는 옵션
@@ -785,3 +870,8 @@ Linux에서 휠을 쓰려면 `/dev/input/event*`, `/dev/hidraw*` 읽기 권한�
 | `can.map...: cannot convert ...` | DBC 신호 단위와 시뮬레이터 신호 단위의 종류가 다름. 연결이 맞는지 확인하거나 `{signal: ..., unit: ...}`로 DBC 쪽 단위 지정 |
 | CAN을 켜니 차가 안 감 | `can.<메시지>.timeout` 확인. 토크 명령 메시지가 타임아웃이면 인버터가 0으로 (버스 과부하, bus-off, 고장 설정) |
 | ASC를 CANalyzer가 못 엶 | CAN FD 줄은 ASC 형식을 간단히 씁니다. candump 로그(`can.log: candump`)를 SavvyCAN으로 |
+| 전기 네트워크를 켜니 차가 안 감 | `elec.PCC.state`(3이 완료), `elec.motor.<m>.enabled`, `elec.<인버터>.v` 확인. `initial: off`면 프리차지(약 1초) 동안은 구동하지 않음. 셧다운 회로 스위치(`elec.<id>.closed`)가 열렸는지 |
+| `electrical: motor rr has no inverter in the netlist` | `battery_model`이 있으면 모든 구동 모터가 어떤 `inverter`의 `motors`에 있어야 합니다 |
+| `electrical.components.N (...): needs ...` | 그 부품 종류에 꼭 필요한 값이 빠짐 (위 부품 표) |
+| ECU가 계속 리셋됨 | `elec.<ECU>.v` 최저값과 `v_min` 비교. LV 배터리 SoC(`initial.lv_soc`), DC-DC 동작(`elec.DCDC.on`), 배선·접지 저항, 기동 전류가 큰 부하(`inrush`) 확인 |
+| `electrical.initial 'False'` | YAML 1.1 파서가 `off`를 거짓으로 읽음. `"off"`처럼 따옴표 |

@@ -6,8 +6,9 @@
 - 빌드와 실행: [docs/build.md](docs/build.md)
 - 차량 데이터 요청 목록: [docs/vehicle_parameters.md](docs/vehicle_parameters.md)
 
-## 현재 상태: M8 (CAN으로 말한다)
+## 현재 상태: M9 (전기가 흐른다)
 
+- **M9**: 전기 네트워크. 고전압(축전지·AIR·프리차지·DC 링크·인버터), 셧다운 회로, 저전압(LV 배터리·DC-DC·ECU·펌프·팬), 센서 배선을 넷리스트로 정하고 매 스텝 회로 해석(MNA). 프리차지 순서·위반·채터링, ECU 브라운아웃 리셋과 CAN 노드 정지, 배선 고장 → APPS 차단, 전선 강하·온도·LV 전력 예산. 회로 편집기(`ui/elec/index.html`)
 - **M8**: 가상 CAN. DBC로 정한 버스로 토크 명령·인버터 피드백·BMS·IMU가 오가고, 프레임 길이(비트 스터핑)·ID 중재·노드 클록 오차·지터·프레임 손실·bus-off·타임아웃이 제어에 그대로 영향을 줌. ASC·candump 버스 로그, CAN 네트워크 편집기(`ui/can/index.html`)
 - **M7**: 플러그인. 팀 코드(C/C++ 공유 라이브러리, FMU, Python, Simulink → `vsim_export`)를 VCU·드라이버 자리나 VCU 다음에 넣고 포트를 신호에 연결(단위 자동 변환). 플러그인 페이지(`ui/plugins/index.html`), SDK와 예제(`sdk/`)
 - **M6**: 센서 신호 체인(IMU 레버암·중력·장착 오차·진동 aliasing, 휠속 펄스, APPS 2채널, 브레이크 압력, GNSS 등)과 고장 주입. VCU가 센서 값으로 동작(FSAE APPS·BSPC 타당성 검사, 휠속 + IMU 차속 추정). 현상 탐지와 원인 분리(`python -m vsim.phenomena`)

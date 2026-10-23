@@ -64,6 +64,8 @@ class Simulation {
   std::vector<const PluginBlock*> plugins() const;
   // Virtual CAN statistics so far as JSON (CanNetwork::summary_json), "" without CAN.
   std::string can_summary() const;
+  // Electrical network statistics and events (ElectricalNetwork::summary_json), "" without it.
+  std::string electrical_summary() const;
   // Directory of the current run's files; empty when not writing.
   const std::filesystem::path& run_path() const;
 

@@ -20,6 +20,9 @@ add_library(vsim_core STATIC
   src/can/frame.cpp
   src/can/network.cpp
   src/control/reference_vcu.cpp
+  src/elec/circuit.cpp
+  src/elec/elements.cpp
+  src/elec/network.cpp
   src/driver/drivers.cpp
   src/driver/profile.cpp
   src/input/force_feedback.cpp

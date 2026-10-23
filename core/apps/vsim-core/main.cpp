@@ -38,6 +38,7 @@
 #include "vsim/input/input_service.hpp"
 #endif
 #include "vsim/can/dbc.hpp"
+#include "vsim/elec/network.hpp"
 #include "vsim/link/state_link.hpp"
 #include "vsim/plugin/plugin.hpp"
 #include "vsim/models/vehicle/suspension.hpp"
@@ -922,6 +923,90 @@ void save_can(const vsim::Scenario& scenario, const json& params) {
   ensure_project_key(scenario, "can", file);
 }
 
+// --- Electrical network page (ui/elec) -----------------------------------------------------
+
+std::filesystem::path elec_file(const vsim::Scenario& scenario) {
+  const vsim::ParamTree project = vsim::ParamTree::from_yaml_file(scenario.project_dir / "project.yaml");
+  return scenario.project_dir / vsim::path_from_utf8(project.get_string("electrical", "electrical/netlist.yaml"));
+}
+
+json elec_state(const vsim::Simulation& sim) {
+  const vsim::Scenario& scenario = sim.scenario();
+  json signals = json::array();
+  json live = json::object();
+  for (vsim::SignalId id = 0; id < sim.bus().size(); ++id) {
+    const auto& info = sim.bus().info(id);
+    if (info.name.rfind("elec.", 0) == 0) {
+      live[info.name] = sim.bus().get(id);
+    } else {
+      signals.push_back({{"name", info.name}, {"unit", info.unit}});
+    }
+  }
+  // What a netlist can refer to: the driveline's motors and the pedal sensors.
+  json motors = json::array(), pedals = json::array();
+  for (const vsim::SignalId id : sim.bus().match("pt.motor.*.torque_cmd")) {
+    const std::string& name = sim.bus().info(id).name;
+    motors.push_back(name.substr(9, name.size() - 20));
+  }
+  for (std::size_t i = 0; scenario.params.has_prefix("vehicle.sensors." + std::to_string(i)); ++i) {
+    const std::string p = "vehicle.sensors." + std::to_string(i);
+    if (scenario.params.get_string(p + ".type", "") == "pedal") {
+      pedals.push_back(scenario.params.get_string(p + ".name", ""));
+    }
+  }
+  const std::filesystem::path file = elec_file(scenario);
+  const std::string summary = sim.electrical_summary();
+  return json{{"jsonrpc", "2.0"},
+              {"method", "elec.state"},
+              {"params",
+               {{"project", vsim::path_to_utf8(scenario.project_dir)},
+                {"netlist_file", vsim::path_to_utf8(file.lexically_relative(scenario.project_dir))},
+                {"netlist_yaml", read_text(file).value_or("")},
+                {"signals", signals},
+                {"motors", motors},
+                {"pedals", pedals},
+                {"running", !summary.empty()},
+                {"time", sim.time()},
+                {"stats", summary.empty() ? json(nullptr) : json::parse(summary)},
+                {"live", live},
+                {"load_error", g_reload_error}}}};
+}
+
+// The scenario's parameters with the electrical section replaced by an edited netlist.
+vsim::ParamTree with_netlist(const vsim::Scenario& scenario, const std::string& yaml) {
+  const vsim::ParamTree netlist = vsim::ParamTree::from_yaml_string(yaml);
+  vsim::ParamTree params = scenario.params;
+  params.set("electrical", "");
+  params.merge(netlist, "electrical");
+  params.set("electrical.enabled", "true");
+  return params;
+}
+
+// Operating point of an edited netlist (before saving it): node voltages and
+// component values at rest, or the error that stops it from loading.
+json elec_check(const vsim::Simulation& sim, const json& params) {
+  json out = {{"jsonrpc", "2.0"}, {"method", "elec.op"}, {"params", json::object()}};
+  try {
+    out["params"]["op"] =
+        json::parse(vsim::ElectricalNetwork::operating_point_json(with_netlist(sim.scenario(), params.at("netlist"))));
+    out["params"]["ok"] = true;
+  } catch (const std::exception& e) {
+    out["params"]["ok"] = false;
+    out["params"]["error"] = e.what();
+  }
+  return out;
+}
+
+void save_elec(const vsim::Scenario& scenario, const json& params) {
+  const std::string netlist = params.at("netlist");
+  vsim::ElectricalNetwork::operating_point_json(with_netlist(scenario, netlist));  // loads and solves, or throws
+  g_saved_backup.clear();
+  g_reload_error.clear();
+  const std::filesystem::path file = elec_file(scenario);
+  save_project_file(file, netlist);
+  ensure_project_key(scenario, "electrical", file);
+}
+
 std::string notice(const std::string& level, const std::string& text) {
   return json{{"jsonrpc", "2.0"}, {"method", "notice"}, {"params", {{"level", level}, {"text", text}}}}.dump();
 }
@@ -1294,6 +1379,19 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
             reload = true;
           } else {
             server.broadcast(notice("info", "CAN network saved"));
+          }
+        } else if (method == "elec.get") {
+          server.broadcast(elec_state(sim).dump());
+        } else if (method == "elec.check") {
+          server.broadcast(elec_check(sim, params).dump());
+        } else if (method == "elec.save") {
+          save_elec(sim.scenario(), params);
+          std::cout << "electrical page saved " << vsim::path_to_utf8(elec_file(sim.scenario())) << "\n";
+          if (params.value("reload", true)) {
+            server.broadcast(notice("info", "electrical network saved; reloading the simulation"));
+            reload = true;
+          } else {
+            server.broadcast(notice("info", "electrical network saved"));
           }
         } else if (method == "vehicle.model") {
           server.broadcast(car_model_message(car_model, car_generation));

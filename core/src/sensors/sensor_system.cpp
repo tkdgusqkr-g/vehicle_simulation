@@ -465,6 +465,9 @@ class Pedal final : public SensorSystem::Sensor {
                                 : (i == 0 ? std::array<double, 2>{0.5, 4.5} : std::array<double, 2>{4.5, 0.5});
       channels_.push_back(channel(s, key, v, 5.0));
       out_[i] = output(s, key, "V", "pedal track voltage");
+      // Wired through the electrical network (design doc §10.5): the voltage
+      // at the ECU input, with supply sag, ground offset and wiring faults.
+      wired_[i] = s.ctx.bus().find("elec.sensor." + s.name + "." + key);
     }
   }
 
@@ -472,12 +475,14 @@ class Pedal final : public SensorSystem::Sensor {
   void sample(double t, SignalBus& bus) override {
     const double travel = std::clamp(pedal_.get(bus), 0.0, 1.0);
     for (std::size_t i = 0; i < 2; ++i) {
-      bus.set(out_[i], channels_[i].sample(t, map_[i][0] + (map_[i][1] - map_[i][0]) * travel));
+      const double volts = wired_[i] ? bus.get(*wired_[i]) : map_[i][0] + (map_[i][1] - map_[i][0]) * travel;
+      bus.set(out_[i], channels_[i].sample(t, volts));
     }
   }
 
  private:
   Input pedal_;
+  std::array<std::optional<SignalId>, 2> wired_{};
   std::array<std::array<double, 2>, 2> map_{};
   std::vector<ChannelModel> channels_;
   std::array<SignalId, 2> out_{};

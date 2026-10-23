@@ -16,6 +16,7 @@
 #include "vsim/can/network.hpp"
 #include "vsim/control/reference_vcu.hpp"
 #include "vsim/driver/drivers.hpp"
+#include "vsim/elec/network.hpp"
 #include "vsim/log/mcap_logger.hpp"
 #include "vsim/models/vehicle/single_track.hpp"
 #include "vsim/models/vehicle/two_track.hpp"
@@ -87,7 +88,8 @@ struct Simulation::Impl {
   std::unique_ptr<PlantModel> plant;
   std::vector<double> state;
   Rk4Integrator integrator;
-  std::unique_ptr<CanNetwork> can;  // outlives its blocks (declared before them)
+  std::unique_ptr<CanNetwork> can;  // outlive their blocks (declared before them)
+  std::unique_ptr<ElectricalNetwork> elec;
   std::vector<ScheduledBlock> blocks;
   std::vector<const PluginBlock*> plugins;  // among blocks
 
@@ -159,6 +161,9 @@ void Simulation::Impl::build(const Scenario& scenario, const SimulationOptions& 
   }
 
   const std::string model = params.get_string("vehicle.model", "two_track");
+  if (model == "single_track" && ElectricalNetwork::powers_plant(params)) {
+    throw std::invalid_argument("electrical: the accumulator in the netlist needs vehicle.model two_track or full");
+  }
   if (model == "two_track" || model == "full") {
     plant = std::make_unique<TwoTrackModel>();
   } else if (model == "single_track") {
@@ -169,8 +174,9 @@ void Simulation::Impl::build(const Scenario& scenario, const SimulationOptions& 
   }
   plant->init(effective, *context);
 
-  // Execution order within a tick: driver, sensors (they see the driver's
-  // pedals this tick), VCU, then lap timing. Project components (plugins,
+  // Execution order within a tick: driver, electrical network (wiring and
+  // supplies for the sensors and ECUs), sensors (they see the driver's
+  // pedals this tick), VCU, ECU power gate, CAN sends, then lap timing. Project components (plugins,
   // design doc §11) take the driver or VCU slot or run after one of them.
   const std::vector<ComponentSpec> components = components_from_params(effective);
   const auto slot = [&](const std::string& name) -> const ComponentSpec* {
@@ -212,6 +218,10 @@ void Simulation::Impl::build(const Scenario& scenario, const SimulationOptions& 
     ordered.push_back(make_driver(effective));
   }
   extras_after("driver");
+  if (ElectricalNetwork::configured(effective)) {
+    elec = std::make_unique<ElectricalNetwork>();
+    ordered.push_back(elec->make_block(false));
+  }
   if (SensorSystem::configured(effective)) {
     ordered.push_back(std::make_unique<SensorSystem>());
   }
@@ -226,6 +236,9 @@ void Simulation::Impl::build(const Scenario& scenario, const SimulationOptions& 
     ordered.push_back(std::make_unique<ReferenceVcu>());
   }
   extras_after("vcu");
+  if (elec) {
+    ordered.push_back(elec->make_block(true));  // ECUs without power drive nothing
+  }
   if (can) {
     ordered.push_back(can->make_block(true));  // controllers send, the plant receives
   }
@@ -382,6 +395,9 @@ void Simulation::Impl::finish() {
       summary["laps"] = laps_json;
       summary["best_lap_s"] = best > 0.0 ? nlohmann::json(best) : nlohmann::json(nullptr);
     }
+    if (elec) {
+      summary["electrical"] = nlohmann::json::parse(elec->summary_json());
+    }
     if (can) {
       summary["can"] = nlohmann::json::parse(can->summary_json());
       can->close_logs();
@@ -438,6 +454,7 @@ void Simulation::set_signal(const std::string& name, double value) { impl_->bus.
 const Recorder& Simulation::recorder() const { return impl_->recorder; }
 std::vector<const PluginBlock*> Simulation::plugins() const { return impl_->plugins; }
 std::string Simulation::can_summary() const { return impl_->can ? impl_->can->summary_json() : ""; }
+std::string Simulation::electrical_summary() const { return impl_->elec ? impl_->elec->summary_json() : ""; }
 const std::filesystem::path& Simulation::run_path() const { return impl_->run_path; }
 
 void Simulation::reset() {

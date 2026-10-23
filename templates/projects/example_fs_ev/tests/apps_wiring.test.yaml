@@ -1,0 +1,20 @@
+test: apps_wiring_fault
+description: >
+  가속 중 1.0초에 APPS 2번 센서의 접지 핀(X6.2)이 부식(1.5 kΩ)됩니다. 센서 접지가 떠서 신호가
+  올라가고, VCU가 두 APPS의 차이(10 % 초과, 100 ms)를 보고 구동 토크를 끊어야 합니다
+  (FSAE T.4.2, PH-10). 신호는 전기 네트워크의 배선을 거쳐 VCU ADC로 들어갑니다.
+scenario: ../scenarios/acceleration.yaml
+overrides:
+  electrical.enabled: true
+  electrical.faults.0.type: contact_resistance
+  electrical.faults.0.target: conn.X6.2
+  electrical.faults.0.r_ohm: 1500
+  electrical.faults.0.at_s: 1.0
+duration_s: 2
+checks:
+  - name: 고장 전에는 두 채널이 일치하고 정상 구동
+    expr: "at(vcu.apps_implausible, 0.99) == 0 and at(pt.motor.fl.torque_cmd, 0.99) > 5"
+  - name: 접지가 뜨면 APPS2 전압이 0.5 V보다 크게 올라감
+    expr: "at(sens.apps.ch2, 1.05) > 1.0"
+  - name: 100 ms 넘게 불일치하면 모든 모터 토크 명령 0
+    expr: "at(vcu.apps_implausible, 1.12) == 1 and max(abs(window(pt.motor.fl.torque_cmd, 1.15, 2.0))) == 0"

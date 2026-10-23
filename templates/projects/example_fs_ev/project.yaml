@@ -7,3 +7,4 @@ vehicle: vehicle/vehicle.yaml
 control: control/vcu.yaml
 components: plugins/components.yaml   # 플러그인 연결 (설계 문서 §11.4)
 can: can/network.yaml              # 가상 CAN (설계 문서 §12.2)
+electrical: electrical/netlist.yaml  # 전기 네트워크 (설계 문서 §12.3)

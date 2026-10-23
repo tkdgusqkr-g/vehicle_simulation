@@ -118,6 +118,25 @@ def events(rec, *, min_duration=0.0):
         add(name, "can_bus_off", f"node {name[4:-8]} is bus-off", rec[name] > 0.5)
     for name in _match(rec, "can.*.load"):
         add(name, "can_bus_load", f"bus {name[4:-5]} above 80 % load", rec[name] > 0.8)
+    # Electrical network (design doc §12.3).
+    for name in _match(rec, "elec.*.resets"):
+        ecu = name[5:-7]
+        if f"elec.{ecu}.on" in rec:
+            add(name, "ecu_reset", f"{ecu} without supply (reset or booting)", rec[f"elec.{ecu}.on"] < 0.5)
+    for name in _match(rec, "elec.*.blown"):
+        add(name, "fuse_blown", f"fuse {name[5:-6]} blown", rec[name] > 0.5)
+    for name in _match(rec, "elec.*.chatter"):
+        add(name, "contactor_chatter", f"{name[5:-8]} opens and closes repeatedly", rec[name] > 0.5)
+    for name in _match(rec, "elec.*.violation"):
+        add(name, "precharge_violation", f"{name[5:-10]}: AIR closed below the precharge rule", rec[name] > 0.5)
+    for name in _match(rec, "elec.*.close_ratio"):
+        pcc = name[5:-12]
+        if f"elec.{pcc}.state" in rec:
+            add(name, "precharge_fail", f"{pcc}: precharge timed out", rec[f"elec.{pcc}.state"] > 3.5)
+    for name in _match(rec, "elec.*.overload"):
+        add(name, "wire_overheat", f"wire {name[5:-9]} above its rated temperature", rec[name] > 0.5)
+    for name in _match(rec, "elec.*.limited"):
+        add(name, "dcdc_limit", f"{name[5:-8]} at its output current limit", rec[name] > 0.5)
     if "bat.overloaded" in rec:
         add("bat.overloaded", "battery_limit", "battery at its current or voltage limit", rec["bat.overloaded"] > 0.5)
     out.sort(key=lambda e: e.t)

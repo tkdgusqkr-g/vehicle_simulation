@@ -1,0 +1,837 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vsim 전기 네트워크</title>
+<script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+<style>
+  :root {
+    --bg: #12151a; --panel: #181c22; --panel-2: #1f242c; --border: #2c3440; --text: #e6e9ee;
+    --muted: #8a94a3; --accent: #4fb3ff; --good: #3ecf8e; --bad: #ff5c5c; --warn: #ffb347;
+    --hv: #ff8a3d; --lv: #6fb8ff; --sig: #7ddc9a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; font-size: 14px; }
+  header { display: flex; align-items: center; gap: 14px; padding: 10px 20px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--bad); }
+  .dot.on { background: var(--good); }
+  .muted { color: var(--muted); }
+  main { display: grid; grid-template-columns: 250px minmax(480px, 1fr) 340px; gap: 12px; padding: 12px 16px; }
+  @media (max-width: 1250px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px;
+    overflow-x: auto; }
+  h2 { font-size: 13.5px; margin: 0 0 8px; color: var(--muted); font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  h2 .grow { flex: 1; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 3px 5px; border-bottom: 1px solid var(--border); vertical-align: middle; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.sel { background: #22303f; }
+  tr.click { cursor: pointer; }
+  tr.click:hover { background: #1c2733; }
+  input, select, textarea { background: #101317; color: var(--text); border: 1px solid var(--border); border-radius: 5px;
+    padding: 3px 5px; font: inherit; font-size: 12.5px; }
+  textarea { width: 100%; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  input.n { width: 76px; text-align: right; }
+  input.w { width: 100%; }
+  input.bad, textarea.bad { border-color: var(--bad); }
+  button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 11px; font: inherit; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #041018; border-color: var(--accent); font-weight: 600; }
+  button.small { padding: 2px 7px; font-size: 12px; }
+  button.danger:hover { border-color: var(--bad); color: var(--bad); }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .tabs button.on { border-color: var(--accent); color: var(--accent); }
+  .scroll { overflow: auto; max-height: 420px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 5px 0; }
+  .warn { color: var(--warn); } .bad { color: var(--bad); } .good { color: var(--good); }
+  .pill { font-size: 11px; padding: 1px 6px; border-radius: 9px; background: #2a3442; color: var(--muted); }
+  .bar { height: 8px; background: #101317; border-radius: 4px; overflow: hidden; width: 110px; display: inline-block; vertical-align: middle; }
+  .bar div { height: 100%; background: var(--good); }
+  .bar.hot div { background: var(--warn); } .bar.over div { background: var(--bad); }
+  #notices { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 6px; max-width: 520px; z-index: 5; }
+  .notice { background: var(--panel-2); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 6px;
+    padding: 8px 12px; font-size: 13px; white-space: pre-wrap; }
+  .notice.error { border-left-color: var(--bad); }
+  .error-box { border: 1px solid var(--bad); background: #2a1416; border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; white-space: pre-wrap; font-size: 13px; }
+  /* palette and list */
+  .palette { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .palette button { font-size: 12px; padding: 4px 5px; text-align: left; }
+  .palette .grp { grid-column: 1 / -1; color: var(--muted); font-size: 11.5px; margin-top: 6px; }
+  #list { max-height: 520px; overflow: auto; }
+  #list div { padding: 3px 6px; border-radius: 5px; cursor: pointer; display: flex; gap: 6px; align-items: center; font-size: 12.5px; }
+  #list div:hover { background: #1c2733; } #list div.sel { background: #22303f; }
+  #list .ty { color: var(--muted); font-size: 11px; margin-left: auto; }
+  /* schematic */
+  #canvas-wrap { position: relative; height: calc(100vh - 360px); min-height: 460px; background: #0e1116; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  #canvas { width: 100%; height: 100%; display: block; cursor: grab; user-select: none; }
+  #canvas.panning { cursor: grabbing; }
+  .comp rect { fill: #1b2129; stroke: #3a4554; stroke-width: 1.2; }
+  .comp.sel rect { stroke: var(--accent); stroke-width: 2; }
+  .comp.on rect { stroke: var(--good); } .comp.off rect { stroke: var(--bad); } .comp.warn rect { stroke: var(--warn); }
+  .comp text { fill: var(--text); font-size: 11px; pointer-events: none; }
+  .comp text.sub { fill: var(--muted); font-size: 9.5px; }
+  .comp text.val { fill: #ffd38a; font-size: 9.5px; }
+  .comp .icon { font-size: 14px; }
+  .term { fill: #0e1116; stroke: #8a94a3; stroke-width: 1.2; cursor: crosshair; }
+  .term:hover { stroke: var(--accent); fill: var(--accent); }
+  .tlabel { fill: #6b7584; font-size: 8px; pointer-events: none; }
+  .edge { stroke-width: 1.4; fill: none; }
+  .netnode { cursor: move; }
+  .netnode circle { stroke: #0e1116; stroke-width: 1.5; }
+  .netnode text { font-size: 10px; fill: var(--muted); pointer-events: none; }
+  .netnode text.v { fill: #ffd38a; }
+  .gnd { stroke: #8a94a3; stroke-width: 1.2; }
+  #legend { position: absolute; left: 10px; bottom: 8px; font-size: 11.5px; color: var(--muted); background: rgba(14,17,22,.85); padding: 4px 8px; border-radius: 6px; }
+  #legend i { display: inline-block; width: 14px; height: 3px; margin: 0 4px 2px 10px; vertical-align: middle; }
+  #canvas-tools { position: absolute; right: 10px; top: 8px; display: flex; gap: 6px; }
+  .prop label { display: block; color: var(--muted); font-size: 11.5px; margin-top: 7px; }
+  .prop .hint { color: #6b7584; font-size: 11px; }
+  .kv { display: grid; grid-template-columns: 110px 1fr; gap: 3px 8px; align-items: center; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>전기 네트워크</h1>
+  <span><span class="dot" id="conn-dot"></span><span id="conn">연결 안 됨</span></span>
+  <span class="muted" id="project"></span>
+  <label><input type="checkbox" id="enabled"> 사용</label>
+  <label class="muted">해석 <select id="level"><option value="">realism.electrical 따름 (E2)</option>
+    <option value="E1">E1 저항 (정상상태)</option><option value="E2">E2 과도 (C·L·응답)</option></select></label>
+  <label class="muted">시작 <select id="initial"><option value="active">active (프리차지 완료)</option><option value="off">off (모두 꺼짐)</option></select></label>
+  <span style="flex:1"></span>
+  <span class="muted" id="dirty"></span>
+  <button id="check">동작점 검사</button>
+  <button id="yaml-btn">YAML</button>
+  <button class="primary" id="save">저장하고 다시 불러오기</button>
+</header>
+<main>
+  <div>
+    <section>
+      <h2>부품 추가</h2>
+      <div class="palette" id="palette"></div>
+    </section>
+    <section>
+      <h2>부품 <span class="grow"></span><input id="filter" placeholder="찾기" style="width:110px"></h2>
+      <div id="list"></div>
+    </section>
+  </div>
+  <div>
+    <div id="load-error"></div>
+    <div id="canvas-wrap">
+      <svg id="canvas"><defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#8a94a3"/></marker>
+      </defs><g id="viewport"><g id="edges"></g><g id="nets"></g><g id="comps"></g><line id="rubber" class="edge" stroke="#4fb3ff" stroke-dasharray="4 3" visibility="hidden"/></g></svg>
+      <div id="canvas-tools">
+        <select id="values" title="그림에 표시할 값"><option value="op">값: 동작점 검사</option><option value="live">값: 실행 중</option><option value="none">값: 숨김</option></select>
+        <button class="small" id="autolayout">자동 배치</button>
+        <button class="small" id="fit">전체 보기</button>
+      </div>
+      <div id="legend"><i style="background:var(--hv)"></i>HV (60 V 이상) <i style="background:var(--lv)"></i>LV <i style="background:var(--sig)"></i>센서·신호
+        · 단자를 끌어 망(점)이나 다른 단자에 놓으면 연결, 빈 곳에 놓으면 새 망</div>
+    </div>
+    <section style="margin-top:12px">
+      <div class="tabs" id="tabs"></div>
+      <div id="tab" class="scroll"></div>
+    </section>
+  </div>
+  <div>
+    <section class="prop" id="props"><h2>속성</h2><div class="muted">부품을 고르세요.</div></section>
+    <section id="yaml-section" style="display:none">
+      <h2>netlist YAML <span class="grow"></span><button class="small" id="yaml-apply">적용</button></h2>
+      <textarea id="yaml" rows="24"></textarea>
+    </section>
+  </div>
+</main>
+<datalist id="net-list"></datalist>
+<datalist id="signal-list"></datalist>
+<datalist id="comp-list"></datalist>
+<div id="notices"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const wsUrl = new URLSearchParams(location.search).get("ws") || "ws://127.0.0.1:8765";
+const HEADER = "# 전기 네트워크 (설계 문서 §12.3). ui/elec에서 저장함.\n";
+let ws = null, state = null, net = {}, sel = null, dirty = false, fingerprint = "", op = null, opError = "";
+let tab = "faults", view = { x: 40, y: 40, k: 1 };
+
+// --- Component types: terminals and parameters --------------------------------------------
+// [key, unit, default, description]; params left out of the form go to "기타 설정 (YAML)".
+const TYPES = {
+  battery_model: { label: "축전지", group: "HV", icon: "🔋", terms: ["pos", "neg"], params: [], doc: "차량의 셀 모델(vehicle.battery): 개방전압 + 팩 저항. 하나만." },
+  inverter: { label: "인버터", group: "HV", icon: "⚙", terms: ["pos", "neg"], params: [["v_min", "V", 60, "이 아래면 꺼짐"], ["v_on", "V", "", "다시 켜지는 전압 (v_min+10)"], ["v_max", "V", "", "과전압 차단"], ["logic", "ecu id", "", "제어보드 전원 ECU"], ["p_idle_w", "W", 0, ""]], doc: "motors: [fl, fr] 모터의 DC 전력을 정전력 부하로. enable: 조건(예: 프리차지 완료)." },
+  contactor: { label: "컨택터", group: "HV", icon: "⊣⊢", terms: ["a", "b", "coil_a", "coil_b"], params: [["coil_r_ohm", "Ω", 24], ["pull_in_v", "V", 9], ["drop_out_v", "V", 4], ["close_ms", "ms", 25], ["open_ms", "ms", 10], ["r_on_ohm", "Ω", 0.0003], ["rating_a", "A", 200], ["normally", "open/closed", "open"]], doc: "코일 전압이 pull_in 이상이면 close_ms 뒤 붙고 drop_out 이하면 open_ms 뒤 떨어짐." },
+  precharge: { label: "프리차지 제어", group: "HV", icon: "⏱", terms: ["supply", "ref", "pack.0", "pack.1", "link.0", "link.1", "pre_out.0", "pre_out.1", "air_out.0", "air_out.1"],
+    params: [["threshold", "-", 0.95, "DC 링크 / 팩"], ["mode", "voltage/time", "voltage"], ["time_s", "s", 2], ["timeout_s", "s", 5], ["min_time_s", "s", 0], ["overlap_s", "s", 0.05], ["rule_ratio", "-", 0.9, "규정 검사"], ["air_relay", "relay id", "", "AIR+ (붙는 순간 비율 검사)"], ["v_on", "V", 8]],
+    doc: "supply 전원이 들어오면 pre_out을 닫고, 비율이 threshold에 닿으면 air_out을 닫은 뒤 pre_out을 엶. timeout이면 고장(4)." },
+  dcdc: { label: "DC-DC", group: "HV", icon: "⇄", terms: ["in_pos", "in_neg", "out_pos", "out_neg"], params: [["v_out", "V", 13.5], ["i_max_a", "A", 20], ["efficiency", "-", 0.9], ["r_out_ohm", "Ω", 0.02], ["response_s", "s", 0.002], ["v_in_min", "V", 0], ["v_in_on", "V", ""], ["p_idle_w", "W", 2]], doc: "평균 모델. 부하가 갑자기 늘면 r_out×ΔI만큼 처졌다가 response_s로 회복. enable: 조건." },
+  lv_battery: { label: "LV 배터리", group: "LV", icon: "🔋", terms: ["pos", "neg"], params: [["capacity_ah", "Ah", 5], ["r_ohm", "Ω", 0.02], ["soc", "-", 0.9], ["v_empty", "V", 12], ["v_full", "V", 13.6]], doc: "OCV(SoC) 표는 ocv_soc / ocv_v. 시나리오 initial.lv_soc가 soc보다 우선." },
+  ecu: { label: "ECU", group: "LV", icon: "▣", terms: ["a", "b"], params: [["i_a", "A", 0.2], ["p_w", "W", "", "정전력이면"], ["v_min", "V", 7, "리셋 전압"], ["v_on", "V", "", "재시작 전압 (v_min+0.5)"], ["boot_s", "s", 0.2]], doc: "can_node: CAN 노드(목록 가능), forces: 꺼져 있는 동안 0이 되는 신호 (예: pt.motor.*.torque_cmd)." },
+  load: { label: "부하", group: "LV", icon: "⏚", terms: ["a", "b"], params: [["p_w", "W", 10], ["i_a", "A", ""], ["r_ohm", "Ω", ""], ["v_nominal", "V", 12]], doc: "펌프·팬·램프. inrush: {factor, tau_s} 모터 기동 전류. control: 켜는 조건." },
+  fuse: { label: "퓨즈", group: "LV", icon: "∿", terms: ["a", "b"], params: [["rating_a", "A", 10], ["i2t_a2s", "A²s", "", "기본 1.6×정격²"], ["r_ohm", "Ω", ""]], doc: "용단 적분(냉각 포함)이 I²t에 닿으면 끊어짐." },
+  switch: { label: "스위치", group: "LV", icon: "⏻", terms: ["a", "b"], params: [["closed", "bool", true], ["r_on_ohm", "Ω", 0.01]], doc: "open_when / closed_when: 조건 {signal, above|below, hysteresis, delay_s, latch} 또는 all/any." },
+  relay: { label: "릴레이", group: "LV", icon: "⊣⊢", terms: ["a", "b", "coil_a", "coil_b"], params: [["coil_r_ohm", "Ω", 90], ["pull_in_v", "V", 8], ["drop_out_v", "V", 3], ["close_ms", "ms", 10], ["open_ms", "ms", 5], ["r_on_ohm", "Ω", 0.01], ["rating_a", "A", 30], ["normally", "open/closed", "open"]], doc: "" },
+  regulator: { label: "레귤레이터", group: "LV", icon: "▤", terms: ["in", "out", "gnd"], params: [["v_out", "V", 5], ["dropout_v", "V", 1], ["r_out_ohm", "Ω", 0.05], ["i_max_a", "A", 0.5], ["i_q_a", "A", 0.002]], doc: "선형 레귤레이터(센서 5 V 전원)." },
+  wire: { label: "전선", group: "배선", icon: "〰", terms: ["a", "b"], params: [["length_m", "m", 1, "route가 있으면 경로 길이"], ["area_mm2", "mm²", 0.5], ["material", "copper/aluminium", "copper"], ["rating_a", "A", "", "기본: 단면적 표"], ["contact_r_ohm", "Ω", "", "핀 하나"], ["temp_c", "°C", ""]], doc: "pins: [X1.3] 커넥터 핀, route: [[x,y,z], ...] 하네스 경로 (차량 좌표, m)." },
+  potentiometer: { label: "포텐셔미터", group: "배선", icon: "↗", terms: ["a", "b", "wiper"], params: [["r_ohm", "Ω", 5000], ["sensor", "센서", ""], ["channel", "ch1/ch2", "ch1"], ["signal", "신호", ""]], doc: "sensor·channel: 페달 센서의 전압 맵을 따름. 아니면 signal + ratio: [r0, r1]." },
+  adc: { label: "ADC 입력", group: "배선", icon: "⊳", terms: ["a", "ref", "vref"], params: [["r_in_ohm", "Ω", 1e6], ["pull_down_ohm", "Ω", ""], ["v_ref_nominal", "V", 5], ["sensor", "센서", ""], ["channel", "ch1/ch2", "ch1"]], doc: "vref를 주면 레이시오메트릭. sensor·channel이면 그 센서 채널이 이 전압을 읽음." },
+  resistor: { label: "저항", group: "수동", icon: "▭", terms: ["a", "b"], params: [["r_ohm", "Ω", 100]], doc: "" },
+  capacitor: { label: "커패시터", group: "수동", icon: "⊪", terms: ["a", "b"], params: [["c_f", "F", 1e-4], ["esr_ohm", "Ω", 0], ["v0", "V", 0, "initial: off일 때"]], doc: "" },
+  inductor: { label: "인덕터", group: "수동", icon: "ᘐ", terms: ["a", "b"], params: [["l_h", "H", 1e-3], ["r_ohm", "Ω", 0]], doc: "" },
+  diode: { label: "다이오드", group: "수동", icon: "▷|", terms: ["a", "b"], params: [["v_f", "V", 0.7], ["r_on_ohm", "Ω", 0.01]], doc: "a: 애노드, b: 캐소드" },
+  voltage_source: { label: "전압원", group: "수동", icon: "⊕", terms: ["pos", "neg"], params: [["v", "V", 12], ["r_ohm", "Ω", 0.001], ["signal", "신호", "", "값을 신호에서"]], doc: "" },
+  current_source: { label: "전류원", group: "수동", icon: "⊙", terms: ["pos", "neg"], params: [["i_a", "A", 1]], doc: "" },
+};
+const OPTIONAL_TERMS = new Set(["ref", "vref"]);
+const FAULT_TYPES = ["open", "short", "contact_resistance", "stuck_closed", "stuck_open", "blow"];
+
+// --- Connection ---------------------------------------------------------------------------
+function send(method, params) { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ jsonrpc: "2.0", method, params: params || {} })); }
+function notice(text, level) {
+  const d = document.createElement("div"); d.className = "notice " + (level || ""); d.textContent = text;
+  $("notices").appendChild(d); setTimeout(() => d.remove(), level === "error" ? 12000 : 5000);
+}
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function setDirty(v) { dirty = v; $("dirty").textContent = v ? "저장 안 됨" : ""; }
+
+function connect() {
+  ws = new WebSocket(wsUrl);
+  ws.onopen = () => { $("conn-dot").classList.add("on"); $("conn").textContent = "연결됨"; send("elec.get"); };
+  ws.onclose = () => { $("conn-dot").classList.remove("on"); $("conn").textContent = "연결 안 됨 (재시도 중)"; setTimeout(connect, 1000); };
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.method === "elec.state") onState(m.params);
+    else if (m.method === "elec.op") onOp(m.params);
+    else if (m.method === "notice") notice(m.params.text, m.params.level);
+  };
+}
+
+function onState(p) {
+  const first = state === null;
+  state = p;
+  $("project").textContent = p.project + " · " + p.netlist_file;
+  $("load-error").innerHTML = p.load_error ? `<div class="error-box">마지막 저장을 불러오지 못해서 이전 파일로 되돌렸습니다:\n${esc(p.load_error)}</div>` : "";
+  $("signal-list").innerHTML = p.signals.map((s) => `<option value="${esc(s.name)}">${esc(s.unit)}</option>`).join("");
+  if ((!dirty && p.netlist_yaml !== fingerprint) || first) {
+    fingerprint = p.netlist_yaml;
+    try { net = jsyaml.load(p.netlist_yaml) || {}; } catch (err) { net = {}; notice("netlist를 읽지 못했습니다: " + err.message, "error"); }
+    if (first && p.running) $("values").value = "live";
+    ensureLayout(false);
+    renderAll();
+    if (first) { fit(); requestCheck(); }
+  } else {
+    renderValues();
+    if (tab !== "faults") renderTab();
+  }
+}
+
+function onOp(p) {
+  op = p.ok ? p.op : null;
+  opError = p.ok ? "" : p.error;
+  if (!p.ok) notice("동작점 검사 실패:\n" + p.error, "error");
+  renderValues();
+  renderTab();
+  renderProps();
+}
+
+// --- Model helpers ------------------------------------------------------------------------
+const comps = () => (net.components ??= []);
+const compById = (id) => comps().find((c) => c.id === id);
+const grounds = () => net.ground ? [].concat(net.ground) : ["GND", "0"];
+const isGround = (n) => grounds().includes(n);
+function termNet(c, key) {
+  const [k, i] = key.split(".");
+  const v = c[k];
+  return i === undefined ? (v ?? "") : (Array.isArray(v) ? (v[+i] ?? "") : "");
+}
+function setTermNet(c, key, value) {
+  const [k, i] = key.split(".");
+  if (i === undefined) { if (value === "" && OPTIONAL_TERMS.has(k)) delete c[k]; else c[k] = value; return; }
+  const arr = Array.isArray(c[k]) ? c[k] : ["", ""];
+  arr[+i] = value; c[k] = arr;
+}
+function terms(c) {
+  const t = TYPES[c.type]?.terms || [];
+  return t.filter((k) => !OPTIONAL_TERMS.has(k) || termNet(c, k) !== "" || sel === c.id);
+}
+function allNets() {
+  const s = new Set();
+  for (const c of comps()) for (const k of TYPES[c.type]?.terms || []) { const n = termNet(c, k); if (n) s.add(n); }
+  return [...s].sort();
+}
+const sigName = (n) => { let o = ""; for (const ch of n) o += /[A-Za-z0-9_]/.test(ch) ? ch : ch === "+" ? "_P" : ch === "-" ? "_N" : "_"; return (/^[0-9]/.test(o) || !o) ? "_" + o : o; };
+
+// Values to show: the operating point or the running simulation.
+function values() {
+  const mode = $("values").value;
+  if (mode === "live" && state?.running) {
+    const nodes = {};
+    for (const n of allNets()) { const v = state.live["elec.v." + sigName(n)]; if (v !== undefined) nodes[n] = v; }
+    return { nodes, sig: state.live };
+  }
+  if (mode === "op" && op) return { nodes: op.nodes, sig: op.signals };
+  return { nodes: {}, sig: {} };
+}
+function netVolt(n, v) { return isGround(n) ? 0 : v.nodes[n]; }
+function fmt(x, unit) {
+  if (x === undefined || x === null || !isFinite(x)) return "";
+  if (!unit) return Math.abs(x) >= 100 || Number.isInteger(x) ? String(Math.round(x * 10) / 10) : x.toPrecision(3);
+  if ((unit === "V" && Math.abs(x) < 1e-3) || (unit === "A" && Math.abs(x) < 1e-6)) return "0 " + unit;
+  const a = Math.abs(x);
+  const [s, p] = a >= 1e6 ? [1e-6, "M"] : a >= 1e3 && unit !== "V" ? [1e-3, "k"] : a === 0 || a >= 1 ? [1, ""] : a >= 1e-3 ? [1e3, "m"] : a >= 1e-6 ? [1e6, "µ"] : [1e9, "n"];
+  const y = x * s;
+  return (Math.abs(y) >= 100 ? y.toFixed(0) : Math.abs(y) >= 10 ? y.toFixed(1) : y.toFixed(2)) + " " + p + unit;
+}
+
+// --- Layout -------------------------------------------------------------------------------
+const W = 104, H = 44;
+function layout() { net.layout ??= {}; net.layout.components ??= {}; net.layout.nets ??= {}; return net.layout; }
+function ensureLayout(force) {
+  const L = layout();
+  const cs = comps(), ns = allNets().filter((n) => !isGround(n));
+  const missing = force || cs.some((c) => !L.components[c.id]) || ns.some((n) => !L.nets[n]);
+  if (!missing) return;
+  // Components in breadth-first order through their nets (neighbours start
+  // close), then springs along the connections, box-aware repulsion and a
+  // pass that pulls overlapping boxes apart.
+  const netsOf = (c) => (TYPES[c.type]?.terms || []).map((k) => termNet(c, k)).filter((n) => n && !isGround(n));
+  const order = [], seen = new Set();
+  for (const start of cs) {
+    if (seen.has(start.id)) continue;
+    const queue = [start]; seen.add(start.id);
+    while (queue.length) {
+      const c = queue.shift(); order.push(c);
+      for (const n of netsOf(c)) for (const d of cs) if (!seen.has(d.id) && netsOf(d).includes(n)) { seen.add(d.id); queue.push(d); }
+    }
+  }
+  const cols = Math.max(4, Math.ceil(Math.sqrt(cs.length * 1.6)));
+  const nodes = [], index = new Map();
+  order.forEach((c, i) => {
+    const fixed = !force && L.components[c.id];
+    const p = fixed ? { x: L.components[c.id][0], y: L.components[c.id][1] } : { x: (i % cols) * 190, y: Math.floor(i / cols) * 150 };
+    index.set("c:" + c.id, nodes.length); nodes.push({ ...p, fixed, key: "c:" + c.id, w: W, h: H });
+  });
+  ns.forEach((n) => {
+    const fixed = !force && L.nets[n];
+    index.set("n:" + n, nodes.length);
+    nodes.push({ x: fixed ? L.nets[n][0] : 0, y: fixed ? L.nets[n][1] : 0, fixed, key: "n:" + n, net: true, w: 10, h: 10 });
+  });
+  const links = [];
+  for (const c of cs) for (const n of netsOf(c)) links.push([index.get("c:" + c.id), index.get("n:" + n)]);
+  for (const nd of nodes) if (nd.net && !nd.fixed) {
+    const ls = links.filter((l) => nodes[l[1]] === nd).map((l) => nodes[l[0]]);
+    if (ls.length) { nd.x = ls.reduce((s, q) => s + q.x, 0) / ls.length + W / 2; nd.y = ls.reduce((s, q) => s + q.y, 0) / ls.length - 40; }
+  }
+  const steps = 700;
+  for (let it = 0; it < steps; ++it) {
+    const t = 1 - it / steps;
+    const f = nodes.map(() => [0, 0]);
+    for (let i = 0; i < nodes.length; ++i) for (let j = i + 1; j < nodes.length; ++j) {
+      const a = nodes[i], b = nodes[j];
+      const dx = (a.x + a.w / 2) - (b.x + b.w / 2), dy = (a.y + a.h / 2) - (b.y + b.h / 2);
+      const d = Math.max(Math.hypot(dx, dy), 5);
+      const reach = (a.net ? 40 : 150) + (b.net ? 40 : 150);
+      if (d > 3 * reach) continue;
+      const r = 40 * reach * reach / (d * d);
+      f[i][0] += dx / d * r; f[i][1] += dy / d * r; f[j][0] -= dx / d * r; f[j][1] -= dy / d * r;
+    }
+    for (const [a, b] of links) {
+      const dx = nodes[b].x - (nodes[a].x + W / 2), dy = nodes[b].y - (nodes[a].y + H / 2), d = Math.hypot(dx, dy) || 1;
+      const k = (d - 110) * 0.25;
+      f[a][0] += dx / d * k; f[a][1] += dy / d * k; f[b][0] -= dx / d * k; f[b][1] -= dy / d * k;
+    }
+    nodes.forEach((nd, i) => {
+      if (nd.fixed) return;
+      const cap = 60 * t + 2;
+      nd.x += Math.max(-cap, Math.min(cap, f[i][0] * 0.05));
+      nd.y += Math.max(-cap, Math.min(cap, f[i][1] * 0.05));
+    });
+  }
+  const boxes = nodes.filter((nd) => !nd.net);
+  for (let pass = 0; pass < 80; ++pass) {
+    let moved = false;
+    for (let i = 0; i < boxes.length; ++i) for (let j = i + 1; j < boxes.length; ++j) {
+      const a = boxes[i], b = boxes[j];
+      const ox = W + 36 - Math.abs(a.x - b.x), oy = H + 40 - Math.abs(a.y - b.y);
+      if (ox <= 0 || oy <= 0) continue;
+      moved = true;
+      const sx = a.x < b.x ? -1 : 1, sy = a.y < b.y ? -1 : 1;
+      const [ma, mb] = a.fixed ? [0, 1] : b.fixed ? [1, 0] : [0.5, 0.5];
+      if (ox < oy) { a.x += sx * ox * ma; b.x -= sx * ox * mb; } else { a.y += sy * oy * ma; b.y -= sy * oy * mb; }
+    }
+    if (!moved) break;
+  }
+  for (const nd of nodes) {
+    const p = [Math.round(nd.x), Math.round(nd.y)];
+    if (nd.net) L.nets[nd.key.slice(2)] = p; else L.components[nd.key.slice(2)] = p;
+  }
+}
+
+// --- Schematic ----------------------------------------------------------------------------
+const SVGNS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+// Boxes grow with their terminals (a precharge controller has ten).
+const boxW = (c) => Math.max(W, 26 * Math.ceil(terms(c).length / 2) + 18);
+function termPos(c, key) {
+  const p = layout().components[c.id] || [0, 0];
+  const ts = terms(c), i = ts.indexOf(key), n = ts.length, w = boxW(c);
+  // Terminals around the box: top row then bottom row.
+  const top = Math.ceil(n / 2), row = i < top ? 0 : 1, k = row === 0 ? i : i - top, m = row === 0 ? top : n - top;
+  return [p[0] + (k + 1) * w / (m + 1), p[1] + (row === 0 ? 0 : H)];
+}
+const termLabel = (k) => k.replace(/\.0$/, "+").replace(/\.1$/, "−").replace("_out", "").replace("coil_", "c");
+function netColor(n, v) {
+  const u = netVolt(n, v);
+  if (u !== undefined && Math.abs(u) >= 60) return "var(--hv)";
+  if (/^(A\d|APPS|SIG|ADC|V5|S\d)/i.test(n) || /_SIG|_W$|_IN$|_SUP$|_GND$/.test(n)) return "var(--sig)";
+  return u !== undefined && Math.abs(u) > 30 ? "var(--hv)" : "var(--lv)";
+}
+function compSummary(c) {
+  const p = (k, u) => c[k] !== undefined && c[k] !== "" ? fmt(+c[k], u) : "";
+  switch (c.type) {
+    case "resistor": return p("r_ohm", "Ω");
+    case "wire": return `${c.area_mm2 ?? "?"} mm²` + (c.length_m ? ` ${c.length_m} m` : c.route ? " 경로" : "") + (c.pins ? ` ${[].concat(c.pins).join(",")}` : "");
+    case "fuse": return p("rating_a", "A");
+    case "capacitor": return p("c_f", "F");
+    case "inductor": return p("l_h", "H");
+    case "inverter": return [].concat(c.motors || c.motor || []).join(" ");
+    case "dcdc": return `${c.v_out ?? "?"} V ${c.i_max_a ?? 20} A`;
+    case "ecu": return (c.p_w ? p("p_w", "W") : p("i_a", "A") || "0.2 A") + (c.can_node ? " · CAN" : "");
+    case "load": return c.p_w ? p("p_w", "W") : c.i_a ? p("i_a", "A") : p("r_ohm", "Ω");
+    case "lv_battery": return `SoC ${Math.round((c.soc ?? 0.9) * 100)} %`;
+    case "voltage_source": return c.signal ? c.signal : p("v", "V");
+    case "potentiometer": case "adc": return c.sensor ? `${c.sensor}.${c.channel || "ch1"}` : (c.signal || "");
+    case "precharge": return `${Math.round((c.threshold ?? 0.95) * 100)} % · ${c.mode || "voltage"}`;
+    case "switch": return c.open_when ? "조건으로 열림" : c.closed_when ? "조건으로 닫힘" : (c.closed === false ? "열림" : "닫힘");
+    case "relay": case "contactor": return c.normally === "closed" ? "NC" : "NO";
+    case "regulator": return p("v_out", "V");
+    default: return "";
+  }
+}
+// State and a live quantity of a component from the signals.
+function compLive(c, sig) {
+  const g = (q) => sig["elec." + c.id + "." + q];
+  let cls = "", val = "";
+  const i = g("i");
+  if (i !== undefined) val = fmt(i, "A");
+  switch (c.type) {
+    case "relay": case "contactor": cls = g("closed") > 0.5 ? "on" : g("closed") !== undefined ? "" : ""; if (g("chatter") > 0.5) cls = "warn"; val = (g("closed") > 0.5 ? "닫힘 " : "열림 ") + val; break;
+    case "switch": cls = g("closed") > 0.5 ? "on" : g("closed") !== undefined ? "off" : ""; break;
+    case "ecu": cls = g("on") > 0.5 ? "on" : g("on") !== undefined ? "off" : ""; val = fmt(g("v"), "V") + " " + val + (g("resets") > 0 ? ` 리셋 ${g("resets")}` : ""); break;
+    case "fuse": if (g("blown") > 0.5) { cls = "off"; val = "끊어짐"; } break;
+    case "wire": if (g("overload") > 0.5) cls = "warn"; break;
+    case "inverter": cls = g("on") > 0.5 ? "on" : g("on") !== undefined ? "off" : ""; break;
+    case "dcdc": cls = g("on") > 0.5 ? (g("limited") > 0.5 ? "warn" : "on") : g("on") !== undefined ? "off" : ""; val = fmt(g("i_out"), "A") + (g("limited") > 0.5 ? " 제한" : ""); break;
+    case "load": cls = g("on") > 0.5 ? "on" : g("on") !== undefined ? "" : ""; val = fmt(g("p"), "W"); break;
+    case "precharge": { const s = g("state"); const names = ["꺼짐", "프리차지", "닫는 중", "완료", "실패"]; cls = s === 3 ? "on" : s === 4 ? "off" : s > 0 ? "warn" : ""; val = s !== undefined ? `${names[s] ?? s} ${Math.round(100 * (g("ratio") || 0))} %` : ""; break; }
+    case "lv_battery": val = g("soc") !== undefined ? `SoC ${Math.round(g("soc") * 100)} % ${fmt(g("i"), "A")}` : val; break;
+    case "capacitor": val = fmt(g("v"), "V"); break;
+    case "regulator": val = fmt(g("v"), "V"); break;
+    case "battery_model": val = fmt(sig["elec.bat.voltage"], "V") + " " + val; break;
+  }
+  return { cls, val: val.trim() };
+}
+
+function renderSchematic() {
+  const edges = $("edges"), nets = $("nets"), cg = $("comps");
+  edges.replaceChildren(); nets.replaceChildren(); cg.replaceChildren();
+  const L = layout(), v = values();
+  for (const c of comps()) {
+    const t = TYPES[c.type] || { icon: "?", label: c.type };
+    const p = L.components[c.id] || [0, 0];
+    const live = compLive(c, v.sig);
+    const g = el("g", { class: "comp " + (sel === c.id ? "sel " : "") + live.cls, "data-id": c.id, transform: "" }, cg);
+    el("rect", { x: p[0], y: p[1], width: boxW(c), height: H, rx: 7 }, g);
+    const tx = el("text", { x: p[0] + 7, y: p[1] + 17, class: "icon" }, g); tx.textContent = t.icon;
+    const nm = el("text", { x: p[0] + 27, y: p[1] + 16 }, g); nm.textContent = c.id;
+    const sub = el("text", { x: p[0] + 27, y: p[1] + 28, class: "sub" }, g); sub.textContent = compSummary(c).slice(0, 18);
+    if (live.val) { const vt = el("text", { x: p[0] + 7, y: p[1] + 39, class: "val" }, g); vt.textContent = live.val.slice(0, 22); }
+    for (const k of terms(c)) {
+      const [x, y] = termPos(c, k);
+      const n = termNet(c, k);
+      if (n && isGround(n)) {   // ground drawn locally
+        const dy = y > p[1] ? 1 : -1;
+        el("line", { x1: x, y1: y, x2: x, y2: y + 9 * dy, class: "gnd" }, edges);
+        el("line", { x1: x - 6, y1: y + 9 * dy, x2: x + 6, y2: y + 9 * dy, class: "gnd" }, edges);
+        el("line", { x1: x - 3, y1: y + 12 * dy, x2: x + 3, y2: y + 12 * dy, class: "gnd" }, edges);
+      } else if (n && L.nets[n]) {
+        const q = L.nets[n];
+        el("path", { d: `M${x},${y} L${x},${y + (y > p[1] ? 10 : -10)} L${q[0]},${q[1]}`, class: "edge", stroke: netColor(n, v) }, edges);
+      }
+      const tc = el("circle", { cx: x, cy: y, r: 4, class: "term", "data-id": c.id, "data-term": k }, g);
+      const tl = el("title", {}, tc); tl.textContent = `${k} → ${n || "(연결 안 됨)"}`;
+      if (terms(c).length > 2) {   // a and b need no label; outside the box, clear of the text
+        const below = y > p[1];
+        const lab = el("text", { x: x + 3, y: below ? y + 9 : y - 6, class: "tlabel",
+          transform: `rotate(${below ? 35 : -35} ${x + 3} ${below ? y + 9 : y - 6})` }, g);
+        lab.textContent = termLabel(k);
+      }
+    }
+  }
+  for (const n of allNets()) {
+    if (isGround(n) || !L.nets[n]) continue;
+    const q = L.nets[n];
+    const g = el("g", { class: "netnode", "data-net": n }, nets);
+    el("circle", { cx: q[0], cy: q[1], r: 5.5, fill: netColor(n, v) }, g);
+    const t = el("text", { x: q[0] + 8, y: q[1] - 3 }, g); t.textContent = n;
+    const u = netVolt(n, v);
+    if (u !== undefined) { const tv = el("text", { x: q[0] + 8, y: q[1] + 9, class: "v" }, g); tv.textContent = fmt(u, "V"); }
+  }
+  applyView();
+}
+function renderValues() { renderSchematic(); }
+function applyView() { $("viewport").setAttribute("transform", `translate(${view.x},${view.y}) scale(${view.k})`); }
+function fit() {
+  const L = layout(), xs = [], ys = [];
+  for (const c of comps()) { const p = L.components[c.id]; if (p) { xs.push(p[0], p[0] + boxW(c)); ys.push(p[1], p[1] + H); } }
+  for (const n in L.nets) { xs.push(L.nets[n][0]); ys.push(L.nets[n][1]); }
+  if (!xs.length) return;
+  const r = $("canvas").getBoundingClientRect();
+  const x0 = Math.min(...xs) - 30, x1 = Math.max(...xs) + 60, y0 = Math.min(...ys) - 40, y1 = Math.max(...ys) + 70;  // room for the legend
+  view.k = Math.min(r.width / (x1 - x0), r.height / (y1 - y0), 1.6);
+  view.x = (r.width - (x1 - x0) * view.k) / 2 - x0 * view.k;
+  view.y = (r.height - (y1 - y0) * view.k) / 2 - y0 * view.k;
+  applyView();
+}
+
+// Pointer interaction: drag components and nets, pan, zoom, wire terminals.
+let drag = null;
+function toWorld(ev) {
+  const r = $("canvas").getBoundingClientRect();
+  return [(ev.clientX - r.left - view.x) / view.k, (ev.clientY - r.top - view.y) / view.k];
+}
+$("canvas").addEventListener("pointerdown", (ev) => {
+  const t = ev.target;
+  const [wx, wy] = toWorld(ev);
+  if (t.classList.contains("term")) {
+    drag = { kind: "wire", id: t.dataset.id, term: t.dataset.term, from: [+t.getAttribute("cx"), +t.getAttribute("cy")] };
+  } else if (t.closest(".netnode")) {
+    const n = t.closest(".netnode").dataset.net;
+    drag = { kind: "net", net: n, dx: wx - layout().nets[n][0], dy: wy - layout().nets[n][1], moved: false };
+  } else if (t.closest(".comp")) {
+    const id = t.closest(".comp").dataset.id;
+    const p = layout().components[id];
+    drag = { kind: "comp", id, dx: wx - p[0], dy: wy - p[1], moved: false };
+    select(id);
+  } else {
+    drag = { kind: "pan", x: ev.clientX, y: ev.clientY, vx: view.x, vy: view.y };
+    $("canvas").classList.add("panning");
+  }
+  $("canvas").setPointerCapture(ev.pointerId);
+});
+$("canvas").addEventListener("pointermove", (ev) => {
+  if (!drag) return;
+  const [wx, wy] = toWorld(ev);
+  if (drag.kind === "pan") { view.x = drag.vx + ev.clientX - drag.x; view.y = drag.vy + ev.clientY - drag.y; applyView(); }
+  else if (drag.kind === "comp") { layout().components[drag.id] = [Math.round(wx - drag.dx), Math.round(wy - drag.dy)]; drag.moved = true; renderSchematic(); }
+  else if (drag.kind === "net") { layout().nets[drag.net] = [Math.round(wx - drag.dx), Math.round(wy - drag.dy)]; drag.moved = true; renderSchematic(); }
+  else if (drag.kind === "wire") {
+    const r = $("rubber");
+    r.setAttribute("x1", drag.from[0]); r.setAttribute("y1", drag.from[1]); r.setAttribute("x2", wx); r.setAttribute("y2", wy);
+    r.setAttribute("visibility", "visible");
+  }
+});
+$("canvas").addEventListener("pointerup", (ev) => {
+  if (!drag) return;
+  const d = drag; drag = null;
+  $("canvas").classList.remove("panning");
+  $("rubber").setAttribute("visibility", "hidden");
+  if ((d.kind === "comp" || d.kind === "net") && d.moved) setDirty(true);
+  if (d.kind !== "wire") return;
+  const target = document.elementsFromPoint(ev.clientX, ev.clientY);
+  const c = compById(d.id);
+  let netName = null;
+  for (const t of target) {
+    if (t.closest?.(".netnode")) { netName = t.closest(".netnode").dataset.net; break; }
+    if (t.classList?.contains("term") && !(t.dataset.id === d.id && t.dataset.term === d.term)) {
+      const other = compById(t.dataset.id);
+      netName = termNet(other, t.dataset.term) || termNet(c, d.term) || newNetName();
+      setTermNet(other, t.dataset.term, netName);
+      break;
+    }
+  }
+  if (netName === null) {
+    const [wx, wy] = toWorld(ev);
+    if (Math.hypot(wx - d.from[0], wy - d.from[1]) < 12) return;   // a click on the terminal
+    netName = prompt(`${d.id}.${d.term}에 연결할 망 이름 (GND는 접지)`, newNetName());
+    if (!netName) return;
+    layout().nets[netName] ??= [Math.round(wx), Math.round(wy)];
+  }
+  setTermNet(c, d.term, netName);
+  layout().nets[netName] ??= [Math.round(d.from[0] + 40), Math.round(d.from[1] - 40)];
+  changed();
+});
+$("canvas").addEventListener("wheel", (ev) => {
+  ev.preventDefault();
+  const r = $("canvas").getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
+  const k = Math.min(4, Math.max(0.15, view.k * Math.exp(-ev.deltaY * 0.0015)));
+  view.x = mx - (mx - view.x) * k / view.k; view.y = my - (my - view.y) * k / view.k; view.k = k;
+  applyView();
+}, { passive: false });
+function newNetName() { let i = 1; const used = new Set(allNets()); while (used.has("N" + i)) ++i; return "N" + i; }
+
+// --- Lists and properties -----------------------------------------------------------------
+function renderPalette() {
+  const groups = {};
+  for (const [type, t] of Object.entries(TYPES)) (groups[t.group] ??= []).push(type);
+  $("palette").innerHTML = Object.entries(groups).map(([g, ts]) => `<div class="grp">${esc(g)}</div>` +
+    ts.map((type) => `<button data-type="${type}" title="${esc(TYPES[type].doc)}">${TYPES[type].icon} ${esc(TYPES[type].label)}</button>`).join("")).join("");
+  for (const b of $("palette").querySelectorAll("button")) b.onclick = () => addComponent(b.dataset.type);
+}
+function addComponent(type) {
+  const t = TYPES[type];
+  let i = 1; const prefix = type.toUpperCase().slice(0, 6);
+  while (compById(prefix + i)) ++i;
+  const c = { id: prefix + i, type };
+  for (const k of t.terms) if (!OPTIONAL_TERMS.has(k)) setTermNet(c, k, "");
+  for (const [k, , def] of t.params) if (def !== "" && def !== undefined && ["r_ohm", "c_f", "l_h", "rating_a", "v_out", "area_mm2", "length_m", "p_w", "v", "i_a"].includes(k)) c[k] = def;
+  if (type === "inverter") c.motors = [];
+  comps().push(c);
+  const r = $("canvas").getBoundingClientRect();
+  layout().components[c.id] = [Math.round((r.width / 2 - view.x) / view.k), Math.round((r.height / 2 - view.y) / view.k)];
+  select(c.id); changed();
+}
+function renderList() {
+  const f = $("filter").value.toLowerCase();
+  $("list").innerHTML = comps().filter((c) => !f || (c.id + " " + c.type).toLowerCase().includes(f))
+    .map((c) => `<div data-id="${esc(c.id)}" class="${sel === c.id ? "sel" : ""}">${TYPES[c.type]?.icon || "?"} ${esc(c.id)}<span class="ty">${esc(TYPES[c.type]?.label || c.type)}</span></div>`).join("");
+  for (const d of $("list").children) d.onclick = () => { select(d.dataset.id); centerOn(d.dataset.id); };
+  $("net-list").innerHTML = [...new Set([...allNets(), ...grounds()])].map((n) => `<option value="${esc(n)}">`).join("");
+  $("comp-list").innerHTML = comps().map((c) => `<option value="${esc(c.id)}">${esc(c.type)}</option>`).join("") +
+    [...new Set(comps().flatMap((c) => c.pins ? [].concat(c.pins) : []))].map((p) => `<option value="conn.${esc(p)}">핀</option>`).join("") +
+    allNets().map((n) => `<option value="${esc(n)}">망</option>`).join("");
+}
+function centerOn(id) {
+  const p = layout().components[id]; if (!p) return;
+  const r = $("canvas").getBoundingClientRect();
+  view.x = r.width / 2 - (p[0] + boxW(compById(id)) / 2) * view.k; view.y = r.height / 2 - (p[1] + H / 2) * view.k; applyView();
+}
+function select(id) { sel = id; renderList(); renderProps(); renderSchematic(); }
+
+const FORM_KEYS = (c) => new Set(["id", "type", ...(TYPES[c.type]?.terms || []).map((k) => k.split(".")[0]), ...(TYPES[c.type]?.params || []).map((p) => p[0])]);
+function renderProps() {
+  const c = compById(sel);
+  const box = $("props");
+  if (!c) { box.innerHTML = `<h2>속성</h2><div class="muted">부품을 고르세요.</div>`; return; }
+  const t = TYPES[c.type] || { terms: [], params: [], doc: "" };
+  const v = values();
+  const live = Object.entries(v.sig).filter(([k]) => k.startsWith("elec." + c.id + ".")).map(([k, x]) => `<span class="pill">${esc(k.slice(6 + c.id.length))} ${esc(fmt(x, ""))}</span>`).join(" ");
+  const extra = {};
+  const fk = FORM_KEYS(c);
+  for (const k in c) if (!fk.has(k)) extra[k] = c[k];
+  box.innerHTML = `<h2>${t.icon || ""} ${esc(c.id)} <span class="pill">${esc(t.label || c.type)}</span><span class="grow"></span>
+      <button class="small danger" id="p-del">삭제</button></h2>
+    <div class="hint">${esc(t.doc)}</div>
+    <label>id</label><input class="w" id="p-id" value="${esc(c.id)}">
+    <label>단자 → 망</label><div class="kv">${(t.terms).map((k) => `<span>${esc(k)}${OPTIONAL_TERMS.has(k) ? " <span class=muted>(선택)</span>" : ""}</span>
+      <span><input class="w" list="net-list" data-term="${k}" value="${esc(termNet(c, k))}">${netVolt(termNet(c, k), v) !== undefined ? ` <span class="muted">${esc(fmt(netVolt(termNet(c, k), v), "V"))}</span>` : ""}</span>`).join("")}</div>
+    <label>값</label><div class="kv">${t.params.map(([k, unit, def, hint]) => `<span title="${esc(hint || "")}">${esc(k)}</span>
+      <span><input class="w" data-param="${k}" value="${esc(c[k] ?? "")}" placeholder="${esc(def ?? "")} ${esc(unit)}" ${k === "signal" ? 'list="signal-list"' : ""}></span>`).join("")}</div>
+    <label>기타 설정 (YAML: 조건, 목록, 경로 …)</label><textarea id="p-extra" rows="${Math.max(3, Object.keys(extra).length + 2)}">${esc(Object.keys(extra).length ? jsyaml.dump(extra, { flowLevel: 1, lineWidth: 200 }) : "")}</textarea>
+    ${live ? `<label>값 (${$("values").value === "live" ? "실행 중" : "동작점"})</label><div>${live}</div>` : ""}`;
+  $("p-del").onclick = () => {
+    net.components = comps().filter((x) => x !== c); delete layout().components[c.id]; sel = null; changed();
+  };
+  $("p-id").onchange = (e) => {
+    const id = e.target.value.trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(id) || compById(id)) { e.target.classList.add("bad"); return; }
+    layout().components[id] = layout().components[c.id]; delete layout().components[c.id];
+    c.id = id; sel = id; changed();
+  };
+  for (const inp of box.querySelectorAll("input[data-term]")) inp.onchange = () => {
+    setTermNet(c, inp.dataset.term, inp.value.trim());
+    if (inp.value.trim() && !isGround(inp.value.trim())) layout().nets[inp.value.trim()] ??= [...(layout().components[c.id] || [0, 0])].map((q, i) => q + (i ? -50 : W + 30));
+    changed();
+  };
+  for (const inp of box.querySelectorAll("input[data-param]")) inp.onchange = () => {
+    const k = inp.dataset.param, s = inp.value.trim();
+    if (s === "") delete c[k];
+    else if (s === "true" || s === "false") c[k] = s === "true";
+    else c[k] = isFinite(+s) ? +s : s;
+    changed();
+  };
+  $("p-extra").onchange = (e) => {
+    try {
+      const obj = e.target.value.trim() ? jsyaml.load(e.target.value) : {};
+      if (obj && typeof obj !== "object") throw new Error("키: 값 형태여야 합니다");
+      for (const k of Object.keys(extra)) delete c[k];
+      Object.assign(c, obj || {});
+      e.target.classList.remove("bad"); changed();
+    } catch (err) { e.target.classList.add("bad"); notice("기타 설정: " + err.message, "error"); }
+  };
+}
+
+// --- Tabs ---------------------------------------------------------------------------------
+const TABS = { faults: "고장 주입", harness: "하네스·전선", budget: "LV 전력 예산", events: "이벤트", nodes: "망 전압" };
+function renderTabs() {
+  $("tabs").innerHTML = Object.entries(TABS).map(([k, l]) => `<button class="small ${tab === k ? "on" : ""}" data-tab="${k}">${l}</button>`).join("");
+  for (const b of $("tabs").children) b.onclick = () => { tab = b.dataset.tab; renderTabs(); renderTab(); };
+}
+function renderTab() {
+  const box = $("tab");
+  const stats = state?.stats;
+  if (tab === "faults") {
+    const fs = (net.faults ??= []);
+    box.innerHTML = `<table><tr><th>종류</th><th>대상</th><th>to (단락)</th><th class=num>r_ohm</th><th class=num>at_s</th><th class=num>until_s</th><th>간헐 (회/s, s)</th><th></th></tr>
+      ${fs.map((f, i) => `<tr>
+        <td><select data-i="${i}" data-k="type">${FAULT_TYPES.map((t) => `<option ${f.type === t ? "selected" : ""}>${t}</option>`).join("")}</select></td>
+        <td><input data-i="${i}" data-k="target" list="comp-list" value="${esc(f.target ?? "")}" style="width:140px"></td>
+        <td><input data-i="${i}" data-k="to" list="net-list" value="${esc(f.to ?? "")}" style="width:80px" ${f.type === "short" ? "" : "disabled"}></td>
+        <td><input class="n" data-i="${i}" data-k="r_ohm" value="${esc(f.r_ohm ?? "")}" ${["short", "contact_resistance"].includes(f.type) ? "" : "disabled"}></td>
+        <td><input class="n" data-i="${i}" data-k="at_s" value="${esc(f.at_s ?? "")}"></td>
+        <td><input class="n" data-i="${i}" data-k="until_s" value="${esc(f.until_s ?? "")}"></td>
+        <td><input class="n" data-i="${i}" data-k="rate" value="${esc(f.intermittent?.rate_hz ?? "")}" placeholder="—"><input class="n" data-i="${i}" data-k="dur" value="${esc(f.intermittent?.duration_s ?? "")}" placeholder="—"></td>
+        <td><button class="small danger" data-del="${i}">✕</button></td></tr>`).join("")}</table>
+      <div class="row"><button class="small" id="f-add">+ 고장</button><span class="muted">대상: 부품 id, 커넥터 핀 conn.X1.3, 단락은 망 이름이나 &lt;id&gt;.&lt;단자&gt;. 시간은 시나리오 시작 기준.</span></div>`;
+    $("f-add").onclick = () => { fs.push({ type: "open", target: "", at_s: 0 }); changed(); };
+    for (const b of box.querySelectorAll("[data-del]")) b.onclick = () => { fs.splice(+b.dataset.del, 1); changed(); };
+    for (const inp of box.querySelectorAll("[data-k]")) inp.onchange = () => {
+      const f = fs[+inp.dataset.i], k = inp.dataset.k, s = inp.value.trim();
+      if (k === "rate" || k === "dur") {
+        const key = k === "rate" ? "rate_hz" : "duration_s";
+        if (s === "") { if (f.intermittent) delete f.intermittent[key]; if (f.intermittent && !Object.keys(f.intermittent).length) delete f.intermittent; }
+        else (f.intermittent ??= {})[key] = +s;
+      } else if (s === "") delete f[k];
+      else f[k] = ["r_ohm", "at_s", "until_s"].includes(k) ? +s : s;
+      changed();
+    };
+  } else if (tab === "harness") {
+    const ws = comps().filter((c) => c.type === "wire");
+    const contact = net.harness?.contact_r_ohm ?? 0.002;
+    const sw = stats?.wires || {};
+    box.innerHTML = `<div class="row muted">핀 접촉 저항 기본값 <input class="n" id="h-contact" value="${esc(contact)}"> Ω · 허용 전류 기본값은 단면적 표(약 50 K 상승)</div>
+      <table><tr><th>전선</th><th>a → b</th><th class=num>길이 m</th><th class=num>mm²</th><th class=num>R mΩ (20 °C)</th><th>핀</th><th class=num>허용 A</th>
+      <th class=num>최대 A</th><th>사용률</th><th class=num>최대 강하</th><th class=num>최고 °C</th></tr>
+      ${ws.map((c) => {
+        const len = c.length_m ?? (c.route ? routeLength(c.route) * (c.slack ?? 1.1) : NaN);
+        const pins = c.pins ? [].concat(c.pins) : [];
+        const r = (c.material === "aluminium" ? 2.82e-8 : 1.724e-8) * len / ((c.area_mm2 || 1) * 1e-6) + pins.length * (c.contact_r_ohm ?? contact);
+        const s = sw[c.id];
+        const util = s ? s.utilization : null;
+        return `<tr class="click" data-id="${esc(c.id)}"><td>${esc(c.id)}</td><td class="muted">${esc(c.a)} → ${esc(c.b)}</td><td class=num>${isFinite(len) ? len.toFixed(2) : "?"}</td>
+          <td class=num>${esc(c.area_mm2)}</td><td class=num>${(r * 1e3).toFixed(1)}</td><td>${esc(pins.join(", "))}</td>
+          <td class=num>${s ? s.rating_a.toFixed(0) : esc(c.rating_a ?? "")}</td><td class=num>${s ? s.i_max_a.toFixed(1) : ""}</td>
+          <td>${util !== null ? `<span class="bar ${util > 1 ? "over" : util > 0.8 ? "hot" : ""}"><div style="width:${Math.min(100, util * 100)}%"></div></span> ${(util * 100).toFixed(0)} %` : ""}</td>
+          <td class=num>${s ? `${s.drop_max_v.toFixed(2)} V (${s.drop_max_pct.toFixed(1)} %)` : ""}</td><td class=num>${s ? s.temp_max_c.toFixed(1) : ""}</td></tr>`;
+      }).join("")}</table>
+      <div class="row muted">${stats ? "실행 중 통계 (사용률 = 최대 전류 / 허용 전류, 짧은 피크는 넘어도 됨: 온도로 판단)" : "시뮬레이션이 전기 네트워크와 함께 돌면 최대 전류·강하·온도가 채워집니다."}</div>
+      <svg id="harness-view" width="100%" height="220" style="background:#0e1116;border-radius:8px"></svg>`;
+    $("h-contact").onchange = (e) => { (net.harness ??= {}).contact_r_ohm = +e.target.value; changed(); };
+    for (const r of box.querySelectorAll("tr.click")) r.onclick = () => { select(r.dataset.id); centerOn(r.dataset.id); };
+    drawHarness(ws);
+  } else if (tab === "budget") {
+    const loads = stats?.loads || {};
+    const static_ = comps().filter((c) => ["ecu", "load"].includes(c.type)).map((c) => ({ id: c.id, w: c.p_w ?? (c.i_a ?? (c.type === "ecu" ? 0.2 : 0)) * 13.5 }));
+    const total = static_.reduce((s, x) => s + x.w, 0);
+    const dc = stats?.dcdc || {}, ecus = stats?.ecus || {};
+    box.innerHTML = `<div class="row"><b>설계값 합계 ${total.toFixed(0)} W</b><span class="muted">(정격 전력, 전류 부하는 13.5 V 기준)</span>
+        ${stats ? `<b style="margin-left:20px">실행 평균 ${stats.lv_budget.p_mean_w.toFixed(0)} W</b><span class="muted">피크 합 ${stats.lv_budget.p_peaks_sum_w.toFixed(0)} W</span>` : ""}</div>
+      <table><tr><th>부하</th><th class=num>정격 W</th><th class=num>평균 W</th><th class=num>최대 W</th><th>비중</th></tr>
+      ${static_.map((x) => { const s = loads[x.id]; return `<tr><td>${esc(x.id)}</td><td class=num>${x.w.toFixed(1)}</td><td class=num>${s ? s.p_mean_w.toFixed(1) : ""}</td>
+        <td class=num>${s ? s.p_max_w.toFixed(1) : ""}</td><td><span class="bar"><div style="width:${total ? 100 * x.w / total : 0}%"></div></span></td></tr>`; }).join("")}</table>
+      ${Object.keys(dc).length ? `<h2 style="margin-top:10px">DC-DC</h2><table><tr><th></th><th class=num>평균 W</th><th class=num>최대 A / 한계</th><th>여유</th><th class=num>제한 s</th><th class=num>꺼짐 s</th></tr>
+        ${Object.entries(dc).map(([id, s]) => `<tr><td>${esc(id)}</td><td class=num>${s.p_out_mean_w.toFixed(0)}</td><td class=num>${s.i_out_max_a.toFixed(1)} / ${s.i_max_a}</td>
+          <td><span class="bar ${s.margin < 0.05 ? "over" : s.margin < 0.2 ? "hot" : ""}"><div style="width:${Math.max(0, Math.min(100, s.margin * 100))}%"></div></span> ${(s.margin * 100).toFixed(0)} %</td>
+          <td class=num>${s.limited_s.toFixed(2)}</td><td class=num>${s.off_s.toFixed(2)}</td></tr>`).join("")}</table>` : ""}
+      ${Object.keys(ecus).length ? `<h2 style="margin-top:10px">ECU 전원</h2><table><tr><th></th><th class=num>최저 V</th><th class=num>리셋 V</th><th class=num>리셋</th><th class=num>꺼진 s</th></tr>
+        ${Object.entries(ecus).map(([id, s]) => `<tr><td>${esc(id)}</td><td class="num ${s.v_min_v < s.v_reset_v + 1 ? "warn" : ""}">${s.v_min_v.toFixed(2)}</td><td class=num>${s.v_reset_v}</td>
+          <td class="num ${s.resets ? "bad" : ""}">${s.resets}</td><td class=num>${s.off_s.toFixed(2)}</td></tr>`).join("")}</table>` : ""}`;
+  } else if (tab === "events") {
+    const ev = stats?.events || [];
+    box.innerHTML = ev.length ? `<table><tr><th class=num>t s</th><th>종류</th><th>부품</th><th>내용</th></tr>${ev.map((e) =>
+      `<tr><td class=num>${e.t.toFixed(3)}</td><td class="${/fail|violation|reset|blown|overheat/.test(e.type) ? "bad" : "warn"}">${esc(e.type)}</td><td>${esc(e.id)}</td><td>${esc(e.detail)}</td></tr>`).join("")}</table>`
+      : `<div class="muted">${stats ? "이벤트 없음 (리셋, 퓨즈, 채터링, 프리차지 위반·실패, 전선 과열, DC-DC 정지)" : "시뮬레이션이 전기 네트워크와 함께 돌면 나타납니다."}</div>`;
+  } else if (tab === "nodes") {
+    const v = values();
+    const nets = allNets();
+    box.innerHTML = (opError ? `<div class="error-box">${esc(opError)}</div>` : "") +
+      `<table><tr><th>망</th><th class=num>전압</th><th>연결</th></tr>${nets.map((n) => `<tr><td>${esc(n)}</td><td class=num>${esc(fmt(netVolt(n, v), "V"))}</td>
+      <td class="muted">${esc(comps().flatMap((c) => (TYPES[c.type]?.terms || []).filter((k) => termNet(c, k) === n).map((k) => c.id + "." + k)).join(", "))}</td></tr>`).join("")}</table>`;
+  }
+}
+function routeLength(route) { let s = 0; for (let i = 1; i < route.length; ++i) s += Math.hypot(...route[i].map((q, k) => q - route[i - 1][k])); return s; }
+function drawHarness(wires) {
+  const svg = $("harness-view"); if (!svg) return;
+  const r = svg.getBoundingClientRect(), w = r.width || 600, h = 220;
+  // Top view of the car: x forward (right), y left (up), 3.0 m x 1.5 m.
+  const sx = (x) => w / 2 + x * (w - 40) / 3.2, sy = (y) => h / 2 - y * (h - 30) / 1.6;
+  let s = `<rect x="${sx(-1.5)}" y="${sy(0.7)}" width="${sx(1.5) - sx(-1.5)}" height="${sy(-0.7) - sy(0.7)}" rx="30" fill="#151a21" stroke="#2c3440"/>
+    <text x="${sx(1.45)}" y="${sy(0) + 4}" fill="#6b7584" font-size="11" text-anchor="end">앞 →</text>`;
+  for (const c of wires) if (c.route?.length > 1) {
+    const hv = (c.area_mm2 || 0) >= 10;
+    s += `<polyline points="${c.route.map((p) => `${sx(p[0])},${sy(p[1])}`).join(" ")}" fill="none" stroke="${hv ? "#ff8a3d" : "#6fb8ff"}" stroke-width="${hv ? 3 : 1.5}"><title>${esc(c.id)}</title></polyline>`;
+    const m = c.route[Math.floor(c.route.length / 2)];
+    s += `<text x="${sx(m[0]) + 4}" y="${sy(m[1]) - 4}" fill="#8a94a3" font-size="10">${esc(c.id)}</text>`;
+  }
+  for (const [name, cn] of Object.entries(net.harness?.connectors || {})) if (cn.position) {
+    s += `<rect x="${sx(cn.position[0]) - 4}" y="${sy(cn.position[1]) - 4}" width="8" height="8" fill="#ffd38a"><title>${esc(name)}</title></rect>`;
+  }
+  svg.innerHTML = s + (wires.some((c) => c.route) ? "" : `<text x="12" y="20" fill="#6b7584" font-size="12">전선에 route: [[x, y, z], ...] (차량 좌표, m)를 주면 경로와 길이가 여기 나옵니다.</text>`);
+}
+
+// --- Header, YAML, save ---------------------------------------------------------------------
+function renderHeader() {
+  $("enabled").checked = !!net.enabled;
+  $("level").value = net.level || "";
+  $("initial").value = net.initial || "active";
+}
+function renderAll() { renderHeader(); renderList(); renderSchematic(); renderProps(); renderTabs(); renderTab(); }
+function changed() { setDirty(true); renderList(); renderSchematic(); renderProps(); renderTab(); clearTimeout(changed.t); changed.t = setTimeout(requestCheck, 400); }
+function netlistText() {
+  const out = { ...net };
+  if (!out.level) delete out.level;
+  delete out.layout;
+  // Components and faults one per line; the editor layout as one line per item.
+  let text = HEADER + jsyaml.dump(out, { noRefs: true, lineWidth: 160, flowLevel: 2 });
+  const L = layout(), key = (k) => jsyaml.dump(k).trim();
+  const used = new Set(allNets());
+  const cs = comps().filter((c) => L.components[c.id]), ns = Object.keys(L.nets).filter((n) => used.has(n));
+  if (cs.length || ns.length) {
+    text += "layout:   # 회로 편집기의 배치 (해석에는 쓰지 않음)\n";
+    if (cs.length) text += "  components:\n" + cs.map((c) => `    ${key(c.id)}: [${L.components[c.id].join(", ")}]\n`).join("");
+    if (ns.length) text += "  nets:\n" + ns.map((n) => `    ${key(n)}: [${L.nets[n].join(", ")}]\n`).join("");
+  }
+  return text;
+}
+function requestCheck() { if (comps().length) send("elec.check", { netlist: netlistText() }); }
+$("enabled").onchange = (e) => { net.enabled = e.target.checked; setDirty(true); };
+$("level").onchange = (e) => { if (e.target.value) net.level = e.target.value; else delete net.level; setDirty(true); requestCheck(); };
+$("initial").onchange = (e) => { net.initial = e.target.value; setDirty(true); };
+$("filter").oninput = renderList;
+$("values").onchange = () => { renderSchematic(); renderProps(); renderTab(); };
+$("check").onclick = () => { $("values").value = "op"; requestCheck(); tab = "nodes"; renderTabs(); };
+$("autolayout").onclick = () => { ensureLayout(true); setDirty(true); renderSchematic(); fit(); };
+$("fit").onclick = fit;
+$("yaml-btn").onclick = () => {
+  const s = $("yaml-section"); const show = s.style.display === "none";
+  s.style.display = show ? "" : "none";
+  if (show) $("yaml").value = netlistText();
+};
+$("yaml-apply").onclick = () => {
+  try { net = jsyaml.load($("yaml").value) || {}; ensureLayout(false); setDirty(true); renderAll(); requestCheck(); }
+  catch (err) { notice("YAML: " + err.message, "error"); }
+};
+$("save").onclick = () => {
+  if (!comps().length) { notice("부품이 없습니다.", "error"); return; }
+  send("elec.save", { netlist: netlistText(), reload: true });
+  setDirty(false);
+  fingerprint = "";  // take the file as the simulator reloaded it (or rolled it back)
+};
+
+renderPalette();
+renderTabs();
+setInterval(() => { if (!dirty) send("elec.get"); }, 1000);
+connect();
+window.vsimElec = { get net() { return net; }, get state() { return state; }, get op() { return op; } };
+</script>
+</body>
+</html>

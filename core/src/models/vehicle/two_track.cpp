@@ -5,6 +5,7 @@
 #include <numbers>
 #include <stdexcept>
 
+#include "vsim/elec/network.hpp"
 #include "vsim/sim/context.hpp"
 #include "vsim/track/track.hpp"
 #include "vsim/util/paths.hpp"
@@ -120,6 +121,8 @@ struct TwoTrackModel::Eval {
   std::array<double, kCorners> motor_loss{}, motor_power{};
   double power_mech = 0.0;
   double power_elec = 0.0;  // at the battery terminals, including aux
+  double motor_power_sum = 0.0;  // DC power of the motors
+  double open_voltage = 0.0;     // pack, behind its resistance
 
   double ocv = 0.0;  // pack
   BatteryOperatingPoint battery;
@@ -160,7 +163,10 @@ struct TwoTrackModel::Signals {
   SignalId drag, downforce, brake_pressure, ffb;
   std::vector<Motor> motor;
   SignalId power_mech, power_elec;
-  SignalId soc, voltage, current, power, ocv, battery_temp, overloaded;
+  SignalId soc, voltage, current, power, ocv, open_voltage, battery_temp, overloaded;
+  // Electrical network inputs (when it carries the accumulator).
+  SignalId elec_current = 0;
+  std::vector<SignalId> elec_dc, elec_enabled;
   SignalId limit_discharge_power, limit_charge_power, limit_discharge_current, limit_charge_current;
   std::array<SignalId, kEnergyCount> energy;
   SignalId kinetic, rc_stored, residual;
@@ -274,6 +280,9 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   unsprung_offset_ = body_offset_ + kBodySize;
   size_ = full_ ? unsprung_offset_ + 2 * kCorners : body_offset_;
   torque_cmd_.assign(motors, 0.0);
+  network_ = ElectricalNetwork::powers_plant(params);
+  dc_voltage_.assign(motors, 0.0);
+  inverter_on_.assign(motors, 0.0);
 
   x0_ = params.get_double("initial.x_m", 0.0);
   y0_ = params.get_double("initial.y_m", 0.0);
@@ -352,6 +361,16 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   s.current = bus.declare("bat.current", "A", "current, positive discharging");
   s.power = bus.declare("bat.power", "W", "terminal power, positive discharging");
   s.ocv = bus.declare("bat.ocv", "V", "open-circuit voltage");
+  s.open_voltage = bus.declare("bat.open_voltage", "V", "pack voltage behind its resistance (OCV less RC)");
+  if (network_) {
+    s.elec_current = bus.declare("elec.bat.current", "A", "accumulator current from the electrical network");
+    s.elec_dc.clear();
+    s.elec_enabled.clear();
+    for (const std::string& id : driveline_config_.motor_ids()) {
+      s.elec_dc.push_back(bus.declare("elec.motor." + id + ".dc_voltage", "V", "inverter DC-link voltage"));
+      s.elec_enabled.push_back(bus.declare("elec.motor." + id + ".enabled", "-", "1 while the inverter can drive"));
+    }
+  }
   s.battery_temp = bus.declare("bat.temp", "degC", "cell temperature");
   s.overloaded = bus.declare("bat.overloaded", "-", "1 when demand exceeds the pack's maximum power");
   s.limit_discharge_power = bus.declare("bat.limit.discharge_power", "W", "BMS discharge power limit");
@@ -552,6 +571,13 @@ void TwoTrackModel::read_inputs(const SignalBus& bus) {
   for (std::size_t m = 0; m < torque_cmd_.size(); ++m) {
     torque_cmd_[m] = bus.get(sig_->motor[m].torque_cmd);
   }
+  if (network_) {
+    network_current_ = bus.get(sig_->elec_current);
+    for (std::size_t m = 0; m < torque_cmd_.size(); ++m) {
+      dc_voltage_[m] = bus.get(sig_->elec_dc[m]);
+      inverter_on_[m] = bus.get(sig_->elec_enabled[m]);
+    }
+  }
   if (full_) {
     for (std::size_t c = 0; c < kCorners; ++c) {
       rig_z_[c] = bus.get(sig_->corner3[c].rig_z);
@@ -720,11 +746,16 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
   const std::size_t motors = driveline_.motor_count();
 
   const auto motor_demand = [&](double dc_voltage) {
-    double total = battery_.aux_power;
+    double total = network_ ? 0.0 : battery_.aux_power;
     for (std::size_t i = 0; i < motors; ++i) {
       const double temp = x[motor_offset_ + 2 * i + 1];
       e.motor_speed[i] = driveline_.motor_speed(i, q);
-      e.motor_avail[i] = motor_.envelope(e.motor_speed[i], dc_voltage, temp);
+      if (network_ && inverter_on_[i] < 0.5) {
+        // Inverter off (DC link low, logic supply lost): no torque, no DC power.
+        e.motor_avail[i] = e.motor_torque[i] = e.motor_loss[i] = e.motor_power[i] = 0.0;
+        continue;
+      }
+      e.motor_avail[i] = motor_.envelope(e.motor_speed[i], network_ ? dc_voltage_[i] : dc_voltage, temp);
       e.motor_torque[i] = std::clamp(x[motor_offset_ + 2 * i], -e.motor_avail[i], e.motor_avail[i]);
       e.motor_loss[i] = motor_.losses(e.motor_torque[i], e.motor_speed[i]);
       e.motor_power[i] = e.motor_torque[i] * e.motor_speed[i] + e.motor_loss[i];
@@ -734,9 +765,21 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
   };
   // The DC voltage sags with current; one fixed-point pass is enough because
   // it only matters where the envelope is voltage limited.
-  const BatteryOperatingPoint first = solve_battery_power(open_voltage, resistance, motor_demand(open_voltage));
-  e.power_elec = motor_demand(first.voltage);
-  e.battery = solve_battery_power(open_voltage, resistance, e.power_elec);
+  e.open_voltage = open_voltage;
+  if (network_) {
+    // The electrical network sets the current (DC links, LV loads, contactors).
+    e.motor_power_sum = motor_demand(0.0);
+    e.battery.current = network_current_;
+    e.battery.voltage = open_voltage - resistance * network_current_;
+    e.battery.limited = false;
+    e.power_elec = e.battery.voltage * e.battery.current;
+  } else {
+    const BatteryOperatingPoint first =
+        solve_battery_power(open_voltage, resistance, motor_demand(open_voltage));
+    e.power_elec = motor_demand(first.voltage);
+    e.battery = solve_battery_power(open_voltage, resistance, e.power_elec);
+    e.motor_power_sum = e.power_elec - battery_.aux_power;
+  }
   e.limits = battery_limits(battery_, soc, rc1 + rc2, battery_temp);
   e.power_mech = 0.0;
   for (std::size_t i = 0; i < motors; ++i) {
@@ -952,7 +995,9 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
   const std::span<double> energy = dx.subspan(energy_offset_, kEnergyCount);
   energy[kBatteryChemical] = e.ocv * current;
   energy[kBatteryLoss] = battery_loss;
-  energy[kAux] = battery_.aux_power;
+  // With the electrical network: what leaves the terminals but not into the
+  // motors (LV loads, wiring, DC-link charge).
+  energy[kAux] = network_ ? e.power_elec - e.motor_power_sum : battery_.aux_power;
   energy[kMotorLoss] = motor_loss;
   energy[kMotorShaft] = e.power_mech;
   energy[kGearLoss] = losses.gear;
@@ -1095,6 +1140,7 @@ void TwoTrackModel::write_outputs(double /*t*/, std::span<const double> x, Signa
   bus.set(s.current, e.battery.current);
   bus.set(s.power, e.battery.voltage * e.battery.current);
   bus.set(s.ocv, e.ocv);
+  bus.set(s.open_voltage, e.open_voltage);
   bus.set(s.battery_temp, x[battery_offset_ + 3]);
   bus.set(s.overloaded, e.battery.limited ? 1.0 : 0.0);
   bus.set(s.limit_discharge_power, e.limits.discharge_power);

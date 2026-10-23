@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -19,6 +20,8 @@
 
 #include "python_plugin.hpp"
 #include "vsim/can/frame.hpp"
+#include "vsim/elec/network.hpp"
+#include "vsim/sim/scenario.hpp"
 
 namespace py = pybind11;
 
@@ -92,6 +95,13 @@ PYBIND11_MODULE(_vsim, m) {
       },
       py::arg("id"), py::arg("data"), py::arg("extended") = false, py::arg("fd") = false, py::arg("brs") = true,
       "Bits a CAN data frame takes on the bus (stuff bits, CRC, EOF and interframe space included).");
+  m.def(
+      "_electrical_operating_point",
+      [](const std::filesystem::path& scenario, const std::map<std::string, std::string>& overrides) {
+        return vsim::ElectricalNetwork::operating_point_json(vsim::Scenario::load(scenario, overrides).params);
+      },
+      py::arg("scenario"), py::arg("overrides") = std::map<std::string, std::string>{},
+      "DC operating point of the scenario's electrical network as JSON (node voltages, component signals).");
   vsim::register_python_plugins(false);  // components of type python run in this interpreter
   m.attr("__version__") = vsim::version();
   m.attr("git_commit") = vsim::git_commit();

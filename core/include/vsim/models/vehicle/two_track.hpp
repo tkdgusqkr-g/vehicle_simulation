@@ -51,7 +51,7 @@ class TwoTrackModel final : public PlantModel {
   enum Energy : std::size_t {
     kBatteryChemical,  // OCV * I: released by the cells
     kBatteryLoss,      // ohmic and RC resistor losses
-    kAux,              // constant auxiliary load
+    kAux,              // constant auxiliary load (with the electrical network: LV loads and wiring)
     kMotorLoss,        // motor + inverter losses
     kMotorShaft,       // mechanical work at the motor shafts
     kGearLoss,
@@ -208,6 +208,11 @@ class TwoTrackModel final : public PlantModel {
   double steer_ = 0.0;
   double brake_ = 0.0;
   std::vector<double> torque_cmd_;
+  // Electrical network (design doc §12.3): battery current and inverter DC
+  // voltages come from it instead of the direct battery solve.
+  bool network_ = false;
+  double network_current_ = 0.0;
+  std::vector<double> dc_voltage_, inverter_on_;
 
   std::unique_ptr<Signals> sig_;
 };
