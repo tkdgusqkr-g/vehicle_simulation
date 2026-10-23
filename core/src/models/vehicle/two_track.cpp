@@ -112,6 +112,7 @@ struct TwoTrackModel::Eval {
   double downforce = 0.0;
   double drag = 0.0;
   double ax = 0.0, ay = 0.0;
+  double yaw_accel = 0.0;  // [rad/s^2]
   double ffb = 0.0;
   double brake_pressure = 0.0;
 
@@ -131,6 +132,7 @@ struct TwoTrackModel::Eval {
   std::array<double, kCorners> wheel_z{}, kingpin_moment{}, spring_compression{};
   std::array<int, kCorners> surface{};
   double az = 0.0;  // vertical acceleration of the sprung CG
+  double roll_accel = 0.0, pitch_accel = 0.0;
 };
 
 struct TwoTrackModel::Signals {
@@ -149,10 +151,10 @@ struct TwoTrackModel::Signals {
   };
 
   SignalId steer, brake;
-  SignalId x, y, yaw, vx, vy, r, speed, ax, ay, beta, delta;
+  SignalId x, y, yaw, vx, vy, r, speed, ax, ay, beta, delta, yaw_accel;
   std::array<Wheel, kCorners> wheel;
   // Full model.
-  SignalId z, roll, pitch, vz, roll_rate, pitch_rate, az, rack, potential, road_z, heave;
+  SignalId z, roll, pitch, vz, roll_rate, pitch_rate, roll_accel, pitch_accel, az, rack, potential, road_z, heave;
   std::array<Corner3, kCorners> corner3;
   std::array<Axle, 2> axle;
   SignalId drag, downforce, brake_pressure, ffb;
@@ -307,6 +309,7 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   s.ax = bus.declare("veh.chassis.ax", "m/s^2", "longitudinal acceleration (body frame)");
   s.ay = bus.declare("veh.chassis.ay", "m/s^2", "lateral acceleration (body frame)");
   s.beta = bus.declare("veh.chassis.beta", "rad", "body slip angle");
+  s.yaw_accel = bus.declare("veh.chassis.yaw_accel", "rad/s^2", "yaw acceleration");
   s.delta = bus.declare("veh.steer.road_wheel_angle", "rad", "road wheel angle of the steering input");
   for (std::size_t c = 0; c < kCorners; ++c) {
     const std::string base = "veh.wheel." + std::string(kCornerNames[c]) + ".";
@@ -373,6 +376,8 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
     s.vz = bus.declare("veh.chassis.vz", "m/s", "sprung CG vertical velocity");
     s.roll_rate = bus.declare("veh.chassis.roll_rate", "rad/s", "body roll rate");
     s.pitch_rate = bus.declare("veh.chassis.pitch_rate", "rad/s", "body pitch rate");
+    s.roll_accel = bus.declare("veh.chassis.roll_accel", "rad/s^2", "body roll acceleration");
+    s.pitch_accel = bus.declare("veh.chassis.pitch_accel", "rad/s^2", "body pitch acceleration");
     s.az = bus.declare("veh.chassis.az", "m/s^2", "sprung CG vertical acceleration");
     s.rack = bus.declare("veh.steer.rack", "m", "steering rack travel, left +");
     s.potential = bus.declare("energy.potential", "J", "gravity, spring and tire energy gained since the start");
@@ -839,6 +844,7 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
   if (!full_) {
     e.ax = fx_body / m;
     e.ay = fy_body / m;
+    e.yaw_accel = yaw_moment / p_.yaw_inertia;
     if (dx.empty()) {
       return;
     }
@@ -883,6 +889,9 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
     e.ax = u[0] - r * vy;
     e.ay = u[1] + r * vx;
     e.az = q_z / ms;
+    e.yaw_accel = u[2];
+    e.roll_accel = u[3];
+    e.pitch_accel = u[4];
     if (dx.empty()) {
       return;
     }
@@ -1037,6 +1046,7 @@ void TwoTrackModel::write_outputs(double /*t*/, std::span<const double> x, Signa
   bus.set(s.speed, speed);
   bus.set(s.ax, e.ax);
   bus.set(s.ay, e.ay);
+  bus.set(s.yaw_accel, e.yaw_accel);
   bus.set(s.beta, speed > 0.5 ? std::atan2(x[kVy], x[kVx]) : 0.0);
   bus.set(s.delta, e.delta);
 
@@ -1120,6 +1130,8 @@ void TwoTrackModel::write_outputs(double /*t*/, std::span<const double> x, Signa
     bus.set(s.vz, x[body_offset_ + kVz]);
     bus.set(s.roll_rate, x[body_offset_ + kRollRate]);
     bus.set(s.pitch_rate, x[body_offset_ + kPitchRate]);
+    bus.set(s.roll_accel, e.roll_accel);
+    bus.set(s.pitch_accel, e.pitch_accel);
     bus.set(s.az, e.az);
     bus.set(s.rack, e.rack);
     bus.set(s.potential, potential_gain);

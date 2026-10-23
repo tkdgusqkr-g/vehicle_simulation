@@ -147,9 +147,12 @@ TEST(TwoTrack, StraightAccelerationTractionThenPowerLimited) {
 }
 
 // V-03: chemical energy from the cells = kinetic energy gain + every loss,
-// through acceleration, cornering and braking with regen.
+// through acceleration, cornering and braking with regen. The car spins, so
+// the VCU runs on the true speed (its estimator, like a real one, would see
+// the spin as wheel lock-up and hold back regen).
 TEST(TwoTrack, EnergyIsConserved) {
-  Simulation sim(load_example("straight_accel", {{"driver.throttle.type", "step"},
+  Simulation sim(load_example("straight_accel", {{"control.use_sensors", "false"},
+                                                 {"driver.throttle.type", "step"},
                                                  {"driver.throttle.before", "1"},
                                                  {"driver.throttle.at_s", "4"},
                                                  {"driver.throttle.value", "0"},

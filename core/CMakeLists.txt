@@ -34,6 +34,8 @@ add_library(vsim_core STATIC
   src/models/vehicle/single_track.cpp
   src/models/vehicle/suspension.cpp
   src/models/vehicle/two_track.cpp
+  src/sensors/sensor_chain.cpp
+  src/sensors/sensor_system.cpp
   src/sim/integrator.cpp
   src/sim/params.cpp
   src/sim/realism.cpp

@@ -8,6 +8,7 @@ add_executable(vsim_tests
   test_params.cpp
   test_powertrain.cpp
   test_rng.cpp
+  test_sensors.cpp
   test_signal_bus.cpp
   test_simulation.cpp
   test_single_track.cpp

@@ -29,6 +29,8 @@ and these functions:
     duration(cond)                  total time cond is true
     any(cond) all(cond)
     changes(x)                      values x changes to, in order (e.g. lap times)
+    peak_freq(x, f0, f1)            frequency [Hz] of the largest spectral peak in [f0, f1]
+    peak_amp(x, f0, f1)             its amplitude (same unit as x)
 
 with + - * /, comparisons, and/or/not, and [index] on changes(). `t` is
 time. Expressions are interpreted, never passed to eval().
@@ -120,6 +122,32 @@ def _settle_time(s, target, tol=0.05):
     return float(s.t[outside[-1]]) if outside.size else float(s.t[0])
 
 
+def spectrum(s):
+    """One-sided amplitude spectrum of a uniformly sampled signal: (f [Hz], amplitude).
+
+    Mean removed, Hann window (amplitudes corrected for its gain), so a sine
+    of amplitude A reads A at its frequency.
+    """
+    v = np.asarray(_values(s), dtype=float)
+    t = np.asarray(s.t, dtype=float)
+    if v.size < 8:
+        raise CheckError("spectrum: too few samples")
+    dt = float(np.median(np.diff(t)))
+    window = np.hanning(v.size)
+    amp = 2.0 * np.abs(np.fft.rfft((v - v.mean()) * window)) / window.sum()
+    return np.fft.rfftfreq(v.size, dt), amp
+
+
+def spectral_peak(s, f0=0.0, f1=math.inf):
+    """(frequency, amplitude) of the largest spectral peak between f0 and f1 [Hz]."""
+    f, amp = spectrum(s)
+    band = (f >= f0) & (f <= f1) & (f > 0.0)
+    if not np.any(band):
+        raise CheckError(f"spectral peak: no frequencies in [{f0}, {f1}] Hz")
+    i = int(np.argmax(np.where(band, amp, -1.0)))
+    return float(f[i]), float(amp[i])
+
+
 def _duration(cond):
     v = _values(cond).astype(bool)
     if v.size < 2:
@@ -148,6 +176,8 @@ FUNCTIONS = {
     "any": lambda c: bool(np.any(_values(c))),
     "all": lambda c: bool(np.all(_values(c))),
     "changes": _changes,
+    "peak_freq": lambda x, f0=0.0, f1=math.inf: spectral_peak(x, f0, f1)[0],
+    "peak_amp": lambda x, f0=0.0, f1=math.inf: spectral_peak(x, f0, f1)[1],
 }
 
 _COMPARE = {

@@ -299,6 +299,78 @@ L3 모델이 하드포인트에서 K&C를 직접 풉니다 (`vsim-core --export-
 
 - 아직 정하지 않은 센서는 "예정"으로 적어 주세요. 대표 사양으로 시작하고 나중에 바꾸면 됩니다.
 
+### 18.1 `vehicle.sensors` 쓰는 법 (M6)
+
+`vehicle.yaml`(또는 빌더가 쓴 `builder.yaml`)의 `sensors:` 목록에 한 줄씩 적습니다. 출력 신호는 `sens.<name>.<채널>`입니다. 예제 차량 [vehicle.yaml](../templates/projects/example_fs_ev/vehicle/vehicle.yaml)에 12개가 있습니다.
+
+```yaml
+sensors:
+  - {name: imu, type: imu, position: [0.0, 0.0, 0.25], orientation_deg: [0, 0, 0], rate_hz: 500, anti_alias_hz: 100,
+     accel: {noise_density: 0.0015, bias: 0.2}, gyro: {bias_instability: 1.5e-5},
+     vibration: [{motor: fl, order: 8, amplitude: 0.8, axis: z}]}
+  - {name: ws_fl, type: wheel_speed, wheel: fl, teeth: 36}
+  - {name: apps, type: pedal, pedal: throttle, ch1_v: [0.5, 4.5], ch2_v: [4.5, 0.5],
+     faults: [{channel: ch2, type: open, at_s: 12.0}]}
+```
+
+**공통 항목**
+
+| 항목 | 단위 | 내용 |
+|---|---|---|
+| `name` | | 신호 이름에 쓰임 (영문·숫자·_) |
+| `type` | | 아래 표의 종류 |
+| `position` | m | 무게중심 아래 지면 기준 [x 앞, y 왼쪽, z 위] (빌더가 찍음) |
+| `orientation_deg` | ° | 센서 축의 [롤, 피치, 요] (센서 x축이 차 앞이면 0, 0, 0) |
+| `rate_hz` | Hz | 출력 주기 (물리 스텝 1 ms의 배수로 맞춤) |
+| `signal` | | 재는 버스 신호 (temperature, signal 종류는 필수; 다른 종류는 기본값을 바꿀 때) |
+| `faults` | | `[{channel, type, at_s, until_s, value}]`, type: offset · stuck · open(0) · short(전원) · value · noise · scale. `channel`을 빼면 모든 채널 |
+
+**채널 오차 항목** (채널 이름 아래, 또는 IMU는 `accel:`·`gyro:` 아래에 공통으로)
+
+| 항목 | 단위 | 데이터시트 이름 | 켜지는 조건 |
+|---|---|---|---|
+| `scale_error` | 비율 | 감도 오차 (1σ) | `realism.variation: real` |
+| `bias` | 측정 단위 | 영점 오프셋 (1σ) | `realism.variation: real` |
+| `noise_density` | 단위/√Hz | noise density (가속도: µg/√Hz × 9.81e-6) | `realism.sensors: real` |
+| `bias_instability` | 측정 단위 | bias instability (Allan 최저점의 1/0.664) | `realism.sensors: real` |
+| `bias_tau_s` | s | 드리프트 상관시간 (기본 100) | |
+| `random_walk` | 단위·√Hz | rate random walk | |
+| `bandwidth_hz` | Hz | 출력 대역폭 (1차) | |
+| `latency_s` | s | 출력 지연 | |
+| `resolution` | 측정 단위 | 분해능 (ADC LSB, 데이터 형식) | |
+| `range` | [최소, 최대] | 측정 범위 (포화) | |
+
+**종류별**
+
+| type | 채널 (단위) | 기본 주기 | 종류별 항목 |
+|---|---|---|---|
+| `imu` | ax, ay, az (m/s², 비력: 정지 시 az = +9.81), gx, gy, gz (rad/s) | 500 Hz | `anti_alias_hz`(샘플링 전 2차 필터, 0이면 없음), `misalignment_deg`(개체별 장착 오차 1σ, 기본 0.5), `vibration: [{motor, order, amplitude, axis}]` |
+| `accelerometer` / `gyro` | IMU의 절반 | 500 Hz | IMU와 같음 |
+| `wheel_speed` | omega (rad/s), pulses | 200 Hz | `wheel`(fl…, 없으면 위치로), `teeth`(48), `timeout_s`(0.1), `timer_resolution_s`(1e-6), `tooth_error_deg`(0.05, 개체 편차), `directional`(true) |
+| `pedal` | ch1, ch2 (V) | 1 kHz | `pedal`(throttle), `ch1_v`·`ch2_v`: [0 % 전압, 100 % 전압] |
+| `brake_pressure` | pressure (bar) | 1 kHz | |
+| `steering_angle` | angle (rad, 핸들각) | 100 Hz | |
+| `gnss` | x, y (m), speed (m/s), heading (rad), valid | 10 Hz | `position_sigma_m`(0.02), `speed_sigma_mps`, `heading_sigma_deg`, `latency_s`(0.05), `drift_m`, `outages_per_min`, `outage_s` |
+| `current` / `voltage` | value (A / V) | 1 kHz | 기본 신호 `bat.current` / `bat.voltage` |
+| `temperature` | value (°C) | 10 Hz | `signal` 필수 (예: `pt.motor.fl.temp`), `time_constant_s`(2) |
+| `suspension_travel` | travel (m, 범프 +) | 500 Hz | `wheel` (L3에서만) |
+| `signal` | value | 100 Hz | `signal` 필수: 아무 버스 신호나 같은 오차 체인으로 |
+
+**VCU 설정** (`control/vcu.yaml`, 센서가 있을 때)
+
+| 항목 | 기본 | 내용 |
+|---|---|---|
+| `use_sensors` | true | false면 드라이버 페달과 참 속도 사용 |
+| `apps.min_v`, `apps.max_v` | 0.2, 4.8 | 이 범위 밖은 단선·단락 |
+| `apps.max_deviation` | 0.10 | 두 채널 차이 한계 (FSAE: 10 %p) |
+| `apps.fault_time_s` | 0.10 | 이 시간 넘게 이어지면 토크 차단 (FSAE: 100 ms) |
+| `apps.deadband` | 0.02 | 페달 양 끝 데드밴드 |
+| `bspc.brake_bar` | 10 | "브레이크 작동" 압력 |
+| `bspc.apps_on`, `bspc.apps_off` | 0.25, 0.05 | BSPC 차단 / 해제 페달 위치 |
+| `speed_estimator.tau_s` | 0.1 | 바퀴가 미끄러지지 않을 때 휠속 쪽으로 당기는 시정수 |
+| `speed_estimator.slip_tau_s` | 3.0 | 미끄러질 때(바퀴 차이 5 % 초과 또는 큰 가감속) |
+| `speed_estimator.free_accel_mps2` | 2.0 | 이보다 큰 가감속은 미끄러짐으로 봄 |
+
 ## 19. 외란 측정 (선택)
 
 외란 크기를 실제와 맞추기 위한 측정입니다 (설계 문서 §10.7, §13.4). 시뮬레이터 사용에는 필요 없습니다. 센서, 모터, 트랙은 다음 차에서도 그대로 쓰는 경우가 많으므로, 지금 있는 차에서 잰 값을 설계 중인 차의 시뮬레이션에도 그대로 쓸 수 있습니다. 실차의 센서와 CAN 로그만으로 충분합니다.

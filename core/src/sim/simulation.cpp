@@ -18,6 +18,7 @@
 #include "vsim/log/mcap_logger.hpp"
 #include "vsim/models/vehicle/single_track.hpp"
 #include "vsim/models/vehicle/two_track.hpp"
+#include "vsim/sensors/sensor_system.hpp"
 #include "vsim/sim/context.hpp"
 #include "vsim/sim/integrator.hpp"
 #include "vsim/track/lap_timer.hpp"
@@ -164,9 +165,13 @@ void Simulation::Impl::build(const Scenario& scenario, const SimulationOptions& 
   }
   plant->init(effective, *context);
 
-  // Execution order within a tick: driver, VCU, then lap timing.
+  // Execution order within a tick: driver, sensors (they see the driver's
+  // pedals this tick), VCU, then lap timing.
   std::vector<std::unique_ptr<Block>> ordered;
   ordered.push_back(make_driver(effective));
+  if (SensorSystem::configured(effective)) {
+    ordered.push_back(std::make_unique<SensorSystem>());
+  }
   ordered.push_back(std::make_unique<ReferenceVcu>());
   if (track) {
     ordered.push_back(std::make_unique<LapTimer>());

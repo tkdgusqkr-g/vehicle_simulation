@@ -4,6 +4,14 @@ M5 기준 안내입니다. 설계는 [design.md](design.md)를 보세요.
 
 ## 지금 되는 것
 
+**M6 (센서로 본다)**
+- **센서 신호 체인**: VCU가 참값 대신 센서가 잰 값을 받습니다. IMU(장착 위치의 구심·접선 가속도, 차체 롤·피치와 노면 경사의 중력 성분, 장착 각도), 휠속(톱니 펄스 시간 → 저속에서 끊김), APPS 2채널, 브레이크 압력, 조향각, GNSS(지연·끊김), 전류·전압·온도, 서스펜션 변위
+- 채널마다 개체 편차(스케일·바이어스), 잡음(데이터시트의 noise density, bias instability, random walk), 대역폭, 지연, 양자화, 포화. 모터 회전 차수 진동과 **aliasing**(anti-alias 필터 유무)
+- **고장 주입**: 단선·단락·고착·오프셋·잡음을 시각과 채널을 정해서
+- **VCU**: FSAE APPS 타당성 검사(10 %·100 ms → 토크 차단), 브레이크·APPS 동시 작동 차단(BSPC), 휠속 + IMU 차속 추정으로 트랙션 컨트롤
+- **현상 탐지**: `python -m vsim.phenomena <시나리오>` → 토크 차단, TC 개입, 휠속·GNSS 끊김, 진동 피크, 분류별 원인 분리 표
+- 차량 빌더에 가속 페달 센서, 센서별 설정 보존. 규정 점검에 APPS·BSE
+
 **M5 (노면 위를 구른다)**
 - **L3 차량 모델** (`vehicle.model: full`, 예제 차의 기본값): 차체가 상하·롤·피치로 움직이고, 네 바퀴의 비현가 질량이 타이어 스프링 위에서 노면을 따라갑니다. 스프링·디그레시브 댐퍼·범프/처짐 스톱·안티롤바. 에너지 수지가 그대로 맞습니다 (잔차 약 1e-7)
 - **하드포인트 기구학(K&C)**: 더블 위시본 + 푸시로드(선택: 로커)를 풀어서 캠버·범프 스티어·접지점 이동(잭킹, 롤센터)·모션비·조향축 모멘트를 계산. `vsim-core --export-kc`로 곡선과 킹핀각·캐스터·스크럽·트레일·애커만 확인
@@ -291,6 +299,43 @@ build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/sce
 
 ---
 
+## 센서와 현상 탐지
+
+예제 차량에는 센서 12개가 있습니다 ([vehicle.yaml](../templates/projects/example_fs_ev/vehicle/vehicle.yaml)의 `sensors:`, 항목 설명은 [vehicle_parameters.md §18.1](vehicle_parameters.md#181-vehiclesensors-쓰는-법-m6)). 기본은 `realism: ideal`이라 센서가 참값을 그대로 냅니다. 실제처럼 하려면 시나리오에서 켭니다.
+
+```yaml
+realism:
+  sensors: real      # 잡음, 드리프트, 지연, 양자화, 포화, 휠속 펄스, 진동
+  variation: real    # 개체 편차: 스케일·바이어스·장착 각도·톱니 간격 (시드마다 다른 개체)
+```
+
+```powershell
+$env:PYTHONPATH = "python"
+# 센서 고장: APPS 2번 채널이 1초에 단선 → 100 ms 뒤 토크 차단
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/acceleration.yaml --mode fast `
+  --set vehicle.sensors.5.faults.0.channel=ch2 --set vehicle.sensors.5.faults.0.type=open --set vehicle.sensors.5.faults.0.at_s=1
+# 무슨 일이 있었는지와, 어느 비이상성 때문인지
+python -m vsim.phenomena templates/projects/example_fs_ev/scenarios/acceleration.yaml --duration 4 --isolate --signals vcu.vx_est sens.imu.ax --report phenomena.md
+```
+
+- `--isolate`(= `only`)는 모든 분류를 ideal로 한 run을 기준으로 분류 하나씩만 real로 돌리고, `--isolate without`은 하나씩만 ideal로 돌립니다. 표의 값은 기준 run과의 RMS 차이입니다.
+- 진동 피크를 보려면 로그를 센서 주기로 남깁니다(`--set logging.rate_hz=500`). 기본 100 Hz 로그는 그 자체로 aliasing을 만듭니다.
+- 테스트 식에서 `peak_freq(sens.imu.az, 5, 100)`, `peak_amp(...)`를 쓸 수 있습니다. 예: [apps_fault.test.yaml](../templates/projects/example_fs_ev/tests/apps_fault.test.yaml)
+- 센서를 끄고 참값으로 제어하려면 `--set control.use_sensors=false`, 센서를 아예 빼려면 `--set vehicle.sensors=`
+
+| 센서 신호 | 내용 |
+|---|---|
+| `sens.imu.ax/ay/az` | 장착점 비력 (정지 시 az ≈ +9.81) |
+| `sens.imu.gx/gy/gz` | 각속도 (센서 축) |
+| `sens.ws_<바퀴>.omega`, `.pulses` | 펄스로 잰 바퀴 속도, 누적 펄스 수 |
+| `sens.apps.ch1`, `.ch2` | 가속 페달 두 채널 전압 |
+| `sens.bse.pressure` | 브레이크 압력 |
+| `sens.gnss.x/y/speed/heading/valid` | 안테나 위치·속도·진행 방향, 수신 여부 |
+| `vcu.throttle`, `vcu.brake`, `vcu.vx_est` | VCU가 센서로 판단한 페달·브레이크·차속 |
+| `vcu.apps_implausible`, `vcu.bspc` | 타당성 검사로 토크를 끊는 중이면 1 |
+
+---
+
 ## 트랙에서 달리기
 
 ### 자동 주행으로 랩 돌기
@@ -473,7 +518,8 @@ build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/sce
 | `veh.ffb.torque_sw` | 노면이 핸들에 주는 토크 (N·m, 반시계 +) |
 | `pt.motor.<id>.*` | 토크 명령·실제, 회전속도, 가용 토크, 권선 온도, 손실, 전력 |
 | `bat.*` | SoC, 단자 전압·전류·전력, OCV, 온도, BMS 한계 (`bat.limit.*`) |
-| `vcu.*` | 출력 한계, 회생 비율, 바퀴별 슬립과 슬립 제어 계수 |
+| `vcu.*` | 출력 한계, 회생 비율, 바퀴별 슬립과 슬립 제어 계수, 센서로 판단한 페달·차속, 타당성 검사 상태 |
+| `sens.<센서>.*` | 센서 출력 (위 "센서와 현상 탐지") |
 | `energy.*` | 에너지 흐름 누적값 (배터리 화학 에너지, 각 손실, 운동에너지, `residual`은 수지 오차) |
 
 ### 자주 쓰는 옵션

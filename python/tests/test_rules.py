@@ -41,3 +41,15 @@ def test_builder_values_override_vehicle_yaml(tmp_path):
     assert vehicle["wheel"]["rim_diameter_in"] == 10       # the rest of the map stays
     failed = {c.topic for c in rules.check(vehicle, {}) if not c.ok}
     assert "wheelbase" in failed
+
+
+def test_pedal_sensor_and_plausibility_rules():
+    vehicle, control = rules.load_project(PROJECT)
+    bad = copy.deepcopy(vehicle)
+    apps = next(s for s in bad["sensors"] if s["type"] == "pedal")
+    apps["ch2_v"] = apps["ch1_v"]                       # identical tracks
+    bad["sensors"] = [s for s in bad["sensors"] if s["type"] != "brake_pressure"]
+    bad_control = dict(control, apps={"max_deviation": 0.2}, bspc={"apps_on": 0.3})
+    failed = {c.topic for c in rules.check(bad, bad_control) if not c.ok}
+    assert failed == {"APPS: different transfer functions", "BSE: brake system encoder", "APPS plausibility",
+                      "brake / APPS plausibility"}

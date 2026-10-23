@@ -178,6 +178,26 @@ brakes:
   front_gain_nm_per_bar: 16    # 앞축 합계
   rear_gain_nm_per_bar: 5      # 뒤축 합계
 
+# 센서 (설계 문서 §10.5). 위치는 무게중심 아래 지면 기준 [x 앞, y 왼쪽, z 위] m.
+# realism.sensors: real이면 잡음·지연·양자화·펄스 계측, realism.variation: real이면
+# 개체별 오차(스케일·바이어스·장착 각도). 오차 항목을 바꾸려면 accel:, gyro:, ch1: 같은
+# 하위 항목에 noise_density, bias, latency_s 등을 적습니다 (docs/vehicle_parameters.md).
+# VCU는 이 센서들로 페달(APPS 2채널 + 타당성 검사), 브레이크 압력(BSPC), 차속 추정을 합니다.
+sensors:
+  - {name: imu, type: imu, position: [0.0, 0.0, 0.25], rate_hz: 500, anti_alias_hz: 100,
+     vibration: [{motor: fl, order: 8, amplitude: 0.8, axis: z}]}   # 모터 회전 차수 진동 (realism.sensors: real)
+  - {name: ws_fl, type: wheel_speed, wheel: fl, teeth: 36}
+  - {name: ws_fr, type: wheel_speed, wheel: fr, teeth: 36}
+  - {name: ws_rl, type: wheel_speed, wheel: rl, teeth: 36}
+  - {name: ws_rr, type: wheel_speed, wheel: rr, teeth: 36}
+  - {name: apps, type: pedal, pedal: throttle, ch1_v: [0.5, 4.5], ch2_v: [4.5, 0.5]}   # FSAE T.4.2
+  - {name: bse, type: brake_pressure, range: [0, 100]}
+  - {name: steer, type: steering_angle}
+  - {name: gnss, type: gnss, position: [-0.35, 0.0, 1.15], rate_hz: 10}
+  - {name: hv_current, type: current}
+  - {name: hv_voltage, type: voltage}
+  - {name: motor_fl_temp, type: temperature, signal: pt.motor.fl.temp}
+
 visual:                        # 3D 화면 (차량 빌더로 CAD 모델을 올리면 그것을 씀)
   color: "#c8102e"             # 차체
   accent: "#f2f4f7"            # 줄무늬, 헬멧, 스프링

@@ -97,6 +97,30 @@ def check(vehicle: dict, control: dict) -> list[Check]:
     brakes = vehicle.get("brakes", {}) or {}
     add("brakes on both axles", float(brakes.get("front_gain_nm_per_bar", 0)) > 0
         and float(brakes.get("rear_gain_nm_per_bar", 0)) > 0, "front and rear", "acts on all four wheels")
+
+    # Pedal sensors and the VCU's plausibility checks (when sensors are listed).
+    sensors = vehicle.get("sensors") or []
+    if sensors:
+        apps = [s for s in sensors if s.get("type") == "pedal" and s.get("pedal", "throttle") == "throttle"]
+        add("APPS: accelerator position sensor", bool(apps), f"{len(apps)} pedal sensor(s)", "two tracks on the pedal")
+        if apps:
+            ch1 = [float(v) for v in apps[0].get("ch1_v", [0.5, 4.5])]
+            ch2 = [float(v) for v in apps[0].get("ch2_v", [4.5, 0.5])]
+            add("APPS: different transfer functions", ch1 != ch2, f"ch1 {ch1} V, ch2 {ch2} V",
+                "the two tracks must differ")
+        bse = [s for s in sensors if s.get("type") == "brake_pressure"]
+        add("BSE: brake system encoder", bool(bse), f"{len(bse)} pressure sensor(s)", "brake pressure measured")
+        apps_cfg = control.get("apps", {}) or {}
+        deviation = float(apps_cfg.get("max_deviation", 0.10))
+        fault_time = float(apps_cfg.get("fault_time_s", 0.10))
+        add("APPS plausibility", deviation <= 0.10 and fault_time <= 0.10,
+            f"{deviation * 100:.0f} % for {fault_time * 1000:.0f} ms", "> 10 % apart for > 100 ms cuts torque")
+        bspc = control.get("bspc", {}) or {}
+        on, off = float(bspc.get("apps_on", 0.25)), float(bspc.get("apps_off", 0.05))
+        add("brake / APPS plausibility", on <= 0.25 and off <= 0.05, f"cut at {on * 100:.0f} %, reset below {off * 100:.0f} %",
+            "cut above 25 % while braking, until below 5 %")
+        if control.get("use_sensors") is False:
+            add("VCU uses the pedal sensors", False, "control.use_sensors: false", "checks run on sensor signals")
     return checks
 
 

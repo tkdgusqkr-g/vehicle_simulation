@@ -140,10 +140,11 @@
           <option value="wheel_speed">휠 속도</option><option value="steering_angle">조향각</option><option value="gnss">GNSS</option>
           <option value="suspension_travel">서스펜션 변위</option><option value="brake_pressure">브레이크 압력</option>
           <option value="temperature">온도</option><option value="current">전류</option><option value="voltage">전압</option>
+          <option value="pedal">가속 페달 (APPS 2채널)</option>
         </select>
         <button class="btn" id="sensor-add">추가</button>
       </div>
-      <table id="sensors"><thead><tr><th>이름</th><th>종류</th><th class="num">위치 x, y, z</th><th>방향°</th><th></th></tr></thead><tbody></tbody></table>
+      <table id="sensors"><thead><tr><th>이름</th><th>종류</th><th class="num">위치 x, y, z</th><th>방향°</th><th title="잡음·대역폭·지연·고장 등. 비우면 기본값 (docs/vehicle_parameters.md)">설정</th><th></th></tr></thead><tbody></tbody></table>
     </section>
 
     <section class="tab" id="t-save">
@@ -734,9 +735,18 @@ function renderHardpoints() {
 }
 
 let sensorCount = 0;
+// Settings a new sensor starts with (the simulator's defaults cover the rest).
+const SENSOR_DEFAULTS = {
+  imu: { rate_hz: 500, anti_alias_hz: 100 },
+  wheel_speed: { teeth: 36 },
+  pedal: { pedal: "throttle", ch1_v: [0.5, 4.5], ch2_v: [4.5, 0.5] },
+  temperature: { signal: "bat.temp" },
+  gnss: { rate_hz: 10 },
+};
 $("sensor-add").onclick = () => {
   const type = $("sensor-type").value;
-  model.sensors.push({ name: `${type}_${++sensorCount}`, type, position: [0, 0, 0.3], orientation_deg: [0, 0, 0] });
+  model.sensors.push({ name: `${type}_${++sensorCount}`, type, position: [0, 0, 0.3], orientation_deg: [0, 0, 0],
+                       extra: structuredClone(SENSOR_DEFAULTS[type] || {}) });
   renderSensors();
   startPick({ kind: "sensor", index: model.sensors.length - 1 });
 };
@@ -748,10 +758,24 @@ function renderSensors() {
     tr.innerHTML = `<td><input type="text" value="${s.name}" style="width:90px"></td><td>${s.type}</td>
       <td class="num">${s.position.map((v) => v.toFixed(3)).join(", ")}</td>
       <td><input type="text" value="${s.orientation_deg.join(", ")}" style="width:70px"></td>
+      <td><input type="text" style="width:160px" spellcheck="false"></td>
       <td><button class="btn" data-a="pick">찍기</button> <button class="btn" data-a="del">✕</button></td>`;
-    const [nameInput, orientInput] = tr.querySelectorAll("input");
+    const [nameInput, orientInput, extraInput] = tr.querySelectorAll("input");
     nameInput.onchange = () => { s.name = nameInput.value.replace(/[^A-Za-z0-9_]/g, "_"); renderSave(); };
     orientInput.onchange = () => { const v = orientInput.value.split(",").map(Number); if (v.length === 3 && v.every(isFinite)) s.orientation_deg = v; renderSave(); };
+    // Other settings as JSON (written to YAML as-is: JSON is YAML flow syntax).
+    extraInput.value = Object.keys(s.extra || {}).length ? JSON.stringify(s.extra) : "";
+    extraInput.onchange = () => {
+      try {
+        const v = extraInput.value.trim() ? JSON.parse(extraInput.value) : {};
+        if (typeof v !== "object" || Array.isArray(v) || v === null) throw new Error("object expected");
+        s.extra = v;
+        extraInput.style.borderColor = "";
+        renderSave();
+      } catch {
+        extraInput.style.borderColor = "#e5484d";
+      }
+    };
     tr.querySelector('[data-a="pick"]').onclick = (e) => startPick({ kind: "sensor", index: i, button: e.target });
     tr.querySelector('[data-a="del"]').onclick = () => { model.sensors.splice(i, 1); renderSensors(); renderMarkers(); renderSave(); };
     tbody.appendChild(tr);
@@ -885,7 +909,8 @@ function builderYaml() {
   if ($("save-sensors").checked && model.sensors.length) {
     lines.push("sensors:");
     for (const x of model.sensors) {
-      lines.push(`  - {name: ${x.name}, type: ${x.type}, position: [${x.position.map((v) => num(v)).join(", ")}], orientation_deg: [${x.orientation_deg.join(", ")}]}`);
+      const extra = Object.entries(x.extra || {}).filter(([k]) => /^[A-Za-z0-9_]+$/.test(k)).map(([k, v]) => `, ${k}: ${JSON.stringify(v)}`).join("");
+      lines.push(`  - {name: ${x.name}, type: ${x.type}, position: [${x.position.map((v) => num(v)).join(", ")}], orientation_deg: [${x.orientation_deg.join(", ")}]${extra}}`);
     }
   }
   if ($("save-model").checked && model.bodies.length) lines.push("visual:", "  model: vehicle/visual/car.glb");
@@ -1009,7 +1034,8 @@ function onParams(p) {
     }
   }
   if (Array.isArray(p.vehicle?.sensors)) {
-    model.sensors = p.vehicle.sensors.map((s) => ({ name: s.name, type: s.type, position: (s.position || [0, 0, 0]).map(Number), orientation_deg: (s.orientation_deg || [0, 0, 0]).map(Number) }));
+    model.sensors = p.vehicle.sensors.map(({ name, type, position, orientation_deg, ...extra }) => ({
+      name, type, position: (position || [0, 0, 0]).map(Number), orientation_deg: (orientation_deg || [0, 0, 0]).map(Number), extra }));
   }
   renderAll();
 }

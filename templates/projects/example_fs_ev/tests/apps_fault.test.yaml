@@ -1,0 +1,20 @@
+test: apps_open_circuit
+description: >
+  가속 중 APPS 2번 채널 단선(0 V). VCU가 범위 이탈을 100 ms 넘게 보면 구동 토크를
+  끊어야 합니다 (FSAE T.4.2). 센서 잡음·개체 편차를 켜고 개체 두 개(시드)로 확인합니다.
+scenario: ../scenarios/acceleration.yaml
+overrides:
+  vehicle.sensors.5.faults.0.channel: ch2
+  vehicle.sensors.5.faults.0.type: open
+  vehicle.sensors.5.faults.0.at_s: 1.0
+  realism.sensors: real
+  realism.variation: real
+duration_s: 2
+seeds: [1, 2]
+checks:
+  - name: 단선 전에는 정상 구동
+    expr: "at(pt.motor.fl.torque_cmd, 0.99) > 5 and at(vcu.apps_implausible, 0.99) == 0"
+  - name: 100 ms 동안은 아직 차단하지 않음
+    expr: "at(vcu.apps_implausible, 1.09) == 0"
+  - name: 단선 110 ms 안에 모든 모터 토크 명령 0
+    expr: "at(vcu.apps_implausible, 1.11) == 1 and max(abs(window(pt.motor.fl.torque_cmd, 1.11, 2.0))) == 0 and max(abs(window(pt.motor.rr.torque_cmd, 1.11, 2.0))) == 0"
