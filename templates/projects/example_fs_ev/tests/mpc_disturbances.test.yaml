@@ -1,5 +1,5 @@
 test: mpc_disturbances
-description: 고저차·뱅크·연석·미끄러운 구간·노면 요철이 있는 서킷에서 모든 비이상성(센서·액추에이터·통신·전기·개체 편차)을 켜고 MPC 추종 모드로 2랩.
+description: 고저차·뱅크·연석·미끄러운 구간·노면 요철이 있는 서킷에서 모든 비이상성(센서·액추에이터·통신·전기·개체 편차, 5 m/s 바람과 난류)을 켜고 MPC 추종 모드로 2랩.
 scenario: ../scenarios/autocross_mpc.yaml
 duration_s: 40
 seeds: [1, 2]
@@ -11,6 +11,10 @@ overrides:
   realism.comms: real
   realism.electrical: real
   realism.variation: real
+  environment.wind.speed_mps: 5
+  environment.wind.from_deg: 300
+  environment.wind.turbulence.sigma_mps: 1.5
+  environment.wind.turbulence.length_m: 20
 checks:
   - name: 2랩 완주
     expr: "final(track.lap) >= 2"

@@ -7,6 +7,7 @@ M9 기준 안내입니다. 설계는 [design.md](design.md)를 보세요.
 **M11 (디테일 마감, 진행 중)**
 - **타이어 온도·공기압** (PH-13): 바퀴마다 트레드 표면과 카커스(내부 공기) 온도. 미끄럼 마찰열·구름 저항 열·브레이크 림 열로 데워지고 공기·노면으로 식음. 표면 온도의 최적 창(포물선)과 공기압(이상기체로 내부 온도를 따라감)이 그립을 바꿈. 차가운 타이어로 나가면 첫 랩이 1초 이상 느림
 - **브레이크 열** (PH-17): 디스크 온도(브레이크 일률로 가열, 속도에 따른 대류·복사 냉각)와 패드 마찰 곡선(차가우면 덜 듣고 뜨거우면 페이드). 앞뒤 온도가 달라 제동 밸런스가 바뀜
+- **바람** (PH-15): 정상풍 + 1-cos 돌풍 + 난류(차가 지나가는 얼어붙은 소용돌이, 시드 고정). 공력을 공기에 대한 속도로 계산해서 측풍에서 측력과 yaw 모멘트가 생기고, 바람이 한 일까지 에너지 수지에 들어감
 - MPC 드라이버가 타이어 그립 변화를 느끼고 기대 그립·목표 속도를 낮춤
 - 라이브 뷰 대시보드에 바퀴별 타이어 온도(색)·공기압·브레이크 온도
 
@@ -738,6 +739,23 @@ brakes:
 | `veh.brake.balance` | 앞 제동 토크 비율 (패드 온도 반영) |
 
 예제 시험: `tire_warmup.test.yaml`(차가운 타이어 레이싱, 첫 랩 −1.4 s), `brake_fade.test.yaml`(107 → 30 km/h 15회 반복 제동, `scenarios/brake_fade.yaml`).
+
+## 바람
+
+```yaml
+environment:
+  wind:
+    speed_mps: 5                 # 정상풍
+    from_deg: 300                # 불어오는 방향 (나침반: 0 북, 90 동)
+    gusts:                       # 1-cos 돌풍: duration_s 동안 0 → speed_mps → 0
+      - {at_s: 5, duration_s: 2.0, speed_mps: 12, from_deg: 0}
+    turbulence: {sigma_mps: 1.5, length_m: 20}   # 성분별 표준편차, 소용돌이 길이
+```
+
+- 바람은 `env.wind.x`, `env.wind.y`(동·북, 땅에 대한 공기 속도) 신호입니다. 차는 공기에 대한 속도로 항력(흐름 방향)·다운포스·측력 `−q·side_force_area·sin(β)`을 받고, 측력은 `side_force_x_m`에 작용해 yaw 모멘트가 됩니다 (`veh.aero.airspeed`, `yaw_angle`, `side_force`, `yaw_moment`).
+- 난류는 공기에 얼어붙은 소용돌이를 차가 지나가는 것으로 보고 시간 상수를 `length_m / 대기 속도`로 둔 1차 Gauss-Markov입니다(Dryden 스펙트럼의 저차 근사). 시드를 따릅니다.
+- 시나리오에서 `realism.environment: ideal`을 명시하면 바람이 멈춥니다.
+- 예제: `scenarios/crosswind.yaml`(100 km/h 직진 중 옆 돌풍 → 코가 바람 쪽으로 돌아 2.5 m 벗어남), MPC 외란 시험에 5 m/s 바람 + 난류.
 
 ---
 

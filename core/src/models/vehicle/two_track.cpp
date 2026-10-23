@@ -112,6 +112,9 @@ struct TwoTrackModel::Eval {
   std::array<double, kCorners> slip_ratio{}, slip_angle{}, omega{};
   double downforce = 0.0;
   double drag = 0.0;
+  double airspeed = 0.0, aero_yaw = 0.0;      // through the air; flow angle (air from the left +)
+  double aero_fx = 0.0, aero_fy = 0.0, aero_moment = 0.0;  // body frame, about the CG
+  double aero_side = 0.0;                     // the crosswind part of aero_fy
   double ax = 0.0, ay = 0.0;
   double yaw_accel = 0.0;  // [rad/s^2]
   double ffb = 0.0;
@@ -165,6 +168,7 @@ struct TwoTrackModel::Signals {
   std::array<Corner3, kCorners> corner3;
   std::array<Axle, 2> axle;
   SignalId drag, downforce, brake_pressure, brake_balance, ffb;
+  SignalId wind_x, wind_y, airspeed, aero_yaw, aero_side, aero_moment;
   std::vector<Motor> motor;
   SignalId power_mech, power_elec;
   SignalId soc, voltage, current, power, ocv, open_voltage, battery_temp, overloaded;
@@ -208,6 +212,8 @@ TwoTrackModel::Params TwoTrackModel::params_from(const ParamTree& params) {
   p.cda = params.get_double("vehicle.aero.cda_m2", p.cda);
   p.aero_front_ratio = params.get_double("vehicle.aero.front_ratio", p.aero_front_ratio);
   p.air_density = params.get_double("vehicle.aero.air_density_kgm3", p.air_density);
+  p.side_force_area = params.get_double("vehicle.aero.side_force_area_m2_per_rad", p.side_force_area);
+  p.side_force_x = params.get_double("vehicle.aero.side_force_x_m", p.side_force_x);
   p.brake_pressure_max = params.get_double("vehicle.brakes.max_pressure_bar");
   p.brake_gain_front = params.get_double("vehicle.brakes.front_gain_nm_per_bar");
   p.brake_gain_rear = params.get_double("vehicle.brakes.rear_gain_nm_per_bar");
@@ -357,6 +363,12 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   }
   s.drag = bus.declare("veh.aero.drag", "N", "aerodynamic drag");
   s.downforce = bus.declare("veh.aero.downforce", "N", "aerodynamic downforce");
+  s.wind_x = bus.declare("env.wind.x", "m/s", "wind velocity east (air over the ground)");
+  s.wind_y = bus.declare("env.wind.y", "m/s", "wind velocity north (air over the ground)");
+  s.airspeed = bus.declare("veh.aero.airspeed", "m/s", "speed through the air");
+  s.aero_yaw = bus.declare("veh.aero.yaw_angle", "rad", "flow angle, air from the left +");
+  s.aero_side = bus.declare("veh.aero.side_force", "N", "aerodynamic side force (body frame, left +)");
+  s.aero_moment = bus.declare("veh.aero.yaw_moment", "N*m", "aerodynamic yaw moment about the CG");
   s.brake_pressure = bus.declare("veh.brake.pressure", "bar", "brake line pressure");
   s.brake_balance = bus.declare("veh.brake.balance", "-", "front share of the brake torque capacity");
   s.ffb = bus.declare("veh.ffb.torque_sw", "N*m",
@@ -589,6 +601,8 @@ void TwoTrackModel::initial_state(std::span<double> x) const {
 
 void TwoTrackModel::read_inputs(const SignalBus& bus) {
   steer_ = bus.get(sig_->steer);
+  wind_x_ = bus.get(sig_->wind_x);
+  wind_y_ = bus.get(sig_->wind_y);
   brake_ = std::clamp(bus.get(sig_->brake), 0.0, 1.0);
   for (std::size_t m = 0; m < torque_cmd_.size(); ++m) {
     torque_cmd_[m] = bus.get(sig_->motor[m].torque_cmd);
@@ -642,12 +656,26 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
   }
   e.rack = steer_wheel * rack_per_rad_;
 
-  // Aero.
+  // Aero from the velocity through the air (the wind moves the air over the ground): drag along
+  // the flow, downforce, and in a crosswind a side force behind or ahead of the CG.
   const double speed_sq = vx * vx + vy * vy;
   const double speed = std::sqrt(speed_sq);
-  const double dynamic_pressure = 0.5 * p_.air_density * speed_sq;
-  e.downforce = p_.cla * dynamic_pressure;
-  e.drag = p_.cda * dynamic_pressure;
+  {
+    const double cy = std::cos(yaw), sy = std::sin(yaw);
+    const double ua = vx - (cy * wind_x_ + sy * wind_y_);
+    const double va = vy - (-sy * wind_x_ + cy * wind_y_);
+    const double air_sq = ua * ua + va * va;
+    e.airspeed = std::sqrt(air_sq);
+    const double dynamic_pressure = 0.5 * p_.air_density * air_sq;
+    e.downforce = p_.cla * dynamic_pressure;
+    e.drag = p_.cda * dynamic_pressure;
+    const double along = e.airspeed > 0.0 ? e.drag / e.airspeed : 0.0;
+    e.aero_yaw = e.airspeed > 1e-6 ? std::atan2(va, ua) : 0.0;
+    e.aero_side = -dynamic_pressure * p_.side_force_area * std::sin(e.aero_yaw);
+    e.aero_fx = -along * ua;
+    e.aero_fy = -along * va + e.aero_side;
+    e.aero_moment = p_.side_force_x * e.aero_side;
+  }
 
   // Contact patches: position in the body frame (from the CG), velocity, and
   // what each one stands on.
@@ -917,10 +945,9 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
     }
   }
 
-  // Aero drag along the velocity.
-  const double drag_scale = speed > 0.0 ? e.drag / speed : 0.0;
-  fx_body -= drag_scale * vx;
-  fy_body -= drag_scale * vy;
+  fx_body += e.aero_fx;
+  fy_body += e.aero_fy;
+  yaw_moment += e.aero_moment;
 
   if (!full_) {
     e.ax = fx_body / m;
@@ -1068,7 +1095,8 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
   energy[kBrakeLoss] = losses.brake;
   energy[kSlipLoss] = slip_power;
   energy[kRollingLoss] = rolling_power;
-  energy[kDragLoss] = e.drag * speed;
+  // What the air takes from the car (negative when the wind pushes it).
+  energy[kDragLoss] = -(e.aero_fx * vx + e.aero_fy * vy + e.aero_moment * r);
   energy[kDamperLoss] = 0.0;
   energy[kTireDampingLoss] = 0.0;
   if (full_) {
@@ -1189,6 +1217,10 @@ void TwoTrackModel::write_outputs(double /*t*/, std::span<const double> x, Signa
   }
   bus.set(s.drag, e.drag);
   bus.set(s.downforce, e.downforce);
+  bus.set(s.airspeed, e.airspeed);
+  bus.set(s.aero_yaw, e.aero_yaw);
+  bus.set(s.aero_side, e.aero_side);
+  bus.set(s.aero_moment, e.aero_moment);
   bus.set(s.brake_pressure, e.brake_pressure);
   {
     const double gf = p_.brake_gain_front * 0.5 * (e.brake_mu[0] + e.brake_mu[1]);

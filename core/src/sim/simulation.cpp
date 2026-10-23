@@ -17,6 +17,7 @@
 #include "vsim/control/reference_vcu.hpp"
 #include "vsim/driver/drivers.hpp"
 #include "vsim/elec/network.hpp"
+#include "vsim/env/wind.hpp"
 #include "vsim/log/mcap_logger.hpp"
 #include "vsim/models/vehicle/single_track.hpp"
 #include "vsim/models/vehicle/two_track.hpp"
@@ -212,6 +213,9 @@ void Simulation::Impl::build(const Scenario& scenario, const SimulationOptions& 
       }
     }
   };
+  if (WindBlock::configured(effective)) {
+    ordered.push_back(std::make_unique<WindBlock>());
+  }
   if (const ComponentSpec* c = slot("driver")) {
     ordered.push_back(component_block(*c));
   } else {

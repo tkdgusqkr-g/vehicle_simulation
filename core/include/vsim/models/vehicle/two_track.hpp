@@ -93,6 +93,8 @@ class TwoTrackModel final : public PlantModel {
     double cda = 1.3;
     double aero_front_ratio = 0.45;
     double air_density = 1.2;
+    double side_force_area = 1.2;       // [m^2 per rad] side force coefficient x area in yaw (crosswind)
+    double side_force_x = -0.25;        // [m] where the side force acts, ahead of the CG +
     double brake_pressure_max = 60.0;   // [bar]
     double brake_gain_front = 30.0;     // [N m / bar] axle total
     double brake_gain_rear = 18.0;
@@ -216,6 +218,7 @@ class TwoTrackModel final : public PlantModel {
   // Inputs, latched once per step.
   double steer_ = 0.0;
   double brake_ = 0.0;
+  double wind_x_ = 0.0, wind_y_ = 0.0;  // air over the ground, world frame
   std::vector<double> torque_cmd_;
   // Electrical network (design doc §12.3): battery current and inverter DC
   // voltages come from it instead of the direct battery solve.

@@ -12,6 +12,10 @@ overrides:
   realism.comms: real
   realism.electrical: real
   realism.variation: real
+  environment.wind.speed_mps: 5
+  environment.wind.from_deg: 300
+  environment.wind.turbulence.sigma_mps: 1.5
+  environment.wind.turbulence.length_m: 20
 checks:
   - name: 2랩 완주
     expr: "final(track.lap) >= 2"

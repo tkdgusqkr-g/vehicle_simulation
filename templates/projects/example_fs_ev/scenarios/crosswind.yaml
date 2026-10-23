@@ -1,0 +1,27 @@
+# 측풍 돌풍 (PH-15): 100 km/h 직진 중 왼쪽(북쪽)에서 1-cos 돌풍. 핸들은 똑바로 두고 속도만 유지합니다.
+name: crosswind
+project: ..
+seed: 1
+
+time:
+  dt: 0.001
+  mode: fast
+  t_end: 12
+
+initial:
+  speed_mps: 27.8              # 동쪽(+x)으로 출발
+
+environment:
+  wind:
+    speed_mps: 0
+    gusts:
+      - {at_s: 5, duration_s: 2.0, speed_mps: 12, from_deg: 0}   # 북쪽에서: 차의 왼쪽을 침
+    # turbulence: {sigma_mps: 1.5, length_m: 20}
+
+driver:
+  type: maneuver
+  speed_hold_kph: 100
+
+logging:
+  rate_hz: 100
+  signals: ["veh.*", "env.*", "drv.*", "energy.*"]

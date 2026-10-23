@@ -1,0 +1,14 @@
+test: crosswind_gust
+description: PH-15 100 km/h 직진 중 왼쪽에서 12 m/s 1-cos 돌풍(2초). 측력이 차를 밀고, 압력중심이 무게중심 뒤라 코가 바람 쪽으로 돌아 핸들을 고정하면 바람 쪽으로 벗어납니다.
+scenario: ../scenarios/crosswind.yaml
+checks:
+  - name: 측력 200 N 이상 (오른쪽으로)
+    expr: "min(veh.aero.side_force) < -200"
+  - name: 코가 바람 쪽(왼쪽)으로 0.5° 이상 돌아감
+    expr: "final(veh.chassis.yaw) > 0.0087"
+  - name: 핸들 고정 시 횡방향으로 1 m 이상 벗어남
+    expr: "abs(final(veh.chassis.y)) > 1.0"
+  - name: 돌풍 전에는 똑바로
+    expr: "max(abs(window(veh.chassis.y, 0, 5))) < 0.01"
+  - name: 에너지 수지 오차 1 J 미만 (바람이 한 일 포함)
+    expr: "abs(final(energy.residual)) < 1"
