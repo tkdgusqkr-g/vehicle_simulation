@@ -52,7 +52,7 @@ TEST(Battery, OcvInterpolatesAndClamps) {
   EXPECT_DOUBLE_EQ(b.ocv_cell(1.2), b.ocv_voltage.back());
   EXPECT_DOUBLE_EQ(b.ocv_cell(0.5), 3.74);
   EXPECT_NEAR(b.ocv_cell(0.55), 0.5 * (3.74 + 3.82), 1e-12);
-  EXPECT_NEAR(b.pack_resistance(), 144 * 0.012 / 5 + 0.030, 1e-12);
+  EXPECT_NEAR(b.pack_resistance(), 140 * 0.012 / 5 + 0.030, 1e-12);
 }
 
 TEST(Battery, PowerSolveSatisfiesTheCircuit) {

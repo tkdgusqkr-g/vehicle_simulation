@@ -222,12 +222,34 @@ struct StateStream {
       {"finished", "track.finished", {}},
   };
   std::vector<vsim::SignalId> motor_temps;
+  // Per wheel (FL, FR, RL, RR) arrays for the 3D view; empty if the model has none.
+  struct WheelArray {
+    const char* key;
+    const char* field;
+    std::vector<vsim::SignalId> ids;
+  };
+  std::vector<WheelArray> wheel_arrays = {{"wheel_steer", "steer", {}},
+                                          {"wheel_omega", "omega", {}},
+                                          {"wheel_slip_ratio", "slip_ratio", {}},
+                                          {"wheel_slip_angle", "slip_angle", {}},
+                                          {"wheel_load", "fz", {}}};
 
   void resolve(const vsim::SignalBus& bus) {
     for (Field& field : fields) {
       field.id = bus.find(field.signal);
     }
     motor_temps = bus.match("pt.motor.*.temp");
+    for (WheelArray& array : wheel_arrays) {
+      array.ids.clear();
+      for (const char* corner : {"fl", "fr", "rl", "rr"}) {
+        if (const auto id = bus.find(std::string("veh.wheel.") + corner + "." + array.field)) {
+          array.ids.push_back(*id);
+        }
+      }
+      if (array.ids.size() != 4) {
+        array.ids.clear();
+      }
+    }
   }
 
   std::string message(const vsim::Simulation& sim, bool paused, double rtf, const json& extra) const {
@@ -246,6 +268,15 @@ struct StateStream {
         hottest = std::max(hottest, sim.bus().get(id));
       }
       params["motor_temp"] = hottest;
+    }
+    for (const WheelArray& array : wheel_arrays) {
+      if (!array.ids.empty()) {
+        json values = json::array();
+        for (const vsim::SignalId id : array.ids) {
+          values.push_back(sim.bus().get(id));
+        }
+        params[array.key] = values;
+      }
     }
     return json{{"jsonrpc", "2.0"}, {"method", "state"}, {"params", params}}.dump();
   }

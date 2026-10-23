@@ -74,14 +74,15 @@
   <div class="row"><span class="label">카메라</span><span id="camera-name">-</span></div>
   <div class="row"><span class="label">입력</span><span id="input">-</span></div>
   <div class="row"><span class="label">화면</span><span id="fps">-</span></div>
+  <div class="row"><span class="label">화질</span><span id="quality">-</span></div>
   <div class="row"><span class="label">키 → 화면</span><span id="latency">가속 키를 눌러 측정</span></div>
   <div class="row"><span class="label">실시간 배율</span><span id="rtf">-</span></div>
 </div>
 
 <div id="help" class="panel">
   <div><kbd>↑</kbd>/<kbd>W</kbd> 가속 &nbsp; <kbd>↓</kbd>/<kbd>S</kbd> 브레이크 &nbsp; <kbd>←</kbd><kbd>→</kbd>/<kbd>A</kbd><kbd>D</kbd> 조향</div>
-  <div><kbd>C</kbd> 카메라 &nbsp; <kbd>R</kbd> 리셋 &nbsp; <kbd>Space</kbd> 일시정지</div>
-  <div><kbd>H</kbd> HUD 숨김 &nbsp; <kbd>F</kbd> 전체 화면</div>
+  <div><kbd>C</kbd> 카메라 &nbsp; <kbd>O</kbd> 둘러보기 (마우스) &nbsp; <kbd>R</kbd> 리셋 &nbsp; <kbd>Space</kbd> 일시정지</div>
+  <div><kbd>Q</kbd> 화질 &nbsp; <kbd>H</kbd> HUD 숨김 &nbsp; <kbd>F</kbd> 전체 화면</div>
 </div>
 
 <div id="laps" class="panel hidden">
@@ -127,232 +128,315 @@
 <script type="module">
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { Sky } from "three/addons/objects/Sky.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { GTAOPass } from "three/addons/postprocessing/GTAOPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 
 // vsim frame (x east, y north, z up) -> three.js / glTF (y up): (x, z, -y).
-// The track mesh from the simulator is a glTF in this frame already.
+// The track and car models from the simulator are glTF in this frame.
+const toGl = (v) => new THREE.Vector3(v[0], v[2], -v[1]);
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const wsUrl = params.get("ws") || `ws://${location.hostname || "127.0.0.1"}:8765`;
 
-// --- Renderer, scene, light ---------------------------------------------------
+// --- Renderer, sky, light ---------------------------------------------------------
 const canvas = $("view");
-// Logarithmic depth: road paint sits millimetres above the asphalt and must
-// not flicker hundreds of metres away.
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance",
-  logarithmicDepthBuffer: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.0;
+renderer.toneMappingExposure = 0.55;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
-const skyColor = new THREE.Color(0xb4d0ea);
-scene.background = skyColor;
-scene.fog = new THREE.Fog(skyColor, 180, 900);
+const camera = new THREE.PerspectiveCamera(60, 1, 0.3, 4000);
 
-scene.add(new THREE.HemisphereLight(0xe8f2ff, 0x4d5a3c, 1.1));
-const sun = new THREE.DirectionalLight(0xfff4e0, 2.4);
+// Physically based sky; the same sky lights the scene through an
+// environment map (reflections on paint, rims, carbon).
+const sunDirection = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - 38), THREE.MathUtils.degToRad(215));
+const sky = new Sky();
+sky.scale.setScalar(10000);
+sky.material.uniforms.turbidity.value = 5;
+sky.material.uniforms.rayleigh.value = 1.4;
+sky.material.uniforms.mieCoefficient.value = 0.004;
+sky.material.uniforms.mieDirectionalG.value = 0.8;
+sky.material.uniforms.sunPosition.value.copy(sunDirection);
+scene.add(sky);
+{
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const skyScene = new THREE.Scene();
+  const skyCopy = new Sky();
+  skyCopy.scale.setScalar(10000);
+  for (const key of ["turbidity", "rayleigh", "mieCoefficient", "mieDirectionalG"]) {
+    skyCopy.material.uniforms[key].value = sky.material.uniforms[key].value;
+  }
+  skyCopy.material.uniforms.sunPosition.value.copy(sunDirection);
+  skyScene.add(skyCopy);
+  scene.environment = pmrem.fromScene(skyScene, 0, 1, 20000).texture;
+  scene.environmentIntensity = 0.7;
+}
+const horizon = new THREE.Color(0xc4d6e8);
+scene.fog = new THREE.Fog(horizon, 250, 1400);
+
+const sun = new THREE.DirectionalLight(0xfff1dd, 3.2);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = sun.shadow.camera.bottom = -18;
-sun.shadow.camera.right = sun.shadow.camera.top = 18;
+sun.shadow.camera.left = sun.shadow.camera.bottom = -22;
+sun.shadow.camera.right = sun.shadow.camera.top = 22;
 sun.shadow.camera.near = 1;
-sun.shadow.camera.far = 200;
-sun.shadow.bias = -0.0005;
+sun.shadow.camera.far = 260;
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.02;
 scene.add(sun, sun.target);
-const sunOffset = new THREE.Vector3(-40, 90, 30);
+scene.add(new THREE.HemisphereLight(0xdfe9ff, 0x3c4a30, 0.35));
 
-const camera = new THREE.PerspectiveCamera(60, 1, 0.05, 3000);
-
-// Procedural textures: a little grain so speed is visible on plain colours.
-function noiseTexture(size, lo, hi, streaks) {
+// --- Procedural textures ----------------------------------------------------------
+const maxAniso = renderer.capabilities.getMaxAnisotropy();
+function canvasTexture(size, draw, srgb = true) {
   const c = document.createElement("canvas");
   c.width = c.height = size;
-  const g = c.getContext("2d");
-  const img = g.createImageData(size, size);
-  for (let i = 0; i < size * size; i++) {
-    const v = Math.round(255 * (lo + (hi - lo) * Math.random()));
-    img.data.set([v, v, v, 255], i * 4);
-  }
-  g.putImageData(img, 0, 0);
-  if (streaks) {
-    g.globalAlpha = 0.08;
-    for (let i = 0; i < 40; i++) {
-      g.fillStyle = Math.random() < 0.5 ? "#000" : "#fff";
-      g.fillRect(Math.random() * size, 0, 1 + Math.random() * 3, size);
-    }
-  }
+  draw(c.getContext("2d"), size);
   const t = new THREE.CanvasTexture(c);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.colorSpace = THREE.SRGBColorSpace;
-  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+  t.anisotropy = maxAniso;
   return t;
 }
-const asphaltTexture = noiseTexture(256, 0.78, 1.0, true);
-const grassTexture = noiseTexture(256, 0.72, 1.0, false);
+// Smooth value noise, tileable over `period` cells.
+function valueNoise(seed) {
+  const hash = (x, y, p) => {
+    x = ((x % p) + p) % p; y = ((y % p) + p) % p;
+    let h = (x * 374761393 + y * 668265263 + seed * 2147483647) | 0;
+    h = (h ^ (h >>> 13)) * 1274126177;
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+  };
+  return (x, y, p) => {
+    const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+    const s = (t) => t * t * (3 - 2 * t);
+    const a = hash(xi, yi, p), b = hash(xi + 1, yi, p), c = hash(xi, yi + 1, p), d = hash(xi + 1, yi + 1, p);
+    return a + (b - a) * s(xf) + (c - a) * s(yf) + (a - b - c + d) * s(xf) * s(yf);
+  };
+}
+function fbm(noise, x, y, octaves, period) {
+  let v = 0, amp = 0.5, f = 1;
+  for (let o = 0; o < octaves; o++) { v += amp * noise(x * f, y * f, period * f); amp *= 0.5; f *= 2; }
+  return v;
+}
+function heightToNormal(heights, size, strength) {
+  return (g) => {
+    const img = g.createImageData(size, size);
+    const h = (x, y) => heights[((y + size) % size) * size + ((x + size) % size)];
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const dx = (h(x + 1, y) - h(x - 1, y)) * strength, dy = (h(x, y + 1) - h(x, y - 1)) * strength;
+      const n = new THREE.Vector3(-dx, -dy, 1).normalize();
+      img.data.set([(n.x * 0.5 + 0.5) * 255, (n.y * 0.5 + 0.5) * 255, (n.z * 0.5 + 0.5) * 255, 255], (y * size + x) * 4);
+    }
+    g.putImageData(img, 0, 0);
+  };
+}
+function asphaltMaps() {
+  const size = 512, noise = valueNoise(7), heights = new Float32Array(size * size);
+  const colour = canvasTexture(size, (g) => {
+    const img = g.createImageData(size, size);
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const broad = fbm(noise, x / 64, y / 64, 3, 8);
+      const grain = Math.random();
+      const stone = grain > 0.985 ? 0.25 : grain < 0.02 ? -0.2 : 0;
+      const v = 0.78 + 0.16 * broad + 0.10 * (Math.random() - 0.5) + stone;
+      heights[y * size + x] = grain > 0.9 ? 1 : grain * 0.6;
+      const c = Math.max(0, Math.min(255, v * 230));
+      img.data.set([c, c, c * 1.02, 255], (y * size + x) * 4);
+    }
+    g.putImageData(img, 0, 0);
+  });
+  const normal = canvasTexture(size, heightToNormal(heights, size, 1.2), false);
+  return { colour, normal };
+}
+function grassMaps() {
+  const size = 512, noise = valueNoise(11), heights = new Float32Array(size * size);
+  const colour = canvasTexture(size, (g) => {
+    const img = g.createImageData(size, size);
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const patch = fbm(noise, x / 96, y / 96, 4, 512 / 96);
+      const blade = Math.random();
+      const stripe = Math.floor(x / (size / 2)) % 2 ? 0.07 : -0.03;  // mowing stripes, 5 m wide
+      const v = 0.72 + 0.32 * patch + 0.14 * (blade - 0.5) + stripe;
+      heights[y * size + x] = blade;
+      img.data.set([Math.min(255, 175 * v), Math.min(255, 220 * v), Math.min(255, 150 * v), 255], (y * size + x) * 4);
+    }
+    g.putImageData(img, 0, 0);
+  });
+  const normal = canvasTexture(size, heightToNormal(heights, size, 0.7), false);
+  return { colour, normal };
+}
+// 2x2 twill carbon weave.
+const carbonTexture = canvasTexture(256, (g, size) => {
+  const tows = 16, w = size / tows;
+  for (let i = 0; i < tows; i++) for (let j = 0; j < tows; j++) {
+    const over = Math.floor((i + j) / 2) % 2 === 0;
+    const grad = g.createLinearGradient(i * w, j * w, over ? (i + 1) * w : i * w, over ? j * w : (j + 1) * w);
+    grad.addColorStop(0, "#3b3e44"); grad.addColorStop(0.5, "#7a7f88"); grad.addColorStop(1, "#33363b");
+    g.fillStyle = grad;
+    g.fillRect(i * w + 0.5, j * w + 0.5, w - 1, w - 1);
+  }
+});
+carbonTexture.repeat.set(6, 6);
+const bannerTexture = canvasTexture(1024, (g, size) => {
+  g.fillStyle = "#d7263d"; g.fillRect(0, 0, size, size);
+  g.fillStyle = "#ffffff"; g.font = "bold 150px system-ui, sans-serif"; g.textAlign = "center"; g.textBaseline = "middle";
+  g.fillText("VSIM", size / 2, size * 0.38); g.font = "bold 70px system-ui, sans-serif"; g.fillText("FORMULA STUDENT", size / 2, size * 0.66);
+});
+bannerTexture.wrapS = bannerTexture.wrapT = THREE.ClampToEdgeWrapping;
+const asphalt = asphaltMaps();
+const grass = grassMaps();
 
-// Ground to the horizon (the track's own ground covers its surroundings).
-const farGround = new THREE.Mesh(
-  new THREE.PlaneGeometry(6000, 6000).rotateX(-Math.PI / 2),
-  new THREE.MeshStandardMaterial({ color: 0x55703f, roughness: 1, map: grassTexture.clone() }));
-farGround.material.map.repeat.set(600, 600);
-farGround.position.y = -0.25;
+// Material touches keyed by the simulator's material (section) names.
+function refineMaterial(mesh) {
+  const m = mesh.material;
+  const name = m.name || "";
+  const cast = m.userData && m.userData.cast_shadow;
+  mesh.castShadow = cast !== undefined ? cast : !["asphalt", "ground", "edge_lines", "start_line", "sector_lines"].includes(name);
+  mesh.receiveShadow = true;
+  if (name === "asphalt") {
+    m.map = asphalt.colour; m.normalMap = asphalt.normal; m.normalScale.set(0.35, 0.35); m.roughness = 0.88;
+  } else if (name === "ground") {
+    m.map = grass.colour; m.normalMap = grass.normal; m.normalScale.set(0.5, 0.5); m.roughness = 1.0;
+    m.polygonOffset = true; m.polygonOffsetFactor = 2; m.polygonOffsetUnits = 2;
+  } else if (/_line|edge_lines/.test(name)) {
+    m.polygonOffset = true; m.polygonOffsetFactor = -2; m.polygonOffsetUnits = -2;
+  } else if (name === "banner") {
+    m.map = bannerTexture; m.color.setRGB(1, 1, 1);
+  }
+  if (name.startsWith("paint") || name === "carbon" || name === "visor" || name === "helmet") {
+    const physical = new THREE.MeshPhysicalMaterial({
+      name, color: m.color, metalness: m.metalness, roughness: m.roughness,
+      clearcoat: name === "carbon" ? 0.4 : 1.0, clearcoatRoughness: name === "carbon" ? 0.3 : 0.04,
+      map: name === "carbon" ? carbonTexture : null, side: m.side,
+    });
+    if (name === "carbon") { physical.color.setRGB(0.16, 0.165, 0.18); physical.metalness = 0.05; physical.roughness = 0.4; }
+    mesh.material = physical;
+  }
+  mesh.material.needsUpdate = true;
+}
+
+// Ground to the horizon under the track's own ground.
+const farGround = new THREE.Mesh(new THREE.PlaneGeometry(8000, 8000).rotateX(-Math.PI / 2),
+  new THREE.MeshStandardMaterial({ color: 0x6a8a52, roughness: 1, map: grass.colour.clone(), normalMap: grass.normal.clone() }));
+farGround.material.map.repeat.set(800, 800);
+farGround.material.normalMap.repeat.set(800, 800);
+farGround.position.y = -0.3;
 farGround.receiveShadow = true;
 scene.add(farGround);
-const grid = new THREE.GridHelper(400, 80, 0x8aa070, 0x7a9062);
-grid.position.y = -0.04;
-scene.add(grid);
 
-// --- Car ------------------------------------------------------------------------
-let vehicle = { wheelbase: 1.53, cg_to_front: 0.8, track_front: 1.22, track_rear: 1.18, tire_radius: 0.203,
-  tire_width: 0.19, cg_height: 0.28, steering_ratio: 4.5 };
-
-const mat = {
-  body: new THREE.MeshStandardMaterial({ color: 0xd7263d, roughness: 0.35, metalness: 0.1 }),
-  carbon: new THREE.MeshStandardMaterial({ color: 0x1b1e23, roughness: 0.5, metalness: 0.2 }),
-  white: new THREE.MeshStandardMaterial({ color: 0xf2f4f7, roughness: 0.4 }),
-  tire: new THREE.MeshStandardMaterial({ color: 0x111214, roughness: 0.92 }),
-  rim: new THREE.MeshStandardMaterial({ color: 0xb8bec7, roughness: 0.3, metalness: 0.8 }),
-  helmet: new THREE.MeshStandardMaterial({ color: 0xffd23f, roughness: 0.3 }),
-  metal: new THREE.MeshStandardMaterial({ color: 0x8a919b, roughness: 0.4, metalness: 0.7 }),
+// --- Post-processing and quality -------------------------------------------------------
+const presets = {
+  high: { pixelRatio: 2, shadow: 4096, ao: true, bloom: true, samples: 4 },
+  medium: { pixelRatio: 1.5, shadow: 2048, ao: false, bloom: true, samples: 4 },
+  low: { pixelRatio: 1, shadow: 1024, ao: false, bloom: false, samples: 0 },
 };
-
-function box(sx, sy, sz, material, x, y, z) {
-  const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), material);
-  m.position.set(x, y, z);
-  m.castShadow = true;
-  return m;
-}
-
-// Box whose front end (+x) is scaled down: a simple nose cone.
-function taperedBox(sx, sy, sz, frontScaleY, frontScaleZ, dropY, material) {
-  const g = new THREE.BoxGeometry(sx, sy, sz, 1, 1, 1);
-  const p = g.attributes.position;
-  for (let i = 0; i < p.count; i++) {
-    if (p.getX(i) > 0) {
-      p.setY(i, p.getY(i) * frontScaleY - dropY);
-      p.setZ(i, p.getZ(i) * frontScaleZ);
+let quality = params.get("quality") || "high";
+let adaptive = !params.get("quality");
+let composer = null, aoPass = null;
+function applyQuality() {
+  const p = presets[quality];
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, p.pixelRatio));
+  sun.shadow.mapSize.set(p.shadow, p.shadow);
+  if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+  composer = null; aoPass = null;
+  if (p.ao || p.bloom) {
+    const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+    const target = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: p.samples });
+    composer = new EffectComposer(renderer, target);
+    composer.addPass(new RenderPass(scene, camera));
+    if (p.ao) {
+      aoPass = new GTAOPass(scene, camera, size.x, size.y);
+      aoPass.blendIntensity = 0.8;
+      aoPass.updateGtaoMaterial({ radius: 0.6, distanceExponent: 1.5, thickness: 1.5, scale: 1.0 });
+      composer.addPass(aoPass);
     }
+    if (p.bloom) composer.addPass(new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.12, 0.4, 0.92));
+    composer.addPass(new OutputPass());
   }
-  g.computeVertexNormals();
-  const m = new THREE.Mesh(g, material);
-  m.castShadow = true;
-  return m;
+  $("quality").textContent = { high: "높음", medium: "중간", low: "낮음" }[quality] + (adaptive ? " (자동)" : "");
+  resize();
 }
 
-function cylinder(r, length, material, segments = 12) {
-  const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, length, segments), material);
-  m.castShadow = true;
-  return m;
-}
-
-// Thin rod between two points (suspension links).
-function rod(a, b, r, material) {
-  const d = new THREE.Vector3().subVectors(b, a);
-  const m = cylinder(r, d.length(), material, 6);
-  m.position.copy(a).addScaledVector(d, 0.5);
-  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize());
-  return m;
-}
-
+// --- Car ----------------------------------------------------------------------------
+// Parts animated as the simulator describes them (role, corner, pivot, axis,
+// outer in the car frame; see vsim_link.h). The model arrives as glTF.
 const car = {
-  root: new THREE.Group(),   // position and yaw
-  body: new THREE.Group(),   // pitch and roll about the CG
-  wheels: [],                // {steer, spin}
-  helmet: null, steeringWheel: null, eye: new THREE.Object3D(), nose: new THREE.Object3D(),
+  root: new THREE.Group(),    // position and yaw
+  body: new THREE.Group(),    // pitch and roll about the CG
+  corners: [],                // {steer, spin, hub}
+  links: [],                  // {mesh, inboard, outer, corner, steers}
+  steering: [],               // {pivot, axis}
+  cgHeight: 0.28, generation: -1, eye: new THREE.Vector3(), nose: new THREE.Vector3(),
 };
 scene.add(car.root);
+car.root.add(car.body);
 
-function buildCar(v) {
-  car.root.clear();
-  car.body = new THREE.Group();
-  car.wheels = [];
-  const a = v.cg_to_front, b = v.wheelbase - v.cg_to_front, r = v.tire_radius, w = v.tire_width;
-  const h = v.cg_height;
-  car.body.position.y = h;
-  const shell = new THREE.Group();  // body parts in car coordinates (y from the ground)
-  shell.position.y = -h;
-  car.body.add(shell);
-  car.root.add(car.body);
-
-  const tubLength = a + b * 0.55;
-  shell.add(box(tubLength, 0.30, 0.56, mat.body, a - tubLength / 2 - 0.05, 0.27, 0));
-  const nose = taperedBox(0.75, 0.26, 0.50, 0.45, 0.35, 0.03, mat.body);
-  nose.position.set(a + 0.32, 0.26, 0);
-  shell.add(nose);
-  shell.add(box(0.75, 0.24, 0.26, mat.body, -b * 0.15, 0.22, 0.40));   // sidepods
-  shell.add(box(0.75, 0.24, 0.26, mat.body, -b * 0.15, 0.22, -0.40));
-  shell.add(box(0.80, 0.04, 0.57, mat.white, a - 0.55, 0.43, 0));       // stripe
-  shell.add(box(0.55, 0.08, 0.42, mat.carbon, -0.05, 0.44, 0));         // cockpit opening
-  shell.add(box(b * 0.75, 0.38, 0.50, mat.carbon, -b * 0.55, 0.32, 0)); // motor / battery bay
-  // Roll hoop behind the driver.
-  shell.add(box(0.05, 0.55, 0.05, mat.metal, -0.36, 0.62, 0.20));
-  shell.add(box(0.05, 0.55, 0.05, mat.metal, -0.36, 0.62, -0.20));
-  shell.add(box(0.05, 0.05, 0.45, mat.metal, -0.36, 0.89, 0));
-  car.helmet = new THREE.Mesh(new THREE.SphereGeometry(0.13, 20, 14), mat.helmet);
-  car.helmet.position.set(-0.18, 0.74, 0);
-  car.helmet.castShadow = true;
-  shell.add(car.helmet);
-  // Front wing with endplates, rear wing on two pylons.
-  const frontSpan = v.track_front + 0.15;
-  shell.add(box(0.30, 0.025, frontSpan, mat.carbon, a + 0.62, 0.07, 0));
-  shell.add(box(0.22, 0.02, frontSpan - 0.1, mat.carbon, a + 0.58, 0.13, 0));
-  shell.add(box(0.36, 0.14, 0.015, mat.carbon, a + 0.62, 0.11, frontSpan / 2));
-  shell.add(box(0.36, 0.14, 0.015, mat.carbon, a + 0.62, 0.11, -frontSpan / 2));
-  const rearSpan = Math.min(v.track_rear, 1.1);
-  shell.add(box(0.32, 0.025, rearSpan, mat.carbon, -b - 0.32, 1.02, 0));
-  shell.add(box(0.22, 0.02, rearSpan, mat.carbon, -b - 0.40, 1.12, 0));
-  shell.add(box(0.45, 0.32, 0.015, mat.carbon, -b - 0.34, 1.02, rearSpan / 2));
-  shell.add(box(0.45, 0.32, 0.015, mat.carbon, -b - 0.34, 1.02, -rearSpan / 2));
-  shell.add(box(0.05, 0.62, 0.03, mat.carbon, -b - 0.25, 0.70, 0.15));
-  shell.add(box(0.05, 0.62, 0.03, mat.carbon, -b - 0.25, 0.70, -0.15));
-  // Steering wheel facing the driver.
-  car.steeringWheel = new THREE.Group();
-  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.014, 8, 24), mat.carbon);
-  rim.rotation.y = Math.PI / 2;
-  car.steeringWheel.add(rim, box(0.01, 0.025, 0.2, mat.carbon, 0, 0, 0), box(0.01, 0.12, 0.025, mat.carbon, 0, -0.06, 0));
-  const column = new THREE.Group();  // the wheel turns about the column's axis (local x)
-  column.position.set(0.18, 0.55, 0);
-  column.rotation.z = -0.2;
-  column.add(car.steeringWheel);
-  shell.add(column);
-  // Camera mounts.
-  car.eye.position.set(-0.12, 0.86, 0);
-  car.nose.position.set(a + 0.15, 0.48, 0);
-  shell.add(car.eye, car.nose);
-
-  // Wheels hang from the root (no body roll) at x forward, z = -y (left = -z).
-  const corners = [[a, -v.track_front / 2], [a, v.track_front / 2], [-b, -v.track_rear / 2], [-b, v.track_rear / 2]];
-  for (const [x, z] of corners) {
-    const steer = new THREE.Group();
-    steer.position.set(x, r, z);
-    const spin = new THREE.Group();
-    const tire = cylinder(r, w, mat.tire, 28);
-    tire.rotation.x = Math.PI / 2;
-    const hub = cylinder(r * 0.62, w + 0.012, mat.rim, 18);
-    hub.rotation.x = Math.PI / 2;
-    const marker = box(r * 1.15, 0.035, w + 0.02, mat.white, 0, 0, 0);  // shows the rotation
-    spin.add(tire, hub, marker);
-    steer.add(spin);
-    car.root.add(steer);
-    car.wheels.push({ steer, spin, angle: 0 });
-    // Wishbones from the tub to the upright.
-    const inner = Math.sign(z) * 0.25;
-    for (const dy of [-0.06, 0.07]) {
-      car.root.add(rod(new THREE.Vector3(x + 0.12, r + dy, inner), new THREE.Vector3(x, r + dy, z - Math.sign(z) * w / 2), 0.012, mat.metal));
-      car.root.add(rod(new THREE.Vector3(x - 0.12, r + dy, inner), new THREE.Vector3(x, r + dy, z - Math.sign(z) * w / 2), 0.012, mat.metal));
+function setCarModel(params) {
+  car.generation = params.generation;
+  if (!params.glb) return;
+  loader.parse(base64ToBuffer(params.glb), "", (gltf) => {
+    car.body.clear();
+    for (const c of car.corners) car.root.remove(c.steer);
+    for (const l of car.links) car.root.remove(l.mesh);
+    car.corners = []; car.links = []; car.steering = [];
+    const nodes = [...gltf.scene.children];
+    car.cgHeight = nodes[0]?.userData?.cg_height ?? 0.28;
+    car.body.position.set(0, car.cgHeight, 0);
+    const bodyShell = new THREE.Group();
+    bodyShell.position.set(0, -car.cgHeight, 0);
+    car.body.add(bodyShell);
+    for (const node of nodes) {
+      const x = node.userData || {};
+      node.traverse((o) => { if (o.isMesh) refineMaterial(o); });
+      if (x.role === "wheel" || x.role === "upright") {
+        const corner = car.corners[x.corner] || (car.corners[x.corner] = makeCorner(toGl(x.pivot)));
+        node.position.set(0, 0, 0);
+        (x.role === "wheel" ? corner.spin : corner.steer).add(node);
+      } else if (x.role === "steering_wheel") {
+        const pivot = new THREE.Group();
+        pivot.position.copy(toGl(x.pivot)).sub(new THREE.Vector3(0, car.cgHeight, 0));
+        node.position.set(0, 0, 0);
+        pivot.add(node);
+        car.body.add(pivot);
+        car.steering.push({ pivot, axis: toGl(x.axis).normalize() });
+      } else if (x.role === "link") {
+        node.position.set(0, 0, 0);
+        const holder = new THREE.Group();
+        holder.add(node);
+        car.root.add(holder);
+        car.links.push({ mesh: holder, inboard: toGl(x.pivot), outer: toGl(x.outer), corner: x.corner, steers: !!x.steers });
+      } else {
+        bodyShell.add(node);
+      }
     }
-  }
+    // Eye and nose from the body's extent: the helmet sits ~0.97 m behind the front axle.
+    const box = new THREE.Box3().setFromObject(bodyShell);
+    car.nose.set(box.max.x - 0.5, 0.5, 0);
+    car.eye.set(car.frontAxle !== undefined ? car.frontAxle - 0.93 : box.max.x - 1.8, 1.0, 0);
+    chaseInit = false;
+  }, (error) => toast(`차량 3D 모델을 읽지 못했습니다: ${error.message || error}`, "error"));
 }
-buildCar(vehicle);
 
-// --- Track ------------------------------------------------------------------------
+function makeCorner(hub) {
+  const steer = new THREE.Group(), spin = new THREE.Group();
+  steer.position.copy(hub);
+  steer.add(spin);
+  car.root.add(steer);
+  return { steer, spin, hub, angle: 0 };
+}
+
+// --- Track -------------------------------------------------------------------------
 let trackGroup = null;
 let trackGeneration = -1;
-let trackOutline = null;  // from hello: center/left/right [x, y] in vsim frame
+let trackOutline = null;
 let tvCameras = [];
 const loader = new GLTFLoader();
 
@@ -370,19 +454,11 @@ function setTrackMesh(params) {
     trackGroup = null;
   }
   trackGeneration = params.generation;
-  grid.visible = !params.glb;
+  skids.clear();
   if (!params.glb) return;
   loader.parse(base64ToBuffer(params.glb), "", (gltf) => {
     trackGroup = gltf.scene;
-    trackGroup.traverse((o) => {
-      if (!o.isMesh) return;
-      o.receiveShadow = true;
-      const name = o.material.name || "";
-      o.castShadow = name.startsWith("cones");
-      if (name === "asphalt") { o.material.map = asphaltTexture; o.material.roughness = 0.95; }
-      if (name === "ground") { o.material.map = grassTexture; o.material.roughness = 1.0; }
-      o.material.needsUpdate = true;
-    });
+    trackGroup.traverse((o) => { if (o.isMesh) refineMaterial(o); });
     scene.add(trackGroup);
   }, (error) => toast(`트랙 3D 모델을 읽지 못했습니다: ${error.message || error}`, "error"));
 }
@@ -391,25 +467,64 @@ function setTrackMesh(params) {
 function placeTvCameras(outline) {
   tvCameras = [];
   if (!outline || outline.right.length < 2) return;
-  const n = outline.center.length;
   let travelled = 0;
-  for (let i = 1; i < n; i++) {
+  for (let i = 1; i < outline.center.length; i++) {
     const [x0, y0] = outline.center[i - 1], [x1, y1] = outline.center[i];
     travelled += Math.hypot(x1 - x0, y1 - y0);
     if (travelled < 45) continue;
     travelled = 0;
     const [cx, cy] = outline.center[i], [rx, ry] = outline.right[i];
     const len = Math.hypot(rx - cx, ry - cy) || 1;
-    const out = 7;
-    tvCameras.push(new THREE.Vector3(rx + (rx - cx) / len * out, 3.5, -(ry + (ry - cy) / len * out)));
+    tvCameras.push(new THREE.Vector3(rx + (rx - cx) / len * 7, 3.5, -(ry + (ry - cy) / len * 7)));
   }
 }
+
+// --- Skid marks ----------------------------------------------------------------------
+// Dark quads laid behind sliding tyres, kept in a ring buffer.
+const skids = (() => {
+  const max = 6000;
+  const positions = new Float32Array(max * 4 * 3), colours = new Float32Array(max * 4 * 4);
+  const indices = new Uint32Array(max * 6);
+  for (let q = 0; q < max; q++) indices.set([q * 4, q * 4 + 2, q * 4 + 1, q * 4 + 1, q * 4 + 2, q * 4 + 3], q * 6);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage));
+  geometry.setAttribute("color", new THREE.BufferAttribute(colours, 4).setUsage(THREE.DynamicDrawUsage));
+  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  const material = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = 1;
+  scene.add(mesh);
+  let next = 0, used = 0;
+  const last = [null, null, null, null];
+  return {
+    clear() { colours.fill(0); geometry.attributes.color.needsUpdate = true; last.fill(null); used = 0; next = 0; geometry.setDrawRange(0, 0); },
+    add(corner, point, side, width, strength) {
+      const prev = last[corner];
+      last[corner] = strength > 0 ? { point: point.clone(), side: side.clone() } : null;
+      if (!prev || strength <= 0 || prev.point.distanceTo(point) > 3) return;
+      const q = next;
+      const h = width / 2;
+      const pts = [prev.point.clone().addScaledVector(prev.side, -h), prev.point.clone().addScaledVector(prev.side, h),
+        point.clone().addScaledVector(side, -h), point.clone().addScaledVector(side, h)];
+      pts.forEach((p, k) => {
+        positions.set([p.x, 0.012, p.z], (q * 4 + k) * 3);
+        colours.set([0.03, 0.03, 0.03, Math.min(0.55, strength)], (q * 4 + k) * 4);
+      });
+      next = (next + 1) % max;
+      used = Math.min(max, used + 1);
+      geometry.setDrawRange(0, used * 6);
+      geometry.attributes.position.needsUpdate = true;
+      geometry.attributes.color.needsUpdate = true;
+    },
+  };
+})();
 
 // --- Minimap ------------------------------------------------------------------------
 const mapCanvas = $("map-canvas");
 const mapCtx = mapCanvas.getContext("2d");
 let mapTransform = null;
-
 function prepareMap(outline) {
   $("map").classList.toggle("hidden", !outline);
   if (!outline) return;
@@ -422,7 +537,6 @@ function prepareMap(outline) {
   const ox = pad + (size - 2 * pad - (maxX - minX) * scale) / 2, oy = pad + (size - 2 * pad - (maxY - minY) * scale) / 2;
   mapTransform = (x, y) => [ox + (x - minX) * scale, size - (oy + (y - minY) * scale)];
 }
-
 function drawMap(s) {
   if (!trackOutline || !mapTransform) return;
   const g = mapCtx;
@@ -439,22 +553,16 @@ function drawMap(s) {
     g.fillStyle = "#ffffff";
     g.fillRect(px - 4, py - 4, 8, 8);
   }
-  if (s) {
-    const [px, py] = mapTransform(s.x, s.y);
-    g.fillStyle = "#d7263d";
-    g.strokeStyle = "#ffffff";
-    g.lineWidth = 2;
-    g.beginPath();
-    g.arc(px, py, 7, 0, 2 * Math.PI);
-    g.fill();
-    g.stroke();
-  }
+  const [px, py] = mapTransform(s.x, s.y);
+  g.fillStyle = "#d7263d"; g.strokeStyle = "#ffffff"; g.lineWidth = 2;
+  g.beginPath(); g.arc(px, py, 7, 0, 2 * Math.PI); g.fill(); g.stroke();
 }
 
-// --- Simulator connection -------------------------------------------------------
+// --- Simulator connection --------------------------------------------------------------
 let socket = null;
 let state = null;
-let stateTime = 0;  // performance.now() when `state` arrived
+let stateTime = 0;
+let vehicle = { cg_to_front: 0.8, tire_radius: 0.203 };
 
 function connect() {
   socket = new WebSocket(wsUrl);
@@ -467,27 +575,25 @@ function connect() {
     if (message.method === "hello") onHello(p);
     else if (message.method === "state") onState(p);
     else if (message.method === "track.mesh") setTrackMesh(p);
+    else if (message.method === "vehicle.model") setCarModel(p);
     else if (message.method === "notice") toast(p.text, p.level);
   };
 }
-
-function send(method, params = {}) {
-  if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ jsonrpc: "2.0", method, params }));
+function send(method, p = {}) {
+  if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ jsonrpc: "2.0", method, params: p }));
 }
-
+let helpDue = false;
 function setConnected(on) {
   $("conn-dot").classList.toggle("on", on);
   $("conn").textContent = on ? "연결됨" : "연결 끊김, 재시도 중";
   $("connect-url").textContent = wsUrl;
   $("connect-help").classList.toggle("hidden", on || !helpDue);
 }
-// Explain how to start the simulator if it is not there after a moment.
-let helpDue = false;
 setTimeout(() => { helpDue = true; if (!socket || socket.readyState !== WebSocket.OPEN) setConnected(false); }, 2500);
 
 function onHello(p) {
   vehicle = Object.assign({}, vehicle, p.vehicle);
-  buildCar(vehicle);
+  car.frontAxle = vehicle.cg_to_front;
   $("scenario").textContent = p.scenario;
   trackOutline = p.track || null;
   $("track-name").textContent = trackOutline ? `${trackOutline.name} (${trackOutline.length.toFixed(0)} m)` : "없음";
@@ -497,6 +603,7 @@ function onHello(p) {
   const generation = p.track_generation ?? 0;
   if (!trackOutline) setTrackMesh({ generation, glb: null });
   else if (generation !== trackGeneration) send("track.mesh");
+  if ((p.car_generation ?? 0) !== car.generation) send("vehicle.model");
   state = null;
 }
 
@@ -509,6 +616,7 @@ const fmtTime = (t) => {
 function onState(s) {
   const now = performance.now();
   if (pendingLatency !== null && s.throttle > 0.01 && !latencyArrived) latencyArrived = now;
+  if (state && Math.hypot(s.x - state.x, s.y - state.y) > 20) skids.clear();  // reset jumped
   state = s;
   stateTime = now;
   $("speed").firstChild.nodeValue = Math.round(s.speed * 3.6);
@@ -540,14 +648,13 @@ function onState(s) {
   $("overlay").textContent = s.paused ? "일시정지" : "";
 }
 
-// --- Keyboard -------------------------------------------------------------------
+// --- Keyboard ------------------------------------------------------------------------
 const keys = { throttle: false, brake: false, left: false, right: false };
 const keyMap = { ArrowUp: "throttle", KeyW: "throttle", ArrowDown: "brake", KeyS: "brake",
   ArrowLeft: "left", KeyA: "left", ArrowRight: "right", KeyD: "right" };
 const sendKeys = () => send("input.keys", keys);
-
-// Key -> screen latency: throttle key press until the first frame drawn from
-// a state with the throttle applied (simulator, network and rendering).
+// Key -> screen latency: throttle press until the first frame drawn from a
+// state with the throttle applied (simulator, network and rendering).
 let pendingLatency = null, latencyArrived = null;
 const latencies = [];
 
@@ -566,6 +673,8 @@ window.addEventListener("keydown", (event) => {
   if (event.code === "Space" || event.code === "KeyP") { event.preventDefault(); send("sim.toggle_pause"); }
   else if (event.code === "KeyR") send("sim.reset");
   else if (event.code === "KeyC") cycleCamera();
+  else if (event.code === "KeyO") setCamera(cameraMode === "orbit" ? "chase" : "orbit");
+  else if (event.code === "KeyQ") { adaptive = false; quality = { high: "medium", medium: "low", low: "high" }[quality]; applyQuality(); }
   else if (event.code === "KeyH") document.querySelectorAll(".panel:not(#toast):not(#connect-help)").forEach((p) => p.style.visibility = p.style.visibility === "hidden" ? "" : "hidden");
   else if (event.code === "KeyF") { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); }
 });
@@ -578,42 +687,62 @@ setInterval(sendKeys, 100);
 
 // --- Cameras -------------------------------------------------------------------------
 const cameraModes = ["chase", "cockpit", "nose", "tv", "top"];
-const cameraNames = { chase: "추적", cockpit: "콕핏", nose: "노즈", tv: "TV", top: "위" };
+const cameraNames = { chase: "추적", cockpit: "콕핏", nose: "노즈", tv: "TV", top: "위", orbit: "둘러보기" };
 let cameraMode = params.get("camera") || "chase";
-function cycleCamera() {
-  cameraMode = cameraModes[(cameraModes.indexOf(cameraMode) + 1) % cameraModes.length];
-  if (cameraMode === "tv" && !tvCameras.length) cycleCamera();
+const orbit = new OrbitControls(camera, canvas);
+orbit.enabled = false;
+orbit.enableDamping = true;
+orbit.maxPolarAngle = Math.PI * 0.49;
+function setCamera(mode) {
+  cameraMode = mode;
+  orbit.enabled = mode === "orbit";
+  if (orbit.enabled) {
+    orbit.target.copy(car.root.position).add(new THREE.Vector3(0, 0.5, 0));
+    camera.position.copy(car.root.position).add(new THREE.Vector3(-3.5, 1.8, 3.0));
+  }
   chaseInit = false;
 }
-let chaseInit = false;
-let chaseYaw = 0;
+function cycleCamera() {
+  let i = cameraModes.indexOf(cameraMode);
+  do { i = (i + 1) % cameraModes.length; } while (cameraModes[i] === "tv" && !tvCameras.length);
+  setCamera(cameraModes[i]);
+}
+let chaseInit = false, chaseYaw = 0;
+const lastCarPos = new THREE.Vector3();
 
 function updateCamera(dt) {
   const forward = new THREE.Vector3(1, 0, 0).applyQuaternion(car.root.quaternion);
   const carPos = car.root.position;
-  car.helmet.visible = cameraMode !== "cockpit";
-  let fov = 60;
-  if (cameraMode === "chase") {
-    // Swings round behind the car with a lag in heading only, so the
-    // distance stays the same and the camera never cuts a corner.
+  let fov = 60, near = 0.3;
+  if (cameraMode === "orbit") {
+    // Follow the car with the orbit target.
+    const moved = carPos.clone().sub(lastCarPos);
+    camera.position.add(moved);
+    orbit.target.add(moved);
+    orbit.update();
+    fov = 50;
+  } else if (cameraMode === "chase") {
+    // Swings round behind the car with a lag in heading only.
     const speed = state ? state.speed : 0;
     const yaw = car.root.rotation.y;
     const turn = Math.atan2(Math.sin(yaw - chaseYaw), Math.cos(yaw - chaseYaw));
     chaseYaw = chaseInit ? chaseYaw + turn * (1 - Math.exp(-dt * 5)) : yaw;
     chaseInit = true;
     const back = new THREE.Vector3(Math.cos(chaseYaw), 0, -Math.sin(chaseYaw));
-    const distance = 5.0 + Math.min(speed, 40) * 0.03;
-    camera.position.copy(carPos).addScaledVector(back, -distance).add(new THREE.Vector3(0, 1.7, 0));
-    camera.lookAt(carPos.clone().addScaledVector(forward, 2.0).add(new THREE.Vector3(0, 0.5, 0)));
-    fov = 62 + Math.min(speed, 40) * 0.15;
+    const distance = 4.6 + Math.min(speed, 40) * 0.03;
+    camera.position.copy(carPos).addScaledVector(back, -distance).add(new THREE.Vector3(0, 1.55, 0));
+    camera.lookAt(carPos.clone().addScaledVector(forward, 2.0).add(new THREE.Vector3(0, 0.55, 0)));
+    fov = 60 + Math.min(speed, 40) * 0.18;
   } else if (cameraMode === "cockpit" || cameraMode === "nose") {
     const mount = cameraMode === "cockpit" ? car.eye : car.nose;
-    mount.getWorldPosition(camera.position);
+    camera.position.copy(mount).sub(new THREE.Vector3(0, car.cgHeight, 0));
+    car.body.localToWorld(camera.position);
     const q = new THREE.Quaternion();
-    mount.getWorldQuaternion(q);
+    car.body.getWorldQuaternion(q);
     camera.quaternion.copy(q).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, -Math.PI / 2, 0)));
-    camera.rotateX(cameraMode === "cockpit" ? -0.08 : -0.03);
-    fov = cameraMode === "cockpit" ? 75 : 70;
+    camera.rotateX(cameraMode === "cockpit" ? -0.13 : -0.04);
+    fov = cameraMode === "cockpit" ? 78 : 72;
+    near = 0.05;
   } else if (cameraMode === "tv") {
     let best = tvCameras[0], bestD = Infinity;
     for (const c of tvCameras) { const d = c.distanceToSquared(carPos); if (d < bestD) { bestD = d; best = c; } }
@@ -625,56 +754,88 @@ function updateCamera(dt) {
     camera.lookAt(carPos);
     fov = 50;
   }
-  if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+  lastCarPos.copy(carPos);
+  if (Math.abs(camera.fov - fov) > 0.01 || camera.near !== near) { camera.fov = fov; camera.near = near; camera.updateProjectionMatrix(); }
   $("camera-name").textContent = cameraNames[cameraMode];
 }
 
-// --- Frame loop --------------------------------------------------------------------
+// --- Frame loop ---------------------------------------------------------------------
 let roll = 0, pitch = 0;
 let lastFrame = performance.now();
-let fpsFrames = 0, fpsStart = lastFrame;
+let fpsFrames = 0, fpsStart = lastFrame, slowSince = null;
 
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
+  if (composer) {
+    composer.setPixelRatio(renderer.getPixelRatio());
+    composer.setSize(w, h);
+  }
 }
 window.addEventListener("resize", resize);
-resize();
+
+const tmp = { v: new THREE.Vector3(), q: new THREE.Quaternion(), up: new THREE.Vector3(0, 1, 0), x: new THREE.Vector3(1, 0, 0) };
+function updateCar(dt, now) {
+  // States come at 60 Hz; dead-reckon to this frame (at most 50 ms).
+  const ahead = state.paused ? 0 : Math.min((now - stateTime) / 1000, 0.05);
+  const yaw = state.yaw + (state.yaw_rate || 0) * ahead;
+  const vx = state.vx ?? state.speed, vy = state.vy ?? 0;
+  const x = state.x + (vx * Math.cos(state.yaw) - vy * Math.sin(state.yaw)) * ahead;
+  const y = state.y + (vx * Math.sin(state.yaw) + vy * Math.cos(state.yaw)) * ahead;
+  car.root.position.set(x, 0, -y);
+  car.root.rotation.y = yaw;
+  // Body motion from the accelerations: ~1 deg roll and 0.6 deg pitch per g.
+  const blend = 1 - Math.exp(-dt / 0.08);
+  roll += blend * ((1.0 * Math.PI / 180) * (state.ay || 0) / 9.81 - roll);
+  pitch += blend * ((-0.6 * Math.PI / 180) * (state.ax || 0) / 9.81 - pitch);
+  car.body.rotation.set(roll, 0, -pitch, "YZX");
+  const steer = state.wheel_steer || [state.delta || 0, state.delta || 0, 0, 0];
+  const omega = state.wheel_omega || [0, 1, 2, 3].map(() => vx / (vehicle.tire_radius || 0.2));
+  car.corners.forEach((c, i) => {
+    if (!c) return;
+    c.steer.rotation.y = steer[i];
+    if (!state.paused) c.angle = (c.angle - omega[i] * dt) % (2 * Math.PI);
+    c.spin.rotation.z = c.angle;  // rolling forward: about -z in glTF
+  });
+  for (const s of car.steering) s.pivot.quaternion.setFromAxisAngle(s.axis, state.steer || 0);
+  // Links between the body (pitched and rolled) and the hubs.
+  car.body.updateMatrix();
+  for (const l of car.links) {
+    const c = car.corners[l.corner];
+    if (!c) continue;
+    const inboard = l.inboard.clone().sub(new THREE.Vector3(0, car.cgHeight, 0)).applyMatrix4(car.body.matrix);
+    const outer = l.steers ? l.outer.clone().applyAxisAngle(tmp.up, steer[l.corner]) : l.outer;
+    const span = c.steer.position.clone().add(outer).sub(inboard);
+    const length = span.length();
+    l.mesh.position.copy(inboard);
+    l.mesh.quaternion.setFromUnitVectors(tmp.x, span.divideScalar(length || 1));
+    l.mesh.scale.set(length, 1, 1);
+  }
+  // Skid marks under tyres that slide.
+  if (!state.paused && state.wheel_slip_ratio) {
+    car.root.updateMatrixWorld();
+    car.corners.forEach((c, i) => {
+      if (!c) return;
+      const sliding = Math.max(Math.abs(state.wheel_slip_ratio[i]) - 0.12, Math.abs(state.wheel_slip_angle[i]) - 0.12);
+      const strength = state.speed > 2 ? Math.min(1, sliding * 4) : 0;
+      const p = c.steer.getWorldPosition(new THREE.Vector3());
+      const side = new THREE.Vector3(0, 0, 1).applyQuaternion(car.root.quaternion);
+      skids.add(i, p, side, 0.17, strength);
+    });
+  }
+  drawMap({ x, y });
+}
 
 function frame(now) {
   const dt = Math.min(0.1, (now - lastFrame) / 1000);
   lastFrame = now;
-  if (state) {
-    // States come at 60 Hz; dead-reckon to this frame (at most 50 ms) so
-    // high-refresh displays move smoothly.
-    const ahead = state.paused ? 0 : Math.min((now - stateTime) / 1000, 0.05);
-    const yaw = state.yaw + (state.yaw_rate || 0) * ahead;
-    const vx = state.vx ?? state.speed, vy = state.vy ?? 0;
-    const x = state.x + (vx * Math.cos(state.yaw) - vy * Math.sin(state.yaw)) * ahead;
-    const y = state.y + (vx * Math.sin(state.yaw) + vy * Math.cos(state.yaw)) * ahead;
-    car.root.position.set(x, 0, -y);
-    car.root.rotation.y = yaw;
-    // Body motion for the picture: ~1 deg roll and 0.6 deg pitch per g.
-    const blend = 1 - Math.exp(-dt / 0.08);
-    roll += blend * ((1.0 * Math.PI / 180) * (state.ay || 0) / 9.81 - roll);
-    pitch += blend * ((-0.6 * Math.PI / 180) * (state.ax || 0) / 9.81 - pitch);
-    car.body.rotation.set(roll, 0, -pitch, "YZX");
-    const delta = state.delta || 0;
-    const omega = (vx / vehicle.tire_radius) * (state.paused ? 0 : dt);
-    car.wheels.forEach((w, i) => {
-      w.steer.rotation.y = i < 2 ? delta : 0;
-      w.angle = (w.angle - omega) % (2 * Math.PI);
-      w.spin.rotation.z = w.angle;
-    });
-    car.steeringWheel.rotation.x = -(state.steer || 0);  // seen from the seat: left is counter-clockwise
-    sun.position.copy(car.root.position).add(sunOffset);
-    sun.target.position.copy(car.root.position);
-    drawMap({ x, y });
-  }
+  if (state) updateCar(dt, now);
   updateCamera(dt);
-  renderer.render(scene, camera);
+  sun.position.copy(car.root.position).addScaledVector(sunDirection, 120);
+  sun.target.position.copy(car.root.position);
+  if (composer) composer.render(dt); else renderer.render(scene, camera);
 
   if (latencyArrived !== null && pendingLatency !== null) {
     latencies.push(performance.now() - pendingLatency);
@@ -685,9 +846,17 @@ function frame(now) {
   }
   fpsFrames++;
   if (now - fpsStart > 500) {
-    $("fps").textContent = `${(fpsFrames * 1000 / (now - fpsStart)).toFixed(0)} fps`;
+    const fps = fpsFrames * 1000 / (now - fpsStart);
+    $("fps").textContent = `${fps.toFixed(0)} fps`;
     fpsFrames = 0;
     fpsStart = now;
+    // Automatic quality: step down after 3 s below 45 fps.
+    if (adaptive && fps < 45 && quality !== "low") {
+      slowSince = slowSince ?? now;
+      if (now - slowSince > 3000) { quality = quality === "high" ? "medium" : "low"; slowSince = null; applyQuality(); }
+    } else {
+      slowSince = null;
+    }
   }
   requestAnimationFrame(frame);
 }
@@ -702,9 +871,11 @@ function toast(text, level = "info") {
   toastTimer = setTimeout(() => (t.style.display = "none"), level === "error" ? 8000 : 4000);
 }
 
+applyQuality();
 connect();
 requestAnimationFrame(frame);
-window.vsimView = { scene, camera, car, get state() { return state; }, get trackLoaded() { return !!trackGroup; } };
+window.vsimView = { scene, camera, car, get state() { return state; }, get trackLoaded() { return !!trackGroup; },
+  get carLoaded() { return car.corners.length === 4; }, setCamera, get quality() { return quality; } };
 </script>
 </body>
 </html>

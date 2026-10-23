@@ -1,13 +1,15 @@
-# 예제 차량 파라미터 (대표값). M4부터는 차량 빌더가 CAD에서 대부분을 채웁니다.
+# FSAE EV 기준 예제 차량 (4WD 인휠, 10" 휠, 3단 윙). 대표값이며 실제 차량은
+# 차량 빌더(ui/builder)로 CAD를 올리면 질량·관성·하드포인트가 채워집니다.
+# 규정 점검: python -m vsim.rules templates/projects/example_fs_ev
 # 항목 설명과 측정 방법은 docs/vehicle_parameters.md를 보세요.
 model: two_track               # two_track (L2, 기본) | single_track (L1)
 
 mass_kg: 280                   # 드라이버 포함
 yaw_inertia_kgm2: 110
-wheelbase_m: 1.53
+wheelbase_m: 1.53             # FSAE: 1525 mm 이상
 cg_to_front_axle_m: 0.80       # 무게중심 → 앞차축
 cg_height_m: 0.28
-track_front_m: 1.22
+track_front_m: 1.22           # FSAE: 작은 쪽이 큰 쪽의 75% 이상
 track_rear_m: 1.18
 
 suspension:                    # L2는 준정적 하중 이동만 계산 (서스펜션 자유도는 L3/M5)
@@ -15,6 +17,44 @@ suspension:                    # L2는 준정적 하중 이동만 계산 (서스
   roll_center_rear_m: 0.05
   roll_stiffness_front_ratio: 0.55   # 전체 롤 강성 중 앞 비율
   load_transfer_tau_s: 0.05          # 하중 이동 지연 (차체 롤·피치 응답 근사)
+  roll_gradient_deg_per_g: 1.0       # 화면용 차체 롤 (L3 전까지)
+  pitch_gradient_deg_per_g: 0.6
+  # 더블 위시본 + 푸시로드 (L3/M5에서 기구학으로 사용, 지금은 3D 모델에 사용).
+  # 왼쪽 기준 [x, y, z] m: x는 해당 축 중심에서 앞쪽, y는 차체 중심선에서 왼쪽, z는 지면에서 위
+  front:
+    hardpoints:
+      lower_front: [0.13, 0.20, 0.11]
+      lower_rear: [-0.17, 0.20, 0.11]
+      lower_outer: [0.0, 0.555, 0.115]
+      upper_front: [0.10, 0.26, 0.285]
+      upper_rear: [-0.14, 0.26, 0.285]
+      upper_outer: [-0.012, 0.535, 0.315]
+      tie_inner: [0.075, 0.21, 0.165]
+      tie_outer: [0.075, 0.565, 0.175]
+      push_outer: [0.0, 0.52, 0.125]
+      push_inner: [0.0, 0.25, 0.46]
+      wheel_centre: [0.0, 0.61, 0.203]
+    spring_rate_n_per_mm: 35
+    motion_ratio: 1.0                # 바퀴 이동 / 스프링 이동 (M5에서 하드포인트로 계산)
+    damper_n_s_per_m: 1800           # 바퀴 기준
+    anti_roll_bar_nm_per_deg: 120
+  rear:
+    hardpoints:
+      lower_front: [0.17, 0.22, 0.11]
+      lower_rear: [-0.13, 0.22, 0.11]
+      lower_outer: [0.0, 0.535, 0.115]
+      upper_front: [0.15, 0.27, 0.29]
+      upper_rear: [-0.12, 0.27, 0.29]
+      upper_outer: [0.012, 0.515, 0.315]
+      tie_inner: [-0.09, 0.22, 0.17]     # 토 링크
+      tie_outer: [-0.08, 0.545, 0.18]
+      push_outer: [0.0, 0.50, 0.125]
+      push_inner: [0.0, 0.26, 0.44]
+      wheel_centre: [0.0, 0.59, 0.203]
+    spring_rate_n_per_mm: 40
+    motion_ratio: 1.0
+    damper_n_s_per_m: 2000
+    anti_roll_bar_nm_per_deg: 80
 
 steering:
   ratio: 4.5                   # 핸들각 / 바퀴 조향각
@@ -24,6 +64,8 @@ steering:
 
 wheel:
   radius_m: 0.203              # 하중 상태 반경
+  unloaded_radius_m: 0.2286    # 18" 타이어 (16x7.5-10)
+  rim_diameter_in: 10          # FSAE: 8" 이상
   inertia_kgm2: 0.25           # 휠 + 타이어 + 허브 (모터 로터·감속기는 별도)
 
 tire:
@@ -66,7 +108,7 @@ powertrain:
     torque_max_nm: 21
     power_max_kw: 35           # nominal_voltage_v에서
     speed_max_rpm: 20000
-    nominal_voltage_v: 600     # DC 전압이 낮으면 출력이 비례해서 줄어듦
+    nominal_voltage_v: 520     # 이 DC 전압에서 power_max_kw. 전압이 낮으면 비례해서 줄어듦
     rotor_inertia_kgm2: 0.00027
     torque_time_constant_s: 0.002
     losses:                    # P = copper*T^2 + iron*|w| + windage*w^2 + constant
@@ -82,8 +124,9 @@ powertrain:
       derate_end_c: 140
 
 battery:                       # 셀 등가회로 (OCV-R0-RC) × 직렬·병렬
-  cells_series: 144
+  cells_series: 140            # 최대 588 V (FSAE: 600 V 이하)
   cells_parallel: 5
+  segments: 7                  # 세그먼트당 20직렬: 84 V, 약 4 MJ (FSAE: 120 V, 6 MJ 이하)
   cell_capacity_ah: 3.0
   ocv_soc: [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
   ocv_v: [3.00, 3.30, 3.45, 3.55, 3.62, 3.68, 3.74, 3.82, 3.90, 3.99, 4.08, 4.19]
@@ -107,3 +150,8 @@ brakes:
   max_pressure_bar: 30         # 페달 최대
   front_gain_nm_per_bar: 16    # 앞축 합계
   rear_gain_nm_per_bar: 5      # 뒤축 합계
+
+visual:                        # 3D 화면 (차량 빌더로 CAD 모델을 올리면 그것을 씀)
+  color: "#c8102e"             # 차체
+  accent: "#f2f4f7"            # 줄무늬, 헬멧, 스프링
+  caliper: "#e0a020"

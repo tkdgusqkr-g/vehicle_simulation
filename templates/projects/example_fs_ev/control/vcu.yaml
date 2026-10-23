@@ -1,6 +1,6 @@
 # 참조 VCU 설정 (설계 문서 §8.1). 실차 VCU 코드는 M7부터 플러그인으로 연결합니다.
 period_s: 0.01
-power_limit_kw: 80             # 배터리 출력 추정치 제한 (BMS 한계와 작은 쪽 적용)
+power_limit_kw: 80             # FSAE EV 출력 제한 80 kW (배터리 출력 추정치, BMS 한계와 작은 쪽 적용)
 efficiency_estimate: 0.92      # 출력 추정에 쓰는 모터·인버터 효율
 torque_split_front: 0.5        # 구동 토크 앞 비율
 brake_cut: 0.05                # 브레이크 페달이 이보다 크면 구동 토크 차단

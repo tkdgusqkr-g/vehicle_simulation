@@ -281,16 +281,16 @@ VisualModel make_formula_car(const ParamTree& params) {
   VisualModel model;
   model.name = "formula student car (procedural)";
   model.cg_height = d.cg_height;
-  const auto paint_colour = hex_colour(params.get_string("vehicle.visual.color", "#d7263d"), {0.84f, 0.15f, 0.24f});
+  const auto paint_colour = hex_colour(params.get_string("vehicle.visual.color", "#c8102e"), {0.78f, 0.06f, 0.18f});
   const auto accent_colour = hex_colour(params.get_string("vehicle.visual.accent", "#f2f4f7"), {0.95f, 0.96f, 0.97f});
   const double xf = d.xf(), xr = d.xr();
 
   VisualPart body;
   body.name = "body";
   body.role = PartRole::Body;
-  MeshSection paint = make_section("paint", paint_colour, 0.25f, 0.28f);
+  MeshSection paint = make_section("paint", paint_colour, 0.05f, 0.35f);
   MeshSection accent = make_section("paint_accent", accent_colour, 0.1f, 0.3f);
-  MeshSection carbon = make_section("carbon", {0.08f, 0.085f, 0.09f}, 0.3f, 0.35f);
+  MeshSection carbon = make_section("carbon", {0.08f, 0.085f, 0.09f}, 0.05f, 0.4f);
   MeshSection cockpit = make_section("cockpit", {0.03f, 0.03f, 0.035f}, 0.0f, 0.95f, kCastShadow | kDoubleSided);
   MeshSection steel = make_section("steel", {0.72f, 0.73f, 0.75f}, 0.95f, 0.3f);
   MeshSection suit = make_section("driver_suit", {0.12f, 0.23f, 0.45f}, 0.0f, 0.85f);
@@ -349,7 +349,7 @@ VisualModel make_formula_car(const ParamTree& params) {
 
   // Side pods (left, then mirrored), inlet face dark.
   for (const double side : {1.0, -1.0}) {
-    MeshSection pod = make_section("paint", paint_colour, 0.25f, 0.28f);
+    MeshSection pod = make_section("paint", paint_colour, 0.05f, 0.35f);
     const std::vector<Station> pod_stations = {{xf - 0.40, 0.10, 0.12, 0.25, 4.0}, {xf - 0.47, 0.12, 0.15, 0.25, 4.0},
                                                {xf - 0.85, 0.125, 0.155, 0.25, 4.0}, {xf - 1.12, 0.10, 0.12, 0.24, 3.5},
                                                {xf - 1.28, 0.05, 0.06, 0.22, 3.0}};
