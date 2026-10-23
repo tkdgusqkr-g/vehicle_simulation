@@ -57,8 +57,8 @@
 | 코너별 하중 FL / FR / RL / RR (드라이버 탑승) | kg | ★★ | 실측이 있으면 CAD 무게중심 x, y를 보정 | |
 | 무게중심 높이 | m | ★★★ | **CAD** (틸트 테스트 값이 있으면 덮어씀) | |
 | 요 관성 Izz | kg·m² | ★★★ | **CAD** | |
-| 롤 관성 Ixx, 피치 관성 Iyy | kg·m² | ★ | **CAD**, L3용 | |
-| 비현가 질량 (코너당, 앞/뒤) | kg | ★★ | **CAD** (바디 매핑으로 계산) | |
+| 롤 관성 Ixx, 피치 관성 Iyy (차체만, 차체 무게중심 기준) | kg·m² | ★★ | **CAD**, L3용 (`roll_inertia_kgm2`, `pitch_inertia_kgm2`) | |
+| 비현가 질량 (코너당, 앞/뒤) | kg | ★★★ | **CAD** (바디 매핑으로 계산). L3: `unsprung_mass_kg: {fl, fr, rl, rr}` | |
 | 휠 회전 관성 (타이어 + 림 + 허브, 모터 제외) | kg·m² | ★★★ | **CAD** | |
 
 ## 3. 치수
@@ -86,7 +86,8 @@
 | (그것도 없으면) 피크 슬립각 / 피크 슬립률 | deg, — | ★★ | | |
 | 구름저항 계수 | — | ★★ | | |
 | 이완 길이 (relaxation length) | m | ★ | | |
-| 수직 강성 | N/m | ★ | L3용 | |
+| 수직 강성 / 수직 감쇠 | N/mm, N·s/m | ★★ | L3용 (`vertical_stiffness_n_per_mm`, 기본 100 / `vertical_damping_n_s_per_m`, 기본 150) | |
+| 캠버 강성 (캠버 추력) | 1/rad (Fz 대비) | ★ | `.tir`에 있으면 불필요. 단순 모델: `camber_stiffness` (기본 0.8) | |
 
 ## 5. 공력
 
@@ -110,6 +111,8 @@
 
 ## 7. 서스펜션
 
+L3 모델이 하드포인트에서 K&C를 직접 풉니다 (`vsim-core --export-kc`로 확인). 아래 "**CAD** (기구학 해석)" 항목은 하드포인트만 있으면 됩니다.
+
 | 항목 | 단위 | 우선 | 비고 | 값 |
 |---|---|---|---|---|
 | 스프링 강성 앞 / 뒤 | N/mm | ★★★ | 셋업값 | |
@@ -119,7 +122,10 @@
 | Anti-dive / anti-squat | % | ★ | **CAD** (기구학 해석) | |
 | 댐퍼 커브 (bump / rebound, 클릭 설정별) | N vs m/s | ★ | L3용 | |
 | K&C: 캠버 게인, 범프 스티어, 토 변화 | 표 | ★ | **CAD** (기구학 해석) | |
-| 범프 스톱 | — | ★ | L3용 | |
+| 범프 스톱 | — | ★ | L3용: 닿는 이동량, 첫 강성 (`bump_travel_m`, `bump_stop_n_per_mm`) | |
+| 처짐 한계 (드룹) | mm | ★ | L3용 (`droop_travel_m`) | |
+| 정적 캠버 / 토 앞 / 뒤 | deg | ★★ | 셋업값 (`static_camber_deg`, `static_toe_deg`) | |
+| 로커 축·스프링 장착점 | [x, y, z] | ★ | 있으면 모션비를 기구학으로 계산 (`rocker_pivot`, `rocker_axis`, `spring_rocker`, `spring_chassis`) | |
 
 ## 8. 브레이크
 

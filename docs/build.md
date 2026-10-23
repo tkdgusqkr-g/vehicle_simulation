@@ -1,8 +1,17 @@
 # 빌드와 실행
 
-M4 기준 안내입니다. 설계는 [design.md](design.md)를 보세요.
+M5 기준 안내입니다. 설계는 [design.md](design.md)를 보세요.
 
 ## 지금 되는 것
+
+**M5 (노면 위를 구른다)**
+- **L3 차량 모델** (`vehicle.model: full`, 예제 차의 기본값): 차체가 상하·롤·피치로 움직이고, 네 바퀴의 비현가 질량이 타이어 스프링 위에서 노면을 따라갑니다. 스프링·디그레시브 댐퍼·범프/처짐 스톱·안티롤바. 에너지 수지가 그대로 맞습니다 (잔차 약 1e-7)
+- **하드포인트 기구학(K&C)**: 더블 위시본 + 푸시로드(선택: 로커)를 풀어서 캠버·범프 스티어·접지점 이동(잭킹, 롤센터)·모션비·조향축 모멘트를 계산. `vsim-core --export-kc`로 곡선과 킹핀각·캐스터·스크럽·트레일·애커만 확인
+- **FFB가 노면을 느낌**: 핸들 토크를 조향축에 대한 타이어 힘의 모멘트로 계산해서, 요철·연석·하중 변화가 핸들로 전달됨
+- **3D 노면**: 트랙 고도(스플라인)·뱅크·연석(럼블)·ISO 8608 거칠기·마찰 구간(젖은 노면 등)·잔디(트랙 밖, 미끄럽고 거침). 3D 화면에 고저·연석·지형까지 그려짐
+- 타이어: 캠버(MF 5.2/6.1 캠버 항, 단순 모델의 캠버 추력), 노면 마찰 배율
+- 새 템플릿 `hill_circuit` (고저차 5 m, 뱅크 코너, 연석, 젖은 구간), 트랙 편집기에 노면·연석·마찰 구간·고도 단면
+- 4포스트 리그 입력(`rig.<바퀴>.z`)과 검증: 1/4차 주파수 응답(V-09), 노면 PSD(V-10)
 
 **M4 (우리 차로 구른다)**
 - **차량 빌더** (`ui/builder/index.html`): STEP·IGES·glTF·STL을 브라우저에서 열고, 부품 역할(차체·바퀴·업라이트·링크·드라이버)과 재질을 정하면 질량·무게중심·관성·비현가 질량·축거·윤거·타이어 반경을 계산. 서스펜션 하드포인트와 센서 위치를 3D에서 찍어서 프로젝트에 저장하면 시뮬레이터가 그 차로 다시 시작
@@ -256,6 +265,32 @@ python -m vsim.rules templates/projects/example_fs_ev              # FSAE 규정
 
 ---
 
+## L3 차량 모델과 3D 노면
+
+예제 차량은 `vehicle.yaml`의 `model: full`(L3, 14자유도)로 돕니다. 빠른 배치 계산에는 `--set vehicle.model=two_track`(L2)를 씁니다. L3는 평평한 트랙에서 실시간의 약 30배, 거친 고저 트랙에서 약 7배로 돕니다 (이 개발 환경 기준).
+
+```powershell
+# 고저·뱅크·연석·젖은 구간이 있는 서킷을 자동 주행으로 (ui\view3d\index.html로 보기)
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/autocross_auto.yaml --set track.template=hill_circuit --mode realtime
+# 서스펜션 기구학 확인
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/drive.yaml --export-kc kc.csv
+```
+
+| 바꾸고 싶은 것 | `vehicle.yaml` |
+|---|---|
+| 현가·비현가 질량 | `unsprung_mass_kg: {fl, fr, rl, rr}` (나머지가 차체), `roll_inertia_kgm2`, `pitch_inertia_kgm2` (차체만, 그 무게중심 기준) |
+| 타이어 수직 | `tire.vertical_stiffness_n_per_mm`, `vertical_damping_n_s_per_m`, `contact_length_m` (노면을 이 길이로 평균), `wheel.unloaded_radius_m` |
+| 서스펜션 기하 | `suspension.<front/rear>.hardpoints.*`, `static_camber_deg`, `static_toe_deg`. 로커가 있으면 `rocker_pivot`, `rocker_axis`, `spring_rocker`, `spring_chassis` |
+| 스프링·댐퍼 | `spring_rate_n_per_mm`, `motion_ratio`(로커 없을 때), `damper_n_s_per_m`(범프), `damper_rebound_n_s_per_m`, `damper_knee_mps`, `damper_high_speed_ratio` |
+| 스톱·안티롤바 | `bump_travel_m`, `bump_stop_n_per_mm`, `droop_travel_m`, `anti_roll_bar_nm_per_deg` |
+| 캠버 추력 | `tire.simple.camber_stiffness` (단순 모델), `.tir`는 파일의 캠버 계수(PKY6, PDY3, QDZ8 …) |
+
+- **K&C**: 바퀴 이동 ±(범프·처짐의 1.5배)와 랙 이동 범위를 미리 풀어 표로 씁니다. 조향은 랙 이동이고, 핸들각 ↔ 랙의 비는 중앙에서 `steering.ratio`가 되도록 정합니다. 그래서 좌우 바퀴 각(애커만)과 범프 스티어가 하드포인트에서 나옵니다. L3에서는 `steering.ackermann`, `mechanical_trail_m`, `suspension.roll_center_*`가 쓰이지 않습니다.
+- **정지 상태**: 시작할 때 정적 평형(타이어 처짐, 스프링 예압)에서 출발합니다. 경사·뱅크 위에서는 차체가 노면을 따라 기울어진 상태로 시작합니다.
+- **4포스트 리그**: `rig.<fl/fr/rl/rr>.z`와 `.vz`(노면 변위와 속도)를 Python에서 써 넣으면 바퀴 밑 노면이 그만큼 움직입니다 (주파수 응답, 승차감 시험).
+
+---
+
 ## 트랙에서 달리기
 
 ### 자동 주행으로 랩 돌기
@@ -328,9 +363,12 @@ driver:
 | 주행 라인 | <kbd>L</kbd> | 핸들을 옆으로 끌기, 트랙 클릭으로 핸들 추가, <kbd>Delete</kbd>로 삭제 |
 | | <kbd>F</kbd>, <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Y</kbd>, <kbd>Ctrl+S</kbd> | 전체 보기, 되돌리기/다시, 저장 |
 
-- 오른쪽 패널에서 점별 좌표·폭(좌/우)·고도·뱅크, 트랙 이름, 닫힌/열린 트랙을 바꿉니다. 고도·뱅크는 파일에 저장만 되고, 실제 반영은 L3 모델(M5)부터입니다.
+- 오른쪽 패널에서 점별 좌표·폭(좌/우)·고도·뱅크, 트랙 이름, 닫힌/열린 트랙을 바꿉니다. 뱅크는 왼쪽 가장자리가 높으면 +입니다. **고도 단면** 그래프로 오르내림을 확인합니다.
+- **노면**: 노면 마찰(타이어 데이터 대비 배율, 젖은 노면 0.6~0.7), 거칠기(ISO 8608 등급, A가 좋은 포장), 트랙 밖 잔디의 마찰과 거칠기.
+- **연석**: 점을 고르고 **선택한 점에 연석 추가** → 시작·끝 점, 왼쪽/오른쪽, 폭, 높이를 고칩니다. 경계 바깥에 붙고 0.5 m 간격 럼블이 있습니다. 콘은 연석 바깥에 놓입니다.
+- **마찰 구간**: 시작·끝 점과 좌우 범위 n(왼쪽 +)으로 젖은 노면·오일 같은 구간을 만듭니다. 지도에 파랗게 표시됩니다.
 - **최소 곡률 라인 계산**: 경계에서 "경계 여유"만큼 안쪽으로 곡률이 가장 작은 라인을 계산합니다(TORCS K1999 방식). 그다음 핸들로 다듬습니다.
-- **검사**: 최소 반경 4.5 m 미만, 안쪽 경계가 접히는 곳, 폭 3 m 미만, 센터라인 교차를 알려 줍니다.
+- **검사**: 최소 반경 4.5 m 미만, 안쪽 경계가 접히는 곳, 폭 3 m 미만, 센터라인 교차, 15 % 넘는 경사를 알려 줍니다.
 - **곡률 색**: 센터라인을 반경으로 색칠합니다 (파랑: 직선 ~ 빨강: 7 m 이하).
 - **열기·저장**: `*.track.json`을 열고, 저장하면 다운로드 폴더에 받아집니다. TUMFTM racetrack-database CSV(`x_m, y_m, w_tr_right_m, w_tr_left_m`)도 열 수 있습니다.
 
@@ -349,13 +387,18 @@ driver:
  "schema_version": 1, "name": "my track", "closed": true,
  "points": [{"x": 0, "y": 0, "z": 0, "w_left": 1.75, "w_right": 1.75, "bank_deg": 0}, ...],
  "start_point": 0, "finish_point": -1, "sector_points": [12, 30],
- "lines": [{"name": "racing", "offsets": [[0.0, 0.5], [0.05, -0.8], ...]}]
+ "lines": [{"name": "racing", "offsets": [[0.0, 0.5], [0.05, -0.8], ...]}],
+ "surface": {"mu": 1.0, "roughness": "A", "grass_mu": 0.6, "grass_roughness": "C"},
+ "kerbs": [{"from_point": 4, "to_point": 9, "side": "left", "width": 1.0, "height": 0.025}],
+ "patches": [{"from_point": 39, "to_point": 46, "n_min": -4, "n_max": 1, "mu": 0.6}]
 }
 ```
 
 - 센터라인은 점들을 지나는 3차 스플라인입니다 (닫힌 트랙은 주기 스플라인).
 - 출발·결승·구간은 점 번호로 지정해서, 점을 옮겨도 함께 움직입니다.
 - 주행 라인은 센터라인 기준 좌우 오프셋 n [m]을 트랙 길이 비율 u ∈ [0, 1]마다 적은 것입니다. 그래서 센터라인을 고쳐도 라인이 따라갑니다.
+- 고도는 점들을 지나는 스플라인, 뱅크는 점 사이 선형입니다. `surface`, `kerbs`, `patches`는 생략할 수 있고(평평하고 매끈한 노면), M2 이전 파일도 그대로 읽힙니다.
+- 거칠기는 트랙 이름으로 정해지는 난수라 같은 트랙은 언제나 같은 요철입니다. 등급의 PSD Gd(n) = Gd(n0)(n/n0)^-2 (n0 = 0.1 cycle/m, A = 16e-6 m³, 등급마다 4배)를 0.01~5 cycle/m에서 따릅니다.
 
 템플릿은 `templates/tracks/`에 있고, `python -m vsim.tracks templates/tracks`로 다시 만들 수 있습니다 ([python/vsim/tracks.py](../python/vsim/tracks.py)).
 
@@ -425,7 +468,8 @@ build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/sce
 | 신호 | 내용 |
 |---|---|
 | `veh.chassis.*` | 위치, 속도, 가속도, yaw rate, 차체 슬립각 |
-| `veh.wheel.<fl/fr/rl/rr>.*` | 수직 하중, 타이어 힘·모멘트, 슬립률·슬립각, 바퀴 회전속도, 조향각 |
+| `veh.wheel.<fl/fr/rl/rr>.*` | 수직 하중, 타이어 힘·모멘트, 슬립률·슬립각, 바퀴 회전속도, 조향각. L3: `travel`(범프 +), `camber`, `spring_force`, `damper_force`, `deflection`(타이어 처짐), `road_z`, `mu`, `surface`(0 노면, 1 연석, 2 잔디) |
+| `veh.chassis.z/roll/pitch/heave` | L3 차체: 현가 질량 무게중심 높이, 롤(왼쪽 위 +), 피치(코 숙임 +), 정적 높이 대비 상하 |
 | `veh.ffb.torque_sw` | 노면이 핸들에 주는 토크 (N·m, 반시계 +) |
 | `pt.motor.<id>.*` | 토크 명령·실제, 회전속도, 가용 토크, 권선 온도, 손실, 전력 |
 | `bat.*` | SoC, 단자 전압·전류·전력, OCV, 온도, BMS 한계 (`bat.limit.*`) |
@@ -447,6 +491,7 @@ build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/sce
 | `--link-name <이름>` | 공유 메모리 이름 (기본 `vsim_state_v2`). 시뮬레이터 두 개를 동시에 띄울 때 |
 | `--export-track-glb <파일>` | 시나리오의 트랙을 3D 모델(.glb)로 저장하고 종료 |
 | `--export-car-glb <파일>` | 시나리오의 차량 3D 모델(.glb)을 저장하고 종료 |
+| `--export-kc <파일.csv>` | 하드포인트에서 푼 서스펜션 K&C 곡선을 CSV로 저장하고 정적 값(킹핀각, 캐스터, 스크럽, 롤센터 등)을 출력한 뒤 종료 |
 | `--virtual-wheel` | 가상 휠 추가 (`input.virtual` RPC로 조작, UI 시험용) |
 
 ---

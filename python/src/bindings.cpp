@@ -186,6 +186,9 @@ One run of a scenario. Time advances in fixed steps of `dt`.
             return sim.bus().get(sim.bus().require(name));
           },
           py::arg("name"), "Current value of a signal.")
+      .def("set", &vsim::Simulation::set_signal, py::arg("name"), py::arg("value"),
+           "Sets a signal, e.g. the four-post rig inputs rig.<corner>.z / .vz of the full model; "
+           "a signal some block or model produces is overwritten on the next step.")
       .def(
           "signals",
           [](const vsim::Simulation& sim) {

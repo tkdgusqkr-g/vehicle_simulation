@@ -342,6 +342,7 @@ double Simulation::time() const { return static_cast<double>(impl_->tick) * impl
 double Simulation::dt() const { return impl_->dt; }
 double Simulation::end_time() const { return impl_->t_end; }
 const SignalBus& Simulation::bus() const { return impl_->bus; }
+void Simulation::set_signal(const std::string& name, double value) { impl_->bus.set(impl_->bus.require(name), value); }
 const Recorder& Simulation::recorder() const { return impl_->recorder; }
 const std::filesystem::path& Simulation::run_path() const { return impl_->run_path; }
 

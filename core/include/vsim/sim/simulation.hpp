@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <string>
 
 #include "vsim/sim/input_hub.hpp"
 #include "vsim/sim/recorder.hpp"
@@ -51,6 +52,9 @@ class Simulation {
 
   const Scenario& scenario() const { return scenario_; }
   const SignalBus& bus() const;
+  // Sets a signal from outside (e.g. the full model's four-post rig inputs
+  // rig.<corner>.z / .vz); its producer, if any, overwrites it next step.
+  void set_signal(const std::string& name, double value);
   // Survives reset(), so a connected keyboard keeps working.
   InputHub& inputs() { return inputs_; }
   const Recorder& recorder() const;

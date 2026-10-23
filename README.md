@@ -6,8 +6,9 @@
 - 빌드와 실행: [docs/build.md](docs/build.md)
 - 차량 데이터 요청 목록: [docs/vehicle_parameters.md](docs/vehicle_parameters.md)
 
-## 현재 상태: M4 (우리 차로 구른다)
+## 현재 상태: M5 (노면 위를 구른다)
 
+- **M5**: L3 14자유도 차량 모델(차체 상하·롤·피치, 바퀴 상하, 스프링·댐퍼·스톱·안티롤바), 하드포인트에서 푼 K&C(`--export-kc`), 노면이 핸들로 느껴지는 FFB, 3D 노면(고도·뱅크·연석·ISO 8608 거칠기·젖은 구간·잔디)과 3D 트랙·지형, 새 템플릿 `hill_circuit`
 - **M4**: 차량 빌더(`ui/builder/index.html`): STEP·glTF·STL을 올려서 질량·관성·무게중심·하드포인트·센서를 정하고 프로젝트에 저장하면 그 차로 주행. FSAE 규정 기준 예제 차량과 규정 점검(`python -m vsim.rules`), 하늘·그림자·PBR 재질·트랙 주변 환경·상세 차량 모델로 그래픽 개선
 - **M3**: 3D 주행 화면. 브라우저(`ui/view3d/index.html`)와 Unreal Engine 5 뷰어(`ui/unreal`, 공유 메모리 연결, 직접 빌드 필요). 트랙 3D 모델 자동 생성(`.glb` 내보내기), 입력 보정 페이지(`ui/input/index.html`), 입력 → 화면 지연 측정
 - **M2**: 트랙 템플릿과 2D 트랙 편집기(`ui/editor/index.html`, 그린 트랙을 실행 중인 시뮬레이터로 바로 전송), 랩·구간 타이밍, Pure Pursuit 자동 주행, 시나리오 테스트 러너(`python -m vsim.testing`)
