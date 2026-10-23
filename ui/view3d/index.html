@@ -475,7 +475,8 @@ function placeTvCameras(outline) {
     travelled = 0;
     const [cx, cy] = outline.center[i], [rx, ry] = outline.right[i];
     const len = Math.hypot(rx - cx, ry - cy) || 1;
-    tvCameras.push(new THREE.Vector3(rx + (rx - cx) / len * 7, 3.5, -(ry + (ry - cy) / len * 7)));
+    const ground = outline.elevation ? outline.elevation[i] : 0;
+    tvCameras.push(new THREE.Vector3(rx + (rx - cx) / len * 7, ground + 3.5, -(ry + (ry - cy) / len * 7)));
   }
 }
 
@@ -509,7 +510,7 @@ const skids = (() => {
       const pts = [prev.point.clone().addScaledVector(prev.side, -h), prev.point.clone().addScaledVector(prev.side, h),
         point.clone().addScaledVector(side, -h), point.clone().addScaledVector(side, h)];
       pts.forEach((p, k) => {
-        positions.set([p.x, 0.012, p.z], (q * 4 + k) * 3);
+        positions.set([p.x, p.y + 0.012, p.z], (q * 4 + k) * 3);
         colours.set([0.03, 0.03, 0.03, Math.min(0.55, strength)], (q * 4 + k) * 4);
       });
       next = (next + 1) % max;
@@ -747,10 +748,10 @@ function updateCamera(dt) {
     let best = tvCameras[0], bestD = Infinity;
     for (const c of tvCameras) { const d = c.distanceToSquared(carPos); if (d < bestD) { bestD = d; best = c; } }
     camera.position.copy(best);
-    camera.lookAt(carPos.x, 0.4, carPos.z);
+    camera.lookAt(carPos.x, carPos.y + 0.4, carPos.z);
     fov = THREE.MathUtils.clamp(2 * Math.atan(5 / Math.sqrt(bestD)) * 180 / Math.PI, 6, 55);
   } else {
-    camera.position.set(carPos.x, 55, carPos.z + 0.01);
+    camera.position.set(carPos.x, carPos.y + 55, carPos.z + 0.01);
     camera.lookAt(carPos);
     fov = 50;
   }
@@ -784,18 +785,32 @@ function updateCar(dt, now) {
   const vx = state.vx ?? state.speed, vy = state.vy ?? 0;
   const x = state.x + (vx * Math.cos(state.yaw) - vy * Math.sin(state.yaw)) * ahead;
   const y = state.y + (vx * Math.sin(state.yaw) + vy * Math.cos(state.yaw)) * ahead;
-  car.root.position.set(x, 0, -y);
+  // The car frame sits on the road (3D tracks: the full model sends its height).
+  const ground = state.road_z ?? 0;
+  car.root.position.set(x, ground, -y);
   car.root.rotation.y = yaw;
-  // Body motion from the accelerations: ~1 deg roll and 0.6 deg pitch per g.
-  const blend = 1 - Math.exp(-dt / 0.08);
-  roll += blend * ((1.0 * Math.PI / 180) * (state.ay || 0) / 9.81 - roll);
-  pitch += blend * ((-0.6 * Math.PI / 180) * (state.ax || 0) / 9.81 - pitch);
+  if (state.roll !== undefined && state.pitch !== undefined) {
+    // Full model: the body's own roll, pitch and heave on its springs.
+    roll = state.roll;
+    pitch = state.pitch;
+    car.body.position.y = car.cgHeight + (state.heave || 0);
+  } else {
+    // Planar models: body motion from the accelerations, ~1 deg roll and 0.6 deg pitch per g.
+    const blend = 1 - Math.exp(-dt / 0.08);
+    roll += blend * ((1.0 * Math.PI / 180) * (state.ay || 0) / 9.81 - roll);
+    pitch += blend * ((-0.6 * Math.PI / 180) * (state.ax || 0) / 9.81 - pitch);
+    car.body.position.y = car.cgHeight;
+  }
   car.body.rotation.set(roll, 0, -pitch, "YZX");
   const steer = state.wheel_steer || [state.delta || 0, state.delta || 0, 0, 0];
   const omega = state.wheel_omega || [0, 1, 2, 3].map(() => vx / (vehicle.tire_radius || 0.2));
   car.corners.forEach((c, i) => {
     if (!c) return;
-    c.steer.rotation.y = steer[i];
+    // Hub up and down on the suspension; camber leans the top outwards
+    // (left wheels sit at -z in glTF).
+    c.steer.position.y = c.hub.y + (state.wheel_hub ? state.wheel_hub[i] : 0);
+    const camber = state.wheel_camber ? state.wheel_camber[i] : 0;
+    c.steer.rotation.set((i % 2 === 0 ? -1 : 1) * camber, steer[i], 0, "YXZ");
     if (!state.paused) c.angle = (c.angle - omega[i] * dt) % (2 * Math.PI);
     c.spin.rotation.z = c.angle;  // rolling forward: about -z in glTF
   });
@@ -821,6 +836,7 @@ function updateCar(dt, now) {
       const sliding = Math.max(Math.abs(state.wheel_slip_ratio[i]) - 0.12, Math.abs(state.wheel_slip_angle[i]) - 0.12);
       const strength = state.speed > 2 ? Math.min(1, sliding * 4) : 0;
       const p = c.steer.getWorldPosition(new THREE.Vector3());
+      p.y -= c.hub.y;  // down to the road
       const side = new THREE.Vector3(0, 0, 1).applyQuaternion(car.root.quaternion);
       skids.add(i, p, side, 0.17, strength);
     });

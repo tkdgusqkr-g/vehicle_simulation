@@ -37,6 +37,11 @@ Dimensions read_dimensions(const ParamTree& p) {
   d.track_rear = p.get_double("vehicle.track_rear_m", 1.20);
   d.radius = p.get_double("vehicle.wheel.radius_m", 0.203);
   d.unloaded_radius = p.get_double("vehicle.wheel.unloaded_radius_m", std::max(d.radius, 0.2286));
+  if (p.get_string("vehicle.model", "two_track") == "full" && p.has("vehicle.tire.vertical_stiffness_n_per_mm")) {
+    // The full model's static hub height: the tire squashed by a quarter of the weight.
+    const double stiffness = 1000.0 * p.get_double("vehicle.tire.vertical_stiffness_n_per_mm");
+    d.radius = d.unloaded_radius - 0.25 * p.get_double("vehicle.mass_kg", 280.0) * 9.81 / stiffness;
+  }
   d.rim_radius = 0.5 * 0.0254 * p.get_double("vehicle.wheel.rim_diameter_in", 10.0);
   d.tyre_width = p.get_double("vehicle.tire.width_m", 0.19);
   return d;

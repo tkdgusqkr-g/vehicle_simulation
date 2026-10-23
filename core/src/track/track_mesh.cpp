@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <numbers>
+#include <unordered_map>
 
 #include "vsim/visual/gltf.hpp"
 
@@ -81,6 +83,8 @@ void add_strip(MeshSection& m, const Track& track, double s0, double s1, bool lo
   const auto count = std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil((s1 - s0) / step - 1e-9)));
   const std::size_t rows = loop ? count : count + 1;
   const auto first = static_cast<std::uint32_t>(m.vertex_count());
+  const std::size_t first_index = m.indices.size();
+  const bool relief = track.has_relief();
   std::vector<bool> kept(rows);
   for (std::size_t k = 0; k < rows; ++k) {
     const double s = s0 + (s1 - s0) * static_cast<double>(k) / static_cast<double>(count);
@@ -88,8 +92,10 @@ void add_strip(MeshSection& m, const Track& track, double s0, double s1, bool lo
     const Track::Widths w = track.widths_at(s);
     const double nx = -std::sin(c.heading), ny = std::cos(c.heading);
     const double r = right_of(w), l = left_of(w);
-    add_vertex(m, c.x + r * nx, c.y + r * ny, z, 0, 0, 1, 0, s / 4.0);
-    add_vertex(m, c.x + l * nx, c.y + l * ny, z, 0, 0, 1, 1, s / 4.0);
+    const double zr = z + (relief ? track.surface_height(s, r) : 0.0);
+    const double zl = z + (relief ? track.surface_height(s, l) : 0.0);
+    add_vertex(m, c.x + r * nx, c.y + r * ny, zr, 0, 0, 1, 0, s / 4.0);
+    add_vertex(m, c.x + l * nx, c.y + l * ny, zl, 0, 0, 1, 1, s / 4.0);
     kept[k] = keep(s, c.x + 0.5 * (r + l) * nx, c.y + 0.5 * (r + l) * ny);
   }
   for (std::size_t k = 0; k < count; ++k) {
@@ -100,6 +106,9 @@ void add_strip(MeshSection& m, const Track& track, double s0, double s1, bool lo
     const auto a = first + static_cast<std::uint32_t>(2 * k);
     const auto b = first + static_cast<std::uint32_t>(2 * ((k + 1) % rows));
     m.indices.insert(m.indices.end(), {a, b, a + 1, a + 1, b, b + 1});
+  }
+  if (relief) {
+    geometry::smooth_normals(m, first, first_index);
   }
 }
 
@@ -118,7 +127,7 @@ void add_cross_line(MeshSection& m, const Track& track, double s, double width) 
 }
 
 // Eight-sided cone frustum with flat-shaded faces and a top cap.
-void add_cone(MeshSection& m, double x, double y, double height, double base, double top) {
+void add_cone(MeshSection& m, double x, double y, double z0, double height, double base, double top) {
   constexpr int kSides = 8;
   const double slope = (base - top) / 2.0 / height;  // radial change per unit height
   for (int i = 0; i < kSides; ++i) {
@@ -129,17 +138,17 @@ void add_cone(MeshSection& m, double x, double y, double height, double base, do
     const double nr = 1.0 / std::sqrt(1.0 + slope * slope);
     const double nx = nr * std::cos(am), ny = nr * std::sin(am);
     const auto first = static_cast<std::uint32_t>(m.vertex_count());
-    add_vertex(m, x + base / 2 * std::cos(a0), y + base / 2 * std::sin(a0), 0, nx, ny, nz, 0, 0);
-    add_vertex(m, x + base / 2 * std::cos(a1), y + base / 2 * std::sin(a1), 0, nx, ny, nz, 1, 0);
-    add_vertex(m, x + top / 2 * std::cos(a1), y + top / 2 * std::sin(a1), height, nx, ny, nz, 1, 1);
-    add_vertex(m, x + top / 2 * std::cos(a0), y + top / 2 * std::sin(a0), height, nx, ny, nz, 0, 1);
+    add_vertex(m, x + base / 2 * std::cos(a0), y + base / 2 * std::sin(a0), z0, nx, ny, nz, 0, 0);
+    add_vertex(m, x + base / 2 * std::cos(a1), y + base / 2 * std::sin(a1), z0, nx, ny, nz, 1, 0);
+    add_vertex(m, x + top / 2 * std::cos(a1), y + top / 2 * std::sin(a1), z0 + height, nx, ny, nz, 1, 1);
+    add_vertex(m, x + top / 2 * std::cos(a0), y + top / 2 * std::sin(a0), z0 + height, nx, ny, nz, 0, 1);
     m.indices.insert(m.indices.end(), {first, first + 1, first + 2, first, first + 2, first + 3});
   }
   const auto centre = static_cast<std::uint32_t>(m.vertex_count());
-  add_vertex(m, x, y, height, 0, 0, 1, 0.5, 0.5);
+  add_vertex(m, x, y, z0 + height, 0, 0, 1, 0.5, 0.5);
   for (int i = 0; i < kSides; ++i) {
     const double a = 2.0 * std::numbers::pi * i / kSides;
-    add_vertex(m, x + top / 2 * std::cos(a), y + top / 2 * std::sin(a), height, 0, 0, 1, 0, 0);
+    add_vertex(m, x + top / 2 * std::cos(a), y + top / 2 * std::sin(a), z0 + height, 0, 0, 1, 0, 0);
   }
   for (std::uint32_t i = 0; i < kSides; ++i) {
     m.indices.insert(m.indices.end(), {centre, centre + 1 + i, centre + 1 + (i + 1) % kSides});
@@ -219,13 +228,88 @@ void add_tree(MeshSection& trunk, MeshSection& leaves, double x, double y, doubl
   }
 }
 
+// Ground height away from the road: the road surface at the nearest
+// centreline sample, its cross slope carried kShoulder beyond the edges and
+// level from there. Zero on tracks without relief.
+class Terrain {
+ public:
+  explicit Terrain(const Track& track) : track_(track), relief_(track.has_relief()) {
+    if (!relief_) {
+      return;
+    }
+    const auto& samples = track.samples();
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+      cells_[key(cell(samples[i].x), cell(samples[i].y))].push_back(static_cast<std::uint32_t>(i));
+    }
+  }
+
+  bool relief() const { return relief_; }
+
+  double height(double x, double y) const {
+    if (!relief_) {
+      return 0.0;
+    }
+    const auto& samples = track_.samples();
+    const std::int64_t cx = cell(x), cy = cell(y);
+    double best = std::numeric_limits<double>::infinity();
+    std::size_t nearest = 0;
+    for (std::int64_t ring = 0; ring < 4096 && !(best < (static_cast<double>(ring) - 1.0) * kCell); ++ring) {
+      for (std::int64_t i = cx - ring; i <= cx + ring; ++i) {
+        for (std::int64_t j = cy - ring; j <= cy + ring; ++j) {
+          if (std::max(std::abs(i - cx), std::abs(j - cy)) != ring) {
+            continue;
+          }
+          const auto it = cells_.find(key(i, j));
+          if (it == cells_.end()) {
+            continue;
+          }
+          for (const std::uint32_t k : it->second) {
+            const double d = std::hypot(samples[k].x - x, samples[k].y - y);
+            if (d < best) {
+              best = d;
+              nearest = k;
+            }
+          }
+        }
+      }
+    }
+    const CurveSample& q = samples[nearest];
+    const double dx = x - q.x, dy = y - q.y;
+    const double along = std::cos(q.heading) * dx + std::sin(q.heading) * dy;
+    const double n = -std::sin(q.heading) * dx + std::cos(q.heading) * dy;
+    const double s = q.s + std::clamp(along, -Track::kStep, Track::kStep);
+    const Track::Widths w = track_.widths_at(s);
+    return track_.surface_height(s, std::clamp(n, -w.right - kShoulder, w.left + kShoulder));
+  }
+
+  // Lifts the vertices added since `first` onto the ground.
+  void lift(MeshSection& m, std::size_t first = 0) const {
+    if (!relief_) {
+      return;
+    }
+    for (std::size_t i = first; i < m.vertex_count(); ++i) {
+      m.positions[3 * i + 2] += static_cast<float>(height(m.positions[3 * i], m.positions[3 * i + 1]));
+    }
+  }
+
+ private:
+  static constexpr double kCell = 8.0, kShoulder = 4.0;
+  static std::int64_t cell(double v) { return static_cast<std::int64_t>(std::floor(v / kCell)); }
+  static std::int64_t key(std::int64_t i, std::int64_t j) { return (i << 32) ^ (j & 0xffffffff); }
+
+  const Track& track_;
+  bool relief_ = false;
+  std::unordered_map<std::int64_t, std::vector<std::uint32_t>> cells_;
+};
+
 struct Keepout {
   double x, y, radius;
 };
 
 // Grandstand, pit tents and a start gantry near the start line, then trees
 // wherever there is room.
-void add_scenery(const Track& track, const std::array<double, 4>& area, std::vector<MeshSection>& out) {
+void add_scenery(const Track& track, const Terrain& terrain, const std::array<double, 4>& area,
+                 std::vector<MeshSection>& out) {
   Random rng(fnv1a(track.name()) ^ 0x5DEECE66Dull);
   MeshSection trunk = section("tree_trunk", 0.33f, 0.24f, 0.16f, 0.95f, kCastShadow);
   MeshSection leaves = section("tree_leaves", 0.20f, 0.40f, 0.16f, 0.9f, kCastShadow);
@@ -331,7 +415,50 @@ void add_scenery(const Track& track, const std::array<double, 4>& area, std::vec
 
   for (MeshSection* m : {&trunk, &leaves, &leaves_dark, &stand, &seats, &tent_roof, &tent_frame, &gantry, &banner}) {
     if (!m->indices.empty()) {
+      terrain.lift(*m);
       out.push_back(std::move(*m));
+    }
+  }
+}
+
+// Red and white kerb blocks (1 m each) over the kerb's profile.
+void add_kerbs(const Track& track, MeshSection& red, MeshSection& white) {
+  const TrackDefinition& def = track.definition();
+  for (const TrackDefinition::Kerb& k : def.kerbs) {
+    const bool left = k.side == "left";
+    const double s0 = track.point_s(k.from_point);
+    double s1 = track.point_s(k.to_point);
+    if (track.closed() && s1 <= s0) {
+      s1 += track.length();
+    }
+    constexpr double kStep = 0.25;
+    constexpr int kAcross = 6;
+    const auto rows = static_cast<std::size_t>(std::ceil((s1 - s0) / kStep)) + 1;
+    for (std::size_t r = 0; r + 1 < rows; ++r) {
+      const double sa = s0 + kStep * static_cast<double>(r), sb = std::min(s1, sa + kStep);
+      MeshSection& m = static_cast<long>(std::floor((sa - s0) / 1.0)) % 2 == 0 ? red : white;
+      const auto first = static_cast<std::uint32_t>(m.vertex_count());
+      const std::size_t first_index = m.indices.size();
+      for (const double s : {sa, sb}) {
+        const CurveSample c = track.at(s);
+        const Track::Widths w = track.widths_at(s);
+        const double nx = -std::sin(c.heading), ny = std::cos(c.heading);
+        for (int i = 0; i <= kAcross; ++i) {
+          const double e = k.width * i / kAcross;
+          const double n = left ? w.left + e : -w.right - e;
+          add_vertex(m, c.x + n * nx, c.y + n * ny, track.surface_height(s, n) + 0.002, 0, 0, 1, e, s);
+        }
+      }
+      for (std::uint32_t i = 0; i < kAcross; ++i) {
+        const std::uint32_t a = first + i, b = first + i + 1, c = first + kAcross + 1 + i, d = c + 1;
+        // Counter-clockwise from above: outward from the edge is +n on the left.
+        if (left) {
+          m.indices.insert(m.indices.end(), {a, c, b, b, c, d});
+        } else {
+          m.indices.insert(m.indices.end(), {a, b, c, b, d, c});
+        }
+      }
+      geometry::smooth_normals(m, first, first_index);
     }
   }
 }
@@ -379,15 +506,18 @@ TrackMesh make_track_mesh(const Track& track, const TrackMeshOptions& o) {
       const Track::Widths w = track.widths_at(s);
       const double nx = -std::sin(c.heading), ny = std::cos(c.heading);
       const bool at_line = near_line(s, track.start_s()) || (!track.closed() && near_line(s, track.finish_s()));
-      for (const double offset : {w.left + o.cone_offset, -w.right - o.cone_offset}) {
+      // Cones stand outside the kerbs.
+      for (const double offset : {w.left + track.kerb_width(s, true) + o.cone_offset,
+                                  -w.right - track.kerb_width(s, false) - o.cone_offset}) {
         const double x = c.x + offset * nx, y = c.y + offset * ny;
         if (other_road.covers(x, y, s, 0.3)) {
           continue;
         }
+        const double z = track.has_relief() ? track.surface_height(s, offset) : 0.0;
         if (at_line) {
-          add_cone(orange, x, y, kBigConeHeight, kBigConeBase, kConeTop);
+          add_cone(orange, x, y, z, kBigConeHeight, kBigConeBase, kConeTop);
         } else {
-          add_cone(offset > 0.0 ? blue : yellow, x, y, kConeHeight, kConeBase, kConeTop);
+          add_cone(offset > 0.0 ? blue : yellow, x, y, z, kConeHeight, kConeBase, kConeTop);
         }
       }
     }
@@ -408,27 +538,53 @@ TrackMesh make_track_mesh(const Track& track, const TrackMeshOptions& o) {
   MeshSection ground = section("ground", 0.27f, 0.42f, 0.20f, 1.0f);
   const double gx0 = lo[0] - o.ground_margin, gx1 = hi[0] + o.ground_margin;
   const double gy0 = lo[1] - o.ground_margin, gy1 = hi[1] + o.ground_margin;
-  add_vertex(ground, gx0, gy0, kGroundZ, 0, 0, 1, gx0 / 10, gy0 / 10);
-  add_vertex(ground, gx1, gy0, kGroundZ, 0, 0, 1, gx1 / 10, gy0 / 10);
-  add_vertex(ground, gx1, gy1, kGroundZ, 0, 0, 1, gx1 / 10, gy1 / 10);
-  add_vertex(ground, gx0, gy1, kGroundZ, 0, 0, 1, gx0 / 10, gy1 / 10);
-  ground.indices = {0, 1, 2, 0, 2, 3};
+  const Terrain terrain(track);
+  if (!terrain.relief()) {
+    add_vertex(ground, gx0, gy0, kGroundZ, 0, 0, 1, gx0 / 10, gy0 / 10);
+    add_vertex(ground, gx1, gy0, kGroundZ, 0, 0, 1, gx1 / 10, gy0 / 10);
+    add_vertex(ground, gx1, gy1, kGroundZ, 0, 0, 1, gx1 / 10, gy1 / 10);
+    add_vertex(ground, gx0, gy1, kGroundZ, 0, 0, 1, gx0 / 10, gy1 / 10);
+    ground.indices = {0, 1, 2, 0, 2, 3};
+  } else {
+    // A height grid following the road, a little below it.
+    const double spacing = std::max(3.0, std::max(gx1 - gx0, gy1 - gy0) / 220.0);
+    const auto nx = static_cast<std::uint32_t>(std::ceil((gx1 - gx0) / spacing));
+    const auto ny = static_cast<std::uint32_t>(std::ceil((gy1 - gy0) / spacing));
+    for (std::uint32_t j = 0; j <= ny; ++j) {
+      for (std::uint32_t i = 0; i <= nx; ++i) {
+        const double x = gx0 + (gx1 - gx0) * i / nx, y = gy0 + (gy1 - gy0) * j / ny;
+        add_vertex(ground, x, y, terrain.height(x, y) + 2.0 * kGroundZ, 0, 0, 1, x / 10, y / 10);
+      }
+    }
+    for (std::uint32_t j = 0; j < ny; ++j) {
+      for (std::uint32_t i = 0; i < nx; ++i) {
+        const std::uint32_t a = j * (nx + 1) + i, b = a + 1, c = a + nx + 1, d = c + 1;
+        ground.indices.insert(ground.indices.end(), {a, b, d, a, d, c});
+      }
+    }
+    geometry::smooth_normals(ground, 0, 0);
+  }
+  MeshSection kerb_red = section("kerb_red", 0.78f, 0.08f, 0.08f, 0.6f);
+  MeshSection kerb_white = section("kerb_white", 0.93f, 0.93f, 0.92f, 0.6f);
+  add_kerbs(track, kerb_red, kerb_white);
 
-  for (MeshSection* m : {&ground, &asphalt, &lines, &start, &sectors, &blue, &yellow, &orange}) {
+  for (MeshSection* m : {&ground, &asphalt, &lines, &start, &sectors, &kerb_red, &kerb_white, &blue, &yellow, &orange}) {
     if (!m->indices.empty()) {
       mesh.sections.push_back(std::move(*m));
     }
   }
   if (o.scenery) {
-    add_scenery(track, {gx0, gx1, gy0, gy1}, mesh.sections);
+    add_scenery(track, terrain, {gx0, gx1, gy0, gy1}, mesh.sections);
   }
   double top = std::max(hi[2], static_cast<double>(kPaintZ));
+  double bottom = kGroundZ;
   for (const MeshSection& m : mesh.sections) {
     for (std::size_t i = 2; i < m.positions.size(); i += 3) {
       top = std::max(top, static_cast<double>(m.positions[i]));
+      bottom = std::min(bottom, static_cast<double>(m.positions[i]));
     }
   }
-  mesh.min = {gx0, gy0, kGroundZ};
+  mesh.min = {gx0, gy0, bottom};
   mesh.max = {gx1, gy1, top};
   return mesh;
 }

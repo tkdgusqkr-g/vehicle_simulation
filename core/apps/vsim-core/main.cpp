@@ -38,6 +38,7 @@
 #include "vsim/input/input_service.hpp"
 #endif
 #include "vsim/link/state_link.hpp"
+#include "vsim/models/vehicle/suspension.hpp"
 #include "vsim/sim/simulation.hpp"
 #include "vsim/track/track.hpp"
 #include "vsim/track/track_mesh.hpp"
@@ -64,6 +65,7 @@ struct Options {
   std::string input_profiles;
   std::string export_track;
   std::string export_car;
+  std::string export_kc;
   std::string link_name = vsim_link::kStateName;
   bool no_wheel = false;
   bool virtual_wheel = false;
@@ -88,6 +90,7 @@ constexpr const char* kUsage = R"(usage: vsim-core --scenario <file.yaml> [optio
   --virtual-wheel      add a virtual steering wheel driven by input.virtual (UI tests)
   --export-track-glb <file>  write the scenario's track as a 3D model (glTF binary) and exit
   --export-car-glb <file>    write the car's 3D model (glTF binary) and exit
+  --export-kc <file.csv>     write the suspension K&C curves solved from the hardpoints and exit
   --version            print the version and exit
 
 In realtime mode open ui/live/index.html in a browser to watch and drive.
@@ -113,6 +116,60 @@ std::vector<std::string> utf8_args(int argc, char** argv) {
 #else
   return {argv, argv + argc};
 #endif
+}
+
+// Suspension K&C curves (design doc §5.5) as CSV: per axle over wheel travel
+// at the rack's centre, and the front over the rack at design height; the
+// static figures go to the console.
+void write_kc(const vsim::ParamTree& params, const std::string& file) {
+  std::ofstream out(vsim::path_from_utf8(file));
+  if (!out) {
+    throw std::runtime_error("cannot write " + file);
+  }
+  constexpr double kDeg = std::numbers::pi / 180.0;
+  out << "axle,travel_mm,rack_mm,steer_deg,camber_deg,contact_x_mm,contact_y_mm,jacking_x,jacking_y,"
+         "spring_mm,motion_ratio,kingpin_arm_x_mm,kingpin_arm_y_mm,kingpin_arm_z_mm\n";
+  const double wheelbase = params.get_double("vehicle.wheelbase_m", 1.53);
+  for (const bool front : {true, false}) {
+    const vsim::WishboneSolver solver(vsim::WishboneGeometry::from_params(params, front));
+    const double half = 0.5 * params.get_double(front ? "vehicle.track_front_m" : "vehicle.track_rear_m", 1.2);
+    const vsim::KcSummary k = vsim::summarize(solver, half, wheelbase, front);
+    std::printf("%s: kingpin %.2f deg, caster %.2f deg, scrub %.1f mm, trail %.1f mm, roll centre %.1f mm, "
+                "camber gain %.2f deg/10 mm, bump steer %.3f deg/10 mm, motion ratio %.3f%s\n",
+                front ? "front" : "rear", k.kingpin_inclination_deg, k.caster_deg, 1000.0 * k.scrub_radius_m,
+                1000.0 * k.mechanical_trail_m, 1000.0 * k.roll_centre_height_m, k.camber_gain_deg_per_m / 100.0,
+                k.bump_steer_deg_per_m / 100.0, k.motion_ratio,
+                front ? (", Ackermann " + std::to_string(static_cast<int>(std::lround(k.ackermann_percent))) + " %").c_str()
+                      : "");
+    double rack_max = 0.0;
+    if (front) {
+      constexpr double h = 1e-4;
+      const double slope = (solver.solve(0.0, h).steer - solver.solve(0.0, -h).steer) / (2.0 * h);
+      rack_max = params.get_double("vehicle.steering.lock_deg", 110.0) * kDeg /
+                 (params.get_double("vehicle.steering.ratio", 4.5) * slope);
+    }
+    const vsim::KcTable table = vsim::KcTable::build(solver, 0.05, 41, rack_max, front ? 21 : 1);
+    const auto row = [&](double travel, double rack) {
+      const vsim::KcPoint p = table.at(travel, rack);
+      char line[512];
+      std::snprintf(line, sizeof line, "%s,%.1f,%.2f,%.4f,%.4f,%.3f,%.3f,%.5f,%.5f,%.3f,%.4f,%.2f,%.2f,%.2f\n",
+                    front ? "front" : "rear", 1000.0 * travel, 1000.0 * rack, p.steer / kDeg, p.camber / kDeg,
+                    1000.0 * p.cp_x, 1000.0 * p.cp_y, p.dcp_x, p.dcp_y, 1000.0 * p.spring, 1.0 / p.dspring,
+                    1000.0 * p.arm_x, 1000.0 * p.arm_y, 1000.0 * p.arm_z);
+      out << line;
+    };
+    for (int i = -20; i <= 20; ++i) {
+      row(0.0025 * i, 0.0);
+    }
+    if (front) {
+      for (int i = -10; i <= 10; ++i) {
+        if (i != 0) {
+          row(0.0, rack_max * i / 10.0);
+        }
+      }
+    }
+  }
+  std::cout << "K&C written to " << file << "\n";
 }
 
 std::optional<Options> parse_args(const std::vector<std::string>& args) {
@@ -149,6 +206,8 @@ std::optional<Options> parse_args(const std::vector<std::string>& args) {
       options.input_profiles = value();
     } else if (arg == "--export-track-glb") {
       options.export_track = value();
+    } else if (arg == "--export-kc") {
+      options.export_kc = value();
     } else if (arg == "--export-car-glb") {
       options.export_car = value();
     } else if (arg == "--set") {
@@ -222,6 +281,10 @@ struct StateStream {
       {"last_sector", "track.last_sector", {}},
       {"off_track", "track.off_track", {}},
       {"finished", "track.finished", {}},
+      {"roll", "veh.chassis.roll", {}},
+      {"pitch", "veh.chassis.pitch", {}},
+      {"heave", "veh.chassis.heave", {}},
+      {"road_z", "veh.chassis.road_z", {}},
   };
   std::vector<vsim::SignalId> motor_temps;
   // Per wheel (FL, FR, RL, RR) arrays for the 3D view; empty if the model has none.
@@ -234,7 +297,10 @@ struct StateStream {
                                           {"wheel_omega", "omega", {}},
                                           {"wheel_slip_ratio", "slip_ratio", {}},
                                           {"wheel_slip_angle", "slip_angle", {}},
-                                          {"wheel_load", "fz", {}}};
+                                          {"wheel_load", "fz", {}},
+                                          {"wheel_hub", "hub_offset", {}},
+                                          {"wheel_camber", "camber", {}},
+                                          {"wheel_surface", "surface", {}}};
 
   void resolve(const vsim::SignalBus& bus) {
     for (Field& field : fields) {
@@ -289,13 +355,14 @@ struct StateStream {
 json track_geometry(const vsim::Track& track) {
   const auto every = static_cast<std::size_t>(std::max(1.0, std::round(1.0 / vsim::Track::kStep)));
   const auto round_cm = [](double v) { return std::round(v * 100.0) / 100.0; };
-  json center = json::array(), left = json::array(), right = json::array();
+  json center = json::array(), left = json::array(), right = json::array(), elevation = json::array();
   for (std::size_t i = 0; i < track.samples().size(); i += every) {
     const vsim::CurveSample& c = track.samples()[i];
     const vsim::Track::Widths w = track.widths_at(c.s);
     const double nx = -std::sin(c.heading);
     const double ny = std::cos(c.heading);
     center.push_back({round_cm(c.x), round_cm(c.y)});
+    elevation.push_back(round_cm(track.elevation(c.s)));
     left.push_back({round_cm(c.x + w.left * nx), round_cm(c.y + w.left * ny)});
     right.push_back({round_cm(c.x - w.right * nx), round_cm(c.y - w.right * ny)});
   }
@@ -320,7 +387,7 @@ json track_geometry(const vsim::Track& track) {
   return {{"name", track.name()},   {"closed", track.closed()},     {"length", track.length()},
           {"center", center},       {"left", left},                 {"right", right},
           {"lines", lines},         {"start", marker(track.start_s())}, {"finish", marker(track.finish_s())},
-          {"sectors", sectors}};
+          {"sectors", sectors},     {"elevation", elevation}};
 }
 
 std::string hello_message(const vsim::Simulation& sim, std::uint64_t track_generation,
@@ -1003,6 +1070,12 @@ int main(int argc, char** argv) {
                                               options->overrides),
                          sim_options);
 
+    if (!options->export_kc.empty()) {
+      write_kc(sim.scenario().params, options->export_kc);
+      if (options->export_car.empty() && options->export_track.empty()) {
+        return 0;
+      }
+    }
     if (!options->export_car.empty()) {
       std::ofstream out(vsim::path_from_utf8(options->export_car), std::ios::binary);
       out << vsim::to_glb(vsim::make_vehicle_visual(sim.scenario().params));

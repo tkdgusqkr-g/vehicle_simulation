@@ -24,6 +24,7 @@
     --sector: #ffd84d;
     --point: #4fb3ff;
     --selected: #ffffff;
+    --patch: rgba(79, 179, 255, 0.28);
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
@@ -68,6 +69,11 @@
   .notice-info { color: var(--ok); }
   kbd { color: var(--text); background: #222833; border: 1px solid var(--panel-border); border-radius: 4px;
     padding: 0 4px; font-family: inherit; font-size: 11px; }
+  h3.sub { font-size: 12px; color: var(--muted); margin: 10px 0 4px; font-weight: 600; }
+  .item { display: flex; gap: 4px; align-items: center; margin: 3px 0; flex-wrap: wrap; }
+  .item input { width: 52px; -moz-appearance: textfield; }
+  .item input::-webkit-inner-spin-button, .item input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  .item select { width: 62px; }
 </style>
 </head>
 <body>
@@ -116,9 +122,23 @@
     <div class="row"><label>x / y (m)</label><span><input id="p-x" type="number" step="0.1"> <input id="p-y" type="number" step="0.1"></span></div>
     <div class="row"><label>폭 좌 / 우 (m)</label><span><input id="p-wl" type="number" step="0.1" min="0.3"> <input id="p-wr" type="number" step="0.1" min="0.3"></span></div>
     <div class="row"><label>고도 z (m) / 뱅크 (°)</label><span><input id="p-z" type="number" step="0.1"> <input id="p-bank" type="number" step="0.5"></span></div>
-    <div class="row"><span class="muted">고도·뱅크는 저장만 됩니다 (L3 모델에서 사용)</span></div>
+    <div class="row"><span class="muted">뱅크 +: 왼쪽 가장자리가 높음. L3 차량 모델과 3D 화면에 반영</span></div>
     <div class="row"><span></span><button id="btn-del">점 삭제</button></div>
   </div>
+
+  <h2>고도 단면</h2>
+  <canvas id="profile" style="display:block; width:100%; height:90px; background: var(--bg); border-radius: 6px"></canvas>
+
+  <h2>노면</h2>
+  <div class="row"><label>노면 마찰 (타이어 데이터 대비)</label><input id="sf-mu" type="number" step="0.05" min="0.1" style="width:70px"></div>
+  <div class="row"><label>거칠기 (ISO 8608)</label><select id="sf-rough"></select></div>
+  <div class="row"><label>잔디 마찰 / 거칠기</label><span><input id="sf-gmu" type="number" step="0.05" min="0.1" style="width:62px"> <select id="sf-grough"></select></span></div>
+  <h3 class="sub">연석</h3>
+  <div id="kerb-list"></div>
+  <div class="row"><button id="btn-kerb" style="flex:1" title="선택한 점부터 다음 3개 점까지">선택한 점에 연석 추가</button></div>
+  <h3 class="sub">마찰 구간 (젖은 노면 등)</h3>
+  <div id="patch-list"></div>
+  <div class="row"><button id="btn-patch" style="flex:1" title="선택한 점부터 다음 3개 점까지, 트랙 전체 폭">선택한 점에 마찰 구간 추가</button></div>
 
   <h2>주행 라인</h2>
   <div class="row"><select id="line-select" style="flex:1"></select><button id="btn-line-new">새 라인</button></div>
@@ -322,6 +342,18 @@ function linePoints(geom, line) {
 }
 
 // Nearest resampled point at arc length s (wrapped on closed tracks).
+// Samples of the centerline from one control point to another (wrapping on
+// closed tracks).
+function rangeSamples(k) {
+  if (!geom || k.from_point >= doc.points.length || k.to_point >= doc.points.length) return [];
+  const s0 = geom.pointS[k.from_point];
+  let s1 = geom.pointS[k.to_point];
+  if (doc.closed && s1 <= s0) s1 += geom.length;
+  const out = [];
+  for (let s = s0; s <= s1 + 1e-9; s += 0.5) out.push(sampleAt(geom, doc.closed ? s % geom.length : s));
+  return out;
+}
+
 function sampleAt(geom, s) {
   const count = geom.closed ? geom.samples.length : geom.samples.length - 1;
   if (geom.closed) s = ((s % geom.length) + geom.length) % geom.length;
@@ -399,6 +431,16 @@ function checks(doc, geom) {
     }
   }
   if (crossing) out.push(`센터라인이 (${crossing[0].toFixed(0)}, ${crossing[1].toFixed(0)}) 근처에서 교차합니다 (스키드패드처럼 의도한 경우 무시)`);
+  const n = doc.points.length;
+  for (const k of doc.kerbs) if (k.from_point >= n || k.to_point >= n) out.push(`연석 ${k.from_point}→${k.to_point}: 없는 점 번호`);
+  for (const k of doc.patches) if (k.from_point >= n || k.to_point >= n) out.push(`마찰 구간 ${k.from_point}→${k.to_point}: 없는 점 번호`);
+  // Steep grades (FS courses are flat; circuits rarely exceed 10 %).
+  for (let i = 0; i < n; i++) {
+    const j = i + 1 < n ? i + 1 : (doc.closed ? 0 : -1);
+    if (j < 0) continue;
+    const run = Math.hypot(doc.points[j].x - doc.points[i].x, doc.points[j].y - doc.points[i].y);
+    if (run > 0 && Math.abs(doc.points[j].z - doc.points[i].z) / run > 0.15) { out.push(`점 ${i}→${j}: 경사 ${(100 * Math.abs(doc.points[j].z - doc.points[i].z) / run).toFixed(0)} % (15 % 초과)`); break; }
+  }
   return out;
 }
 
@@ -421,6 +463,11 @@ function normalize(d) {
     w_right: +(p.w_right ?? 1.5), bank_deg: +(p.bank_deg || 0) }));
   t.lines = (t.lines || []).map((l) => ({ name: String(l.name), offsets: (l.offsets || []).map((o) => [+o[0], +o[1]]) }));
   t.sector_points = (t.sector_points || []).map(Number);
+  t.surface = Object.assign({ mu: 1.0, roughness: "", grass_mu: 0.6, grass_roughness: "C" }, d.surface || {});
+  t.kerbs = (t.kerbs || []).map((k) => ({ from_point: +k.from_point, to_point: +k.to_point, side: k.side === "right" ? "right" : "left",
+    width: +(k.width ?? 1.0), height: +(k.height ?? 0.03) }));
+  t.patches = (t.patches || []).map((k) => ({ from_point: +k.from_point, to_point: +k.to_point,
+    n_min: +(k.n_min ?? -100), n_max: +(k.n_max ?? 100), mu: +(k.mu ?? 1.0) }));
   return t;
 }
 
@@ -465,11 +512,19 @@ function shiftIndices(at, delta) {
   doc.start_point = Math.max(0, fix(doc.start_point));
   if (doc.finish_point >= 0) doc.finish_point = fix(doc.finish_point);
   doc.sector_points = doc.sector_points.map(fix);
+  for (const k of doc.kerbs.concat(doc.patches)) { k.from_point = fix(k.from_point); k.to_point = fix(k.to_point); }
 }
 
 function deletePoint(i) {
   doc.points.splice(i, 1);
   doc.sector_points = doc.sector_points.filter((k) => k !== i);
+  // Kerbs and patches ending on the point move to its neighbour; empty ones go.
+  for (const k of doc.kerbs.concat(doc.patches)) {
+    if (k.from_point === i) k.from_point = i + 1;
+    if (k.to_point === i) k.to_point = i - 1;
+  }
+  doc.kerbs = doc.kerbs.filter((k) => k.from_point !== k.to_point && k.to_point >= 0);
+  doc.patches = doc.patches.filter((k) => k.from_point !== k.to_point && k.to_point >= 0);
   if (doc.finish_point === i) doc.finish_point = -1;
   if (doc.start_point === i) doc.start_point = 0;
   shiftIndices(i + 1, -1);
@@ -585,6 +640,32 @@ function render() {
     ctx.lineWidth = Math.max(1, 0.12 * view.scale);
     path(left, doc.closed); ctx.stroke();
     path(right, doc.closed); ctx.stroke();
+    // Friction patches (translucent) and kerbs (red and white blocks outside the edge).
+    for (const k of doc.patches) {
+      const pts = rangeSamples(k).map((p) => {
+        const nx = -Math.sin(p.heading), ny = Math.cos(p.heading);
+        const a = Math.max(-p.wr, k.n_min), b = Math.min(p.wl, k.n_max);
+        return [[p.x + a * nx, p.y + a * ny], [p.x + b * nx, p.y + b * ny]];
+      });
+      if (pts.length < 2) continue;
+      ctx.fillStyle = color("--patch");
+      path(pts.map((q) => q[0]).concat(pts.map((q) => q[1]).reverse()), true);
+      ctx.fill();
+    }
+    for (const k of doc.kerbs) {
+      const samples = rangeSamples(k);
+      for (let i = 0; i + 1 < samples.length; i++) {
+        const p = samples[i], q = samples[i + 1];
+        const edge = (r, e) => {
+          const nx = -Math.sin(r.heading), ny = Math.cos(r.heading);
+          const off = k.side === "left" ? r.wl + e : -(r.wr + e);
+          return [r.x + off * nx, r.y + off * ny];
+        };
+        ctx.fillStyle = Math.floor((p.s - samples[0].s) / 1.0) % 2 === 0 ? "#c8202a" : "#eeeeee";
+        path([edge(p, 0), edge(q, 0), edge(q, k.width), edge(p, k.width)], true);
+        ctx.fill();
+      }
+    }
     // Centerline, optionally coloured by curvature.
     if (showCurvature) {
       ctx.lineWidth = 3;
@@ -674,6 +755,7 @@ function refresh() {
     if (document.activeElement !== el) el.value = p ? +p[key].toFixed(3) : "";
   }
   $("btn-del").disabled = !p;
+  refreshSurface();
   const select = $("line-select");
   select.innerHTML = "";
   if (!doc.lines.length) select.append(new Option("(라인 없음: 자동 주행은 센터라인)", ""));
@@ -692,6 +774,88 @@ function refresh() {
   $("dirty").textContent = JSON.stringify(doc) !== savedJson ? "저장 안 됨" : "";
   render();
 }
+
+// --- Surface: friction, roughness, kerbs, patches, elevation profile -----------------------
+const ROUGHNESS = [["", "없음 (매끈)"], ["A", "A (아주 좋음)"], ["B", "B (좋음)"], ["C", "C (보통)"], ["D", "D (나쁨)"],
+  ["E", "E"], ["F", "F"], ["G", "G"], ["H", "H"]];
+for (const id of ["sf-rough", "sf-grough"]) for (const [v, label] of ROUGHNESS) $(id).append(new Option(label, v));
+function refreshSurface() {
+  const f = doc.surface;
+  for (const [id, key] of [["sf-mu", "mu"], ["sf-gmu", "grass_mu"]]) if (document.activeElement !== $(id)) $(id).value = f[key];
+  $("sf-rough").value = f.roughness;
+  $("sf-grough").value = f.grass_roughness;
+  const n = doc.points.length;
+  const list = (items, el, fields) => {
+    el.innerHTML = "";
+    items.forEach((k, idx) => {
+      const row = document.createElement("div");
+      row.className = "item";
+      for (const [key, label, step] of fields) {
+        if (key === "side") {
+          const sel = document.createElement("select");
+          sel.append(new Option("왼쪽", "left"), new Option("오른쪽", "right"));
+          sel.value = k.side;
+          sel.onchange = () => { k.side = sel.value; commit(); };
+          row.append(sel);
+          continue;
+        }
+        const input = document.createElement("input");
+        input.type = "number"; input.step = step; input.title = label; input.value = k[key];
+        if (key.endsWith("_point")) { input.min = 0; input.max = Math.max(0, n - 1); }
+        input.onchange = () => { const v = parseFloat(input.value); if (isFinite(v)) { k[key] = key.endsWith("_point") ? Math.round(v) : v; commit(); } };
+        row.append(input);
+      }
+      const del = document.createElement("button");
+      del.textContent = "✕";
+      del.onclick = () => { items.splice(idx, 1); commit(); };
+      row.append(del);
+      el.append(row);
+    });
+    if (!items.length) el.innerHTML = '<div class="muted">없음</div>';
+  };
+  list(doc.kerbs, $("kerb-list"), [["from_point", "시작 점", 1], ["to_point", "끝 점", 1], ["side", "", 0], ["width", "폭 m", 0.1], ["height", "높이 m", 0.005]]);
+  list(doc.patches, $("patch-list"), [["from_point", "시작 점", 1], ["to_point", "끝 점", 1], ["n_min", "오른쪽 끝 n (m, 왼쪽 +)", 0.5], ["n_max", "왼쪽 끝 n (m)", 0.5], ["mu", "마찰", 0.05]]);
+  $("btn-kerb").disabled = selected < 0;
+  $("btn-patch").disabled = selected < 0;
+  drawProfile();
+}
+function drawProfile() {
+  const c = $("profile"), g = c.getContext("2d");
+  const w = c.clientWidth, h = c.clientHeight;
+  c.width = w * devicePixelRatio; c.height = h * devicePixelRatio;
+  g.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  g.clearRect(0, 0, w, h);
+  if (!geom || !doc.points.length) return;
+  const zs = doc.points.map((p) => p.z), s = geom.pointS.slice();
+  if (doc.closed) { zs.push(doc.points[0].z); s.push(geom.length); }
+  const lo = Math.min(...zs, 0), hi = Math.max(...zs, 0.5);
+  const X = (v) => 6 + (w - 12) * v / (s[s.length - 1] || 1), Y = (v) => h - 14 - (h - 24) * (v - lo) / (hi - lo || 1);
+  g.strokeStyle = color("--accent"); g.lineWidth = 1.5; g.beginPath();
+  zs.forEach((z, i) => { if (i) g.lineTo(X(s[i]), Y(z)); else g.moveTo(X(s[i]), Y(z)); });
+  g.stroke();
+  zs.forEach((z, i) => { g.fillStyle = i === selected ? color("--selected") : color("--point"); g.fillRect(X(s[i]) - 2, Y(z) - 2, 4, 4); });
+  g.fillStyle = color("--muted"); g.font = "10px system-ui";
+  g.fillText(`${hi.toFixed(1)} m`, 4, 10);
+  g.fillText(`${lo.toFixed(1)} m`, 4, h - 3);
+  g.fillText(`${geom.length.toFixed(0)} m`, w - 34, h - 3);
+}
+for (const [id, key] of [["sf-mu", "mu"], ["sf-gmu", "grass_mu"]]) {
+  $(id).addEventListener("change", () => { const v = parseFloat($(id).value); if (isFinite(v) && v > 0) { doc.surface[key] = v; commit(); } });
+}
+$("sf-rough").addEventListener("change", () => { doc.surface.roughness = $("sf-rough").value; commit(); });
+$("sf-grough").addEventListener("change", () => { doc.surface.grass_roughness = $("sf-grough").value; commit(); });
+$("btn-kerb").addEventListener("click", () => {
+  if (selected < 0) return;
+  const n = doc.points.length;
+  doc.kerbs.push({ from_point: selected, to_point: doc.closed ? (selected + 3) % n : Math.min(n - 1, selected + 3), side: "left", width: 1.0, height: 0.03 });
+  commit();
+});
+$("btn-patch").addEventListener("click", () => {
+  if (selected < 0) return;
+  const n = doc.points.length;
+  doc.patches.push({ from_point: selected, to_point: doc.closed ? (selected + 3) % n : Math.min(n - 1, selected + 3), n_min: -100, n_max: 100, mu: 0.6 });
+  commit();
+});
 
 for (const [id, key] of [["p-x", "x"], ["p-y", "y"], ["p-wl", "w_left"], ["p-wr", "w_right"], ["p-z", "z"], ["p-bank", "bank_deg"]]) {
   $(id).addEventListener("change", () => {

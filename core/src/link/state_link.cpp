@@ -386,11 +386,15 @@ void LinkSnapshot::reset(const Simulation& sim) {
   sector_ = id("track.sector");
   off_track_ = id("track.off_track");
   finished_ = id("track.finished");
+  roll_ = id("veh.chassis.roll");
+  pitch_ = id("veh.chassis.pitch");
+  heave_ = id("veh.chassis.heave");
+  road_z_ = id("veh.chassis.road_z");
   motor_temps_ = bus.match("pt.motor.*.temp");
   for (std::size_t c = 0; c < kCorners; ++c) {
     const std::string base = "veh.wheel." + std::string(kCornerNames[c]) + ".";
     wheels_[c] = {id(base + "steer"), id(base + "omega"), id(base + "fz"), id(base + "slip_ratio"),
-                  id(base + "slip_angle")};
+                  id(base + "slip_angle"), id(base + "hub_offset"), id(base + "camber")};
   }
 
   const ParamTree& p = sim.scenario().params;
@@ -437,11 +441,21 @@ void LinkSnapshot::update(const Simulation& sim, vsim_link::VehicleState& s) {
   s.ay = ay_.get(bus);
   s.speed = speed_.get(bus);
 
-  const double blend = 1.0 - std::exp(-dt / body_tau_);
-  ax_filtered_ += blend * (s.ax - ax_filtered_);
-  ay_filtered_ += blend * (s.ay - ay_filtered_);
-  s.roll = roll_per_g_ * ay_filtered_ / kGravity;     // turning left: the left side lifts
-  s.pitch = -pitch_per_g_ * ax_filtered_ / kGravity;  // braking: the nose dips
+  if (roll_.id && pitch_.id) {
+    // The full model's body: real roll, pitch and heave over the 3D road.
+    s.roll = roll_.get(bus);
+    s.pitch = pitch_.get(bus);
+    s.z = info_.cg_height + heave_.get(bus);
+    s.road_z = static_cast<float>(road_z_.get(bus));
+  } else {
+    // Planar models: body motion for the picture only, from the accelerations.
+    const double blend = 1.0 - std::exp(-dt / body_tau_);
+    ax_filtered_ += blend * (s.ax - ax_filtered_);
+    ay_filtered_ += blend * (s.ay - ay_filtered_);
+    s.roll = roll_per_g_ * ay_filtered_ / kGravity;     // turning left: the left side lifts
+    s.pitch = -pitch_per_g_ * ax_filtered_ / kGravity;  // braking: the nose dips
+    s.road_z = 0.0f;
+  }
 
   s.steering_wheel = static_cast<float>(steer_.get(bus));
   s.throttle = static_cast<float>(throttle_.get(bus));
@@ -460,6 +474,8 @@ void LinkSnapshot::update(const Simulation& sim, vsim_link::VehicleState& s) {
     s.wheel_load[c] = static_cast<float>(w.load.get(bus));
     s.wheel_slip_ratio[c] = static_cast<float>(w.slip_ratio.get(bus));
     s.wheel_slip_angle[c] = static_cast<float>(w.slip_angle.get(bus));
+    s.wheel_z[c] = static_cast<float>(w.hub_offset.get(bus));
+    s.wheel_camber[c] = static_cast<float>(w.camber.get(bus));
   }
 
   s.power_kw = static_cast<float>(power_.get(bus) / 1000.0);

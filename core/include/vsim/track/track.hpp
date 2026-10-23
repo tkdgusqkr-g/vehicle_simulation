@@ -171,6 +171,8 @@ class Track : public SampledCurve {
   bool has_relief() const { return relief_; }
   // Centerline elevation at s.
   double elevation(double s) const;
+  // Width of the kerb along the left or right boundary at s; 0 if none.
+  double kerb_width(double s, bool left) const;
 
  private:
   struct Wave {
@@ -179,6 +181,10 @@ class Track : public SampledCurve {
   struct Ground {
     double z, dzds, dzdn;
   };
+  struct Frenet {
+    double s = 0.0, n = 0.0, heading = 0.0, kappa = 0.0;
+  };
+  Frenet frenet(double x, double y, double* hint) const;
   Ground centre_ground(double s, double n) const;
   double kerb_at(double s, double e, bool left, Ground& g) const;
   static void add_waves(const std::vector<Wave>& waves, double s, double n, Ground& g);

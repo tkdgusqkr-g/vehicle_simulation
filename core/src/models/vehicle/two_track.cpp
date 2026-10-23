@@ -145,14 +145,14 @@ struct TwoTrackModel::Signals {
   };
 
   struct Corner3 {
-    SignalId z, travel, camber, spring, damper, deflection, road_z, mu, surface, rig_z, rig_vz;
+    SignalId z, travel, camber, spring, damper, deflection, road_z, mu, surface, rig_z, rig_vz, hub_offset;
   };
 
   SignalId steer, brake;
   SignalId x, y, yaw, vx, vy, r, speed, ax, ay, beta, delta;
   std::array<Wheel, kCorners> wheel;
   // Full model.
-  SignalId z, roll, pitch, vz, roll_rate, pitch_rate, az, rack, potential;
+  SignalId z, roll, pitch, vz, roll_rate, pitch_rate, az, rack, potential, road_z, heave;
   std::array<Corner3, kCorners> corner3;
   std::array<Axle, 2> axle;
   SignalId drag, downforce, brake_pressure, ffb;
@@ -376,6 +376,8 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
     s.az = bus.declare("veh.chassis.az", "m/s^2", "sprung CG vertical acceleration");
     s.rack = bus.declare("veh.steer.rack", "m", "steering rack travel, left +");
     s.potential = bus.declare("energy.potential", "J", "gravity, spring and tire energy gained since the start");
+    s.road_z = bus.declare("veh.chassis.road_z", "m", "road height under the car (mean of the wheels)");
+    s.heave = bus.declare("veh.chassis.heave", "m", "sprung CG height above the road minus its static height");
     for (std::size_t c = 0; c < kCorners; ++c) {
       const std::string name(kCornerNames[c]);
       const std::string base = "veh.wheel." + name + ".";
@@ -389,7 +391,8 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
                       bus.declare(base + "mu", "-", "road friction relative to the tire data"),
                       bus.declare(base + "surface", "-", "0 road, 1 kerb, 2 grass"),
                       bus.declare("rig." + name + ".z", "m", "four-post rig: road displacement under the wheel"),
-                      bus.declare("rig." + name + ".vz", "m/s", "four-post rig: its rate")};
+                      bus.declare("rig." + name + ".vz", "m/s", "four-post rig: its rate"),
+                      bus.declare(base + "hub_offset", "m", "hub height above the car's road level minus its static height")};
     }
   }
 }
@@ -1120,7 +1123,11 @@ void TwoTrackModel::write_outputs(double /*t*/, std::span<const double> x, Signa
     bus.set(s.az, e.az);
     bus.set(s.rack, e.rack);
     bus.set(s.potential, potential_gain);
+    const double road = 0.25 * (e.road_z[0] + e.road_z[1] + e.road_z[2] + e.road_z[3]);
+    bus.set(s.road_z, road);
+    bus.set(s.heave, x[body_offset_ + kZ] - road - h_s_);
     for (std::size_t c = 0; c < kCorners; ++c) {
+      bus.set(s.corner3[c].hub_offset, e.wheel_z[c] - road - hub0_[c]);
       const Signals::Corner3& w = s.corner3[c];
       bus.set(w.z, e.wheel_z[c]);
       bus.set(w.travel, e.travel[c]);

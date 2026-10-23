@@ -165,6 +165,81 @@ def autocross(width=3.5):
                   sector_points=[count // 3, 2 * count // 3])
 
 
+def hill_circuit(width=8.0):
+    """A small club circuit (~700 m) to show the 3D road (M5): 4 m of
+    elevation change, banked sweepers, kerbs at the apexes, an ISO 8608
+    class A surface and a wet patch on the back straight."""
+    half = width / 2
+    segments = [("S", None), ("A", 30, 90), ("S", None), ("A", 15, -60), ("A", 18, 60), ("S", 30),
+                ("A", 25, 90), ("S", 60), ("A", 20, 90), ("S", 80), ("A", 35, 90)]
+    first, second = 0, 2
+
+    def turtle(a, b, spacing):
+        segs = list(segments)
+        segs[first] = ("S", a)
+        segs[second] = ("S", b)
+        return _turtle_tagged(segs, spacing)
+
+    _, x0, y0 = turtle(0.0, 0.0, 1e9)
+    a, b = -x0, -y0  # first straight along +x, second along +y
+    if a <= 0 or b <= 0:
+        raise ValueError(f"hill circuit layout does not close ({a:.1f}, {b:.1f})")
+    tagged, _, _ = turtle(a, b, 8.0)
+    tagged = tagged[:-1]  # the last point closes onto the first
+    # Chord length for the elevation profile.
+    s = [0.0]
+    for (p, _), (q, _) in zip(tagged, tagged[1:]):
+        s.append(s[-1] + math.hypot(q[0] - p[0], q[1] - p[1]))
+    length = s[-1] + math.hypot(tagged[0][0][0] - tagged[-1][0][0], tagged[0][0][1] - tagged[-1][0][1])
+    points = []
+    for (xy, (kind, turn)), sk in zip(tagged, s):
+        p = _point(xy[0], xy[1], half)
+        u = 2 * math.pi * sk / length
+        p["z"] = round(2.0 * math.sin(u) + 1.0 * math.sin(2 * u + 1.0) - 0.5 * math.sin(3 * u), 3)
+        # Bank the long sweepers towards their inside (left turns: right edge up).
+        if kind == "A" and abs(turn[1]) >= 90 and turn[0] >= 25:
+            p["bank_deg"] = -5.0 if turn[1] > 0 else 5.0
+        points.append(p)
+    # Kerbs on the inside of every corner, a wet patch on the long straight.
+    kerbs, patches = [], []
+    i = 0
+    while i < len(tagged):
+        kind, turn = tagged[i][1]
+        if kind != "A":
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(tagged) and tagged[j + 1][1] == (kind, turn):
+            j += 1
+        if j > i:
+            kerbs.append({"from_point": i, "to_point": j, "side": "left" if turn[1] > 0 else "right",
+                          "width": 1.0, "height": 0.025})
+        i = j + 1
+    straight = [k for k, (_, tag) in enumerate(tagged) if tag == ("S", 80)]
+    if len(straight) > 3:
+        patches.append({"from_point": straight[1], "to_point": straight[-2], "n_min": -half, "n_max": 1.0, "mu": 0.6})
+    track = _track("hill circuit", points, closed=True, start_point=1,
+                   sector_points=[len(points) // 3, 2 * len(points) // 3])
+    track["surface"] = {"mu": 1.0, "roughness": "A", "grass_mu": 0.6, "grass_roughness": "C"}
+    track["kerbs"] = kerbs
+    track["patches"] = patches
+    return track
+
+
+def _turtle_tagged(segments, spacing):
+    """_turtle, with each point tagged by the segment that ends at it."""
+    points, tags = [], []
+    x = y = h = 0.0
+    points.append((x, y))
+    tags.append(("S", segments[0][1]))
+    for segment in segments:
+        pts, x, y, h = _turtle([segment], start=(x, y, h), spacing=spacing)
+        for p in pts[1:]:
+            points.append(p)
+            tags.append((segment[0], segment[1:]) if segment[0] == "A" else ("S", segment[1]))
+    return list(zip(points, tags)), x, y
+
+
 def _signed_curvature(a, b, c):
     """Curvature of the circle through three points, positive turning left."""
     abx, aby = b[0] - a[0], b[1] - a[1]
@@ -223,6 +298,7 @@ TEMPLATES = {
     "slalom": slalom,
     "double_lane_change": double_lane_change,
     "autocross": autocross,
+    "hill_circuit": hill_circuit,
 }
 
 
@@ -240,7 +316,7 @@ def main(argv):
 
     for name, generator in TEMPLATES.items():
         track = generator()
-        if name == "autocross":
+        if name in ("autocross", "hill_circuit"):
             geometry = Track.from_json(json.dumps(track))
             track["lines"] = [{"name": "racing",
                                "offsets": minimum_curvature_offsets(geometry.centerline())}]

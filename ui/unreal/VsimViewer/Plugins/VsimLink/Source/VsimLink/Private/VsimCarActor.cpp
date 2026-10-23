@@ -198,8 +198,11 @@ void AVsimCarActor::ApplyState(const vsim_link::VehicleState& State)
 			continue;
 		}
 		Corner.Steer->SetRelativeLocation(Corner.Hub + FVector(0.0, 0.0, 100.0 * State.wheel_z[Index]));
-		// Steering left (vsim +) is negative yaw in Unreal.
-		Corner.Steer->SetRelativeRotation(FRotator(0.0, -VsimFrame::Degrees(State.wheel_steer[Index]), 0.0));
+		// Steering left (vsim +) is negative yaw in Unreal. Camber leans the
+		// top outwards: positive Unreal roll tips the top to the right (+Y),
+		// which is outwards for the right wheels.
+		const double Camber = VsimFrame::Degrees(State.wheel_camber[Index]) * (Index % 2 == 0 ? -1.0 : 1.0);
+		Corner.Steer->SetRelativeRotation(FRotator(0.0, -VsimFrame::Degrees(State.wheel_steer[Index]), Camber));
 		// Rolling forward is a positive rotation about Unreal's +Y.
 		Corner.Spin->SetRelativeRotation(FQuat(FVector(0.0, 1.0, 0.0), State.wheel_spin[Index]));
 	}

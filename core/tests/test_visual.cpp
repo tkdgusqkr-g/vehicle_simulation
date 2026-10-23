@@ -185,8 +185,9 @@ TEST(FormulaCar, GlbCarriesPartRoles) {
     if (role == "wheel") {
       ++wheels;
       EXPECT_TRUE(node.contains("translation"));
-      // glTF frame: y up, so the hub height is the second component.
-      EXPECT_NEAR(node["translation"][1].get<double>(), 0.203, 1e-9);
+      // glTF frame: y up, so the hub height is the second component: the
+      // full model's static hub (unloaded radius minus the static squash).
+      EXPECT_NEAR(node["translation"][1].get<double>(), 0.2286 - 0.25 * 280.0 * 9.81 / 100e3, 1e-6);
     }
     if (role == "link") {
       EXPECT_TRUE(node["extras"].contains("outer"));

@@ -264,11 +264,16 @@ const model = {
   fromSimulator: false,
 };
 const HARDPOINTS = ["lower_front", "lower_rear", "lower_outer", "upper_front", "upper_rear", "upper_outer",
-  "tie_inner", "tie_outer", "push_outer", "push_inner", "wheel_centre"];
+  "tie_inner", "tie_outer", "push_outer", "push_inner", "wheel_centre",
+  "rocker_pivot", "rocker_axis_point", "spring_rocker", "spring_chassis"];
+// Optional: with all four the simulator solves the motion ratio from the rocker.
+const ROCKER = ["rocker_pivot", "rocker_axis_point", "spring_rocker", "spring_chassis"];
 const HARDPOINT_LABELS = {
   lower_front: "아래 위시본 앞", lower_rear: "아래 위시본 뒤", lower_outer: "아래 볼조인트", upper_front: "위 위시본 앞",
   upper_rear: "위 위시본 뒤", upper_outer: "위 볼조인트", tie_inner: "타이로드 안", tie_outer: "타이로드 밖",
   push_outer: "푸시로드 밖", push_inner: "푸시로드 안 (로커)", wheel_centre: "바퀴 중심",
+  rocker_pivot: "로커 축 (선택)", rocker_axis_point: "로커 축 위 다른 점 (선택)", spring_rocker: "스프링 로커 쪽 (선택)",
+  spring_chassis: "스프링 차체 쪽 (선택)",
 };
 
 // --- Loading -------------------------------------------------------------------------
@@ -582,6 +587,7 @@ function computeTotals(m = orientationMatrix()) {
   }
   const unsprungTotals = unsprung.map((list) => (list.length ? combine(list) : null));
   const total = combine([...parts, ...unsprungTotals.filter(Boolean)]);
+  const sprung = combine(parts);  // the full model's body: roll and pitch about its own CG
   if (!total) { model.result = null; renderMass(); return; }
 
   // Origin: the ground below the CG.
@@ -596,7 +602,7 @@ function computeTotals(m = orientationMatrix()) {
   const spinning = groups[0].map(bodyProps).filter(Boolean);
   const wheelSpin = spinning.length ? combine(spinning) : null;
   model.result = {
-    total, parts, unsprung: unsprungTotals,
+    total, sprung, parts, unsprung: unsprungTotals,
     hubs: hubs.map((h) => (h ? { ...h, centre: local(h.centre) } : null)),
     cg: local(total.centroid), wheelInertia: wheelSpin ? wheelSpin.inertia[2][2] : null,
     frontAxleX: frontAxleX !== null ? frontAxleX - origin.x : null,
@@ -680,7 +686,9 @@ function renderMass() {
   model.summary = {
     mass_kg: r.total.mass, cg_height_m: r.cg.y, cg_to_front_axle_m: front,
     wheelbase_m: wheelbase, track_front_m: tf, track_rear_m: tr,
-    yaw_inertia_kgm2: I[1][1], roll_inertia_kgm2: I[0][0], pitch_inertia_kgm2: I[2][2], product_xz_kgm2: -I[0][1],
+    yaw_inertia_kgm2: I[1][1],
+    roll_inertia_kgm2: (r.sprung || r.total).inertia[0][0], pitch_inertia_kgm2: (r.sprung || r.total).inertia[2][2],
+    product_xz_kgm2: -I[0][1],
     unsprung_mass_kg: unsprung, unloaded_radius_m: radius, tyre_width_m: r.hubs[0]?.width, wheel_inertia_kgm2: r.wheelInertia,
   };
   const s = model.summary;
@@ -691,7 +699,7 @@ function renderMass() {
       <tr><td>무게중심 → 앞차축</td><td class="num">${fmt(s.cg_to_front_axle_m)} m (앞 ${fmt(frontShare * 100, 1)} %)</td></tr>
       <tr><td>축거</td><td class="num">${fmt(s.wheelbase_m)} m</td></tr>
       <tr><td>윤거 앞 / 뒤</td><td class="num">${fmt(tf)} / ${fmt(tr)} m</td></tr>
-      <tr><td>요 / 롤 / 피치 관성</td><td class="num">${fmt(s.yaw_inertia_kgm2, 1)} / ${fmt(s.roll_inertia_kgm2, 1)} / ${fmt(s.pitch_inertia_kgm2, 1)} kg·m²</td></tr>
+      <tr><td>요(전체) / 롤·피치(현가)</td><td class="num">${fmt(s.yaw_inertia_kgm2, 1)} / ${fmt(s.roll_inertia_kgm2, 1)} / ${fmt(s.pitch_inertia_kgm2, 1)} kg·m²</td></tr>
       <tr><td>언스프렁 FL FR RL RR</td><td class="num">${unsprung.map((u) => fmt(u, 1)).join(" ")} kg</td></tr>
       <tr><td>타이어 반경 / 폭</td><td class="num">${fmt(radius)} / ${fmt(s.tyre_width_m)} m</td></tr>
       <tr><td>바퀴 회전 관성 (앞 왼쪽)</td><td class="num">${fmt(s.wheel_inertia_kgm2, 4)} kg·m²</td></tr>
@@ -858,9 +866,18 @@ function builderYaml() {
       lines.push("suspension:");
       for (const a of axles) {
         lines.push(`  ${a}:`, "    hardpoints:");
+        const hp = model.hardpoints[a];
+        const rocker = ROCKER.every((name) => hp[name]);
         for (const name of HARDPOINTS) {
-          const p = model.hardpoints[a][name];
-          if (p) lines.push(`      ${name}: [${p.map((v) => num(v)).join(", ")}]`);
+          const p = hp[name];
+          if (!p || (ROCKER.includes(name) && !rocker)) continue;
+          if (name === "rocker_axis_point") {
+            const d = p.map((v, i) => v - hp.rocker_pivot[i]);
+            const len = Math.hypot(...d) || 1;
+            lines.push(`      rocker_axis: [${d.map((v) => num(v / len)).join(", ")}]`);
+          } else {
+            lines.push(`      ${name}: [${p.map((v) => num(v)).join(", ")}]`);
+          }
         }
       }
     }
@@ -987,6 +1004,9 @@ function onParams(p) {
   for (const axle of ["front", "rear"]) {
     const hp = sus[axle]?.hardpoints || {};
     for (const name of HARDPOINTS) if (Array.isArray(hp[name]) && !model.hardpoints[axle][name]) model.hardpoints[axle][name] = hp[name].map(Number);
+    if (Array.isArray(hp.rocker_axis) && Array.isArray(hp.rocker_pivot) && !model.hardpoints[axle].rocker_axis_point) {
+      model.hardpoints[axle].rocker_axis_point = hp.rocker_pivot.map((v, i) => Number(v) + 0.05 * Number(hp.rocker_axis[i]));
+    }
   }
   if (Array.isArray(p.vehicle?.sensors)) {
     model.sensors = p.vehicle.sensors.map((s) => ({ name: s.name, type: s.type, position: (s.position || [0, 0, 0]).map(Number), orientation_deg: (s.orientation_deg || [0, 0, 0]).map(Number) }));

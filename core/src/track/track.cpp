@@ -22,6 +22,28 @@ double wrap_angle(double a) {
   return std::remainder(a, 2.0 * std::numbers::pi);
 }
 
+// sin and cos together, several times faster than the library's for the
+// road's many waves: Cody-Waite reduction to [-pi/4, pi/4] (pi/2 split in
+// three parts, good for phases up to ~1e6 rad) and Taylor polynomials,
+// accurate to ~1e-15.
+void fast_sincos(double x, double& s, double& c) {
+  constexpr double kTwoOverPi = 0.63661977236758134308;
+  constexpr double kPio2a = 1.5707963267341256e+00;  // pi/2 = a + b + c
+  constexpr double kPio2b = 6.0771005065061922e-11;
+  constexpr double kPio2c = 2.0222662487959506e-21;
+  const double q = std::nearbyint(x * kTwoOverPi);
+  const double r = ((x - q * kPio2a) - q * kPio2b) - q * kPio2c;
+  const double r2 = r * r;
+  const double sr = r * (1.0 + r2 * (-1.0 / 6 + r2 * (1.0 / 120 + r2 * (-1.0 / 5040 + r2 * (1.0 / 362880 + r2 * (-1.0 / 39916800 + r2 * (1.0 / 6227020800.0)))))));
+  const double cr = 1.0 + r2 * (-0.5 + r2 * (1.0 / 24 + r2 * (-1.0 / 720 + r2 * (1.0 / 40320 + r2 * (-1.0 / 3628800 + r2 * (1.0 / 479001600.0 + r2 * (-1.0 / 87178291200.0)))))));
+  switch (static_cast<long long>(q) & 3) {
+    case 0: s = sr; c = cr; break;
+    case 1: s = cr; c = -sr; break;
+    case 2: s = -sr; c = -cr; break;
+    default: s = -cr; c = sr; break;
+  }
+}
+
 // Second derivatives of a cubic spline through (t[i], y[i]); natural ends when
 // open, periodic when closed (then t has one extra entry closing the loop and
 // y[n] == y[0]).
@@ -630,7 +652,7 @@ std::vector<Track::Wave> Track::make_waves(const std::string& iso_class, std::ui
   if (iso_class.empty()) {
     return waves;
   }
-  constexpr int kCount = 96;
+  constexpr int kCount = 64;
   constexpr double kLow = 0.01, kHigh = 5.0, kN0 = 0.1;  // cycles/m
   const double gd0 = iso8608_gd0(iso_class);
   const double ratio = std::pow(kHigh / kLow, 1.0 / (kCount - 1));
@@ -651,8 +673,8 @@ std::vector<Track::Wave> Track::make_waves(const std::string& iso_class, std::ui
 
 void Track::add_waves(const std::vector<Wave>& waves, double s, double n, Ground& g) {
   for (const Wave& w : waves) {
-    const double arg = w.ks * s + w.kn * n + w.phase;
-    const double c = std::cos(arg), sn = std::sin(arg);
+    double sn = 0.0, c = 0.0;
+    fast_sincos(w.ks * s + w.kn * n + w.phase, sn, c);
     g.z += w.amplitude * c;
     g.dzds -= w.amplitude * w.ks * sn;
     g.dzdn -= w.amplitude * w.kn * sn;
@@ -722,6 +744,11 @@ double Track::kerb_at(double s, double e, bool left, Ground& g) const {
   return 0.0;
 }
 
+double Track::kerb_width(double s, bool left) const {
+  Ground scratch{0.0, 0.0, 0.0};
+  return kerb_at(wrap(s), -1.0, left, scratch);
+}
+
 double Track::surface_height(double s, double n) const {
   Ground g = centre_ground(s, n);
   const Widths w = widths_at(s);
@@ -733,11 +760,55 @@ double Track::surface_height(double s, double n) const {
   return g.z;
 }
 
-RoadPoint Track::road(double x, double y, double* hint) const {
+// Frenet coordinates with each sample interval taken as a circular arc (its
+// heading change over its length), so s and n are smooth inside it and the
+// height's gradient follows exactly: ds/dp = t / (1 - kappa n), dn/dp = n.
+Track::Frenet Track::frenet(double x, double y, double* hint) const {
   const CurveProjection p = hint ? project(x, y, *hint, 2.0) : project(x, y);
-  if (hint) {
-    *hint = p.s;
+  const std::size_t count = samples_.size();
+  const std::size_t intervals = closed_ ? count : count - 1;
+  std::size_t i = std::min(index_at(p.s), intervals - 1);
+  Frenet f;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    const CurveSample& a = samples_[i];
+    const std::size_t j = (i + 1) % count;
+    const double span = (i + 1 < count ? samples_[j].s : length_) - a.s;
+    const double turn = wrap_angle(samples_[j].heading - a.heading);
+    const double kappa = span > 0.0 ? turn / span : 0.0;
+    const double dx = x - a.x, dy = y - a.y;
+    const double ca = std::cos(a.heading), sa = std::sin(a.heading);
+    double along = 0.0;
+    if (std::abs(kappa) < 1e-9) {
+      along = ca * dx + sa * dy;
+      f.n = -sa * dx + ca * dy;
+    } else {
+      const double r = 1.0 / kappa;  // signed: centre to the left when positive
+      const double vx = dx + r * sa, vy = dy - r * ca;  // from the centre
+      const double theta = std::atan2(vy, vx) - std::atan2(-r * ca, r * sa);  // from a's angle
+      along = r * wrap_angle(theta);
+      f.n = r - (r > 0.0 ? 1.0 : -1.0) * std::hypot(vx, vy);
+    }
+    f.kappa = kappa;
+    f.heading = a.heading + kappa * along;
+    f.s = a.s + along;
+    // Past this interval: move to the neighbour (open ends extend straight on).
+    if (along < 0.0 && (closed_ || i > 0) && attempt < 2) {
+      i = (i + intervals - 1) % intervals;
+    } else if (along > span && (closed_ || i + 1 < intervals) && attempt < 2) {
+      i = (i + 1) % intervals;
+    } else {
+      break;
+    }
   }
+  f.s = wrap(f.s);
+  if (hint) {
+    *hint = f.s;
+  }
+  return f;
+}
+
+RoadPoint Track::road(double x, double y, double* hint) const {
+  const Frenet p = frenet(x, y, hint);
   RoadPoint out;
   out.s = p.s;
   out.n = p.n;
@@ -789,8 +860,9 @@ RoadPoint Track::road(double x, double y, double* hint) const {
   }
   out.z = g.z;
   const double c = std::cos(p.heading), sn = std::sin(p.heading);
-  out.dzdx = g.dzds * c - g.dzdn * sn;
-  out.dzdy = g.dzds * sn + g.dzdn * c;
+  const double metric = 1.0 / std::max(0.1, 1.0 - p.kappa * p.n);
+  out.dzdx = g.dzds * metric * c - g.dzdn * sn;
+  out.dzdy = g.dzds * metric * sn + g.dzdn * c;
   return out;
 }
 
