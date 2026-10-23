@@ -17,7 +17,7 @@ driver:
   type: mpc
   mode: track                  # track | race
   # line: racing               # 따라갈 라인. 생략하면 트랙 파일의 첫 번째 라인
-  # aggressiveness: 0.95       # 기대 그립 중 최대로 쓰는 비율 (race 0.97)
+  # aggressiveness: 0.95       # 기대 그립 중 최대로 쓰는 비율
   # profile: {lateral_share: 0.8, brake_share: 0.55, max_kph: 110}   # track 모드의 속도 프로파일 (기대 그립 대비)
   # human: {delay_s: 0.15, bandwidth_hz: 2.5, steer_rate_deg_per_s: 600, noise_deg: 0.3}
   # speed_profile: profiles/autocross.csv   # 기록한 속도 프로파일 (s_m, v_mps)

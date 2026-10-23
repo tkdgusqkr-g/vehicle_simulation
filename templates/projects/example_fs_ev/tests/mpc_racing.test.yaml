@@ -9,7 +9,7 @@ checks:
     expr: "final(track.lap) >= 2"
   - name: 코스 이탈 없음
     expr: "final(track.off_track_count) == 0"
-  - name: 베스트 랩 19.5초 이내 (추종 모드보다 0.8초 이상 빠름; 바깥 앞 타이어가 과열되며 그립이 약간 떨어짐)
-    expr: "final(track.best_lap) < 19.5"
+  - name: 베스트 랩 19.8초 이내 (추종 모드 20.4초보다 빠름; 바깥 앞 타이어가 과열되며 그립이 약간 떨어짐)
+    expr: "final(track.best_lap) < 19.8"
   - name: Pure Pursuit 대체 없음
     expr: "max(drv.mpc.status) < 2"

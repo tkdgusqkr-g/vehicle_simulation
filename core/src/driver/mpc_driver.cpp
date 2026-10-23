@@ -329,8 +329,8 @@ void MpcDriver::init_driver(const ParamTree& params, Context& ctx) {
     throw std::invalid_argument("driver: steps 5..80, horizon_s > 0.2 and mpc_period_s >= period_s");
   }
   dt_mpc_ = horizon / steps_;
-  aggressiveness_ = params.get_double("driver.aggressiveness", race_ ? 0.97 : 0.95);
-  margin_ = params.get_double("driver.margin_m", race_ ? 0.15 : 0.3);
+  aggressiveness_ = params.get_double("driver.aggressiveness", 0.95);
+  margin_ = params.get_double("driver.margin_m", 0.3);
   half_width_ = 0.5 * params.get_double("vehicle.track_front_m", 1.22) + 0.5 * params.get_double("vehicle.tire.width_m", 0.19);
   steering_ratio_ = params.get_double("vehicle.steering.ratio");
   max_delta_ = deg_to_rad(params.get_double("vehicle.steering.lock_deg")) / steering_ratio_;

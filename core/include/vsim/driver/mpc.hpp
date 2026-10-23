@@ -76,7 +76,7 @@ struct MpcTrack {
 // the shifted plan, and pure pursuit after three in a row.
 //
 //   driver: {type: mpc, mode: track | race, line: racing, horizon_s: 1.5 (race 2), steps: 30,
-//            mpc_period_s: 0.05, aggressiveness: 0.95 (race 0.97), margin_m: 0.3 (race 0.15),
+//            mpc_period_s: 0.05, aggressiveness: 0.95, margin_m: 0.3,
 //            weights: {lateral, heading, speed, steer_rate, accel_rate, progress},
 //            human: {enabled, delay_s: 0.15, bandwidth_hz: 2.5, steer_rate_deg_per_s: 600, noise_deg: 0.3},
 //            model: {grip_scale: 0.95, mu: (fixed, instead of the tyre data), learn: true,

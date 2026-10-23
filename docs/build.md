@@ -669,8 +669,8 @@ driver:
   mode: track                  # track | race
   # line: racing               # 따라갈 라인 (기본: 트랙 파일의 첫 번째 라인)
   # horizon_s: 1.5             # 예측 시간 (race 2.0), steps: 30, mpc_period_s: 0.05
-  # aggressiveness: 0.95       # 기대 그립 중 최대로 쓰는 비율 (race 0.97)
-  # margin_m: 0.3              # 트랙 경계 여유 (race 0.15)
+  # aggressiveness: 0.95       # 기대 그립 중 최대로 쓰는 비율
+  # margin_m: 0.3              # 트랙 경계 여유
   # profile:                   # 추종 모드의 속도 프로파일: 기대 그립 대비 비율
   #   lateral_share: 0.8
   #   brake_share: 0.55
