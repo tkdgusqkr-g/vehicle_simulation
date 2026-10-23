@@ -797,15 +797,27 @@ std::optional<std::vector<MpcModel::Input>> MpcDriver::qp_step(const MpcModel::S
           qp.A[row * nz + 3 * k] = sign * axle.gain;
         }
         qp.A[row * nz + 3 * k + 2] = -0.2 * peak;
-        qp.b[row] = peak - sign * slip;
+        // Already sliding past the peak now (k = 0: the state is given): allow what is, or
+        // the slack would have to carry it and the solver stalls.
+        qp.b[row] = peak - sign * slip + (k == 0 && !front ? std::max(0.0, sign * slip - peak) : 0.0);
         ++row;
       }
     }
   }
 
-  const QpResult result = solve_qp(qp);
+  QpResult result = solve_qp(qp);
   last_iterations_ += result.iterations;
-  bool ok = result.converged || (result.primal_residual < 1e-4 && result.dual_residual < 1e-3);
+  const auto acceptable = [](const QpResult& r) {
+    return r.converged || (r.primal_residual < 1e-4 && r.dual_residual < 1e-3);
+  };
+  if (!acceptable(result)) {
+    // Badly scaled at the limit (large slacks): give the interior point more room once.
+    QpOptions patient;
+    patient.max_iterations = 120;
+    result = solve_qp(qp, patient);
+    last_iterations_ += result.iterations;
+  }
+  bool ok = acceptable(result);
   for (const double v : result.z) {
     ok = ok && std::isfinite(v);
   }
