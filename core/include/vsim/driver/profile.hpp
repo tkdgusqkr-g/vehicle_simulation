@@ -1,6 +1,8 @@
 #pragma once
 
+#include <filesystem>
 #include <string>
+#include <vector>
 
 #include "vsim/sim/params.hpp"
 
@@ -14,21 +16,27 @@ namespace vsim {
 //   {type: sweep, amplitude: 20, f0_hz: 0.2, f1_hz: 3.0, duration_s: 20, start_s: 2}
 //   {type: sine_dwell, amplitude: 60, freq_hz: 0.7, dwell_s: 0.5, start_s: 2}
 //   {type: pulse, start_s: 4, period_s: 7, width_s: 2.5, value: 0.8, base: 0, count: 10}
+//   {type: table, t: [0, 1, 2], values: [0, 10, 0]}
+//   {type: file, path: logs/run3.csv, column: steer_deg, time_column: t, scale: 1, offset: 0}
 // `sweep` is a linear chirp from f0 to f1 (frequency response, ISO 7401);
 // `sine_dwell` is one sine cycle that holds its second peak for dwell_s
 // (FMVSS 126 style). Both return to the offset afterwards. `pulse` repeats
 // `value` for width_s every period_s (`count` times), `base` in between.
+// `table` and `file` interpolate linearly between points (held at both
+// ends); `file` reads a CSV with a header row (replaying measured inputs),
+// its path relative to `base_dir` (the project) unless absolute.
 // Values are in the unit of the channel the profile drives.
 class Profile {
  public:
   Profile() = default;
   // `config` is the profile's subtree; an empty subtree means constant 0.
-  static Profile from_params(const ParamTree& config, std::string_view what);
+  static Profile from_params(const ParamTree& config, std::string_view what,
+                             const std::filesystem::path& base_dir = {});
 
   double value(double t) const;
 
  private:
-  enum class Type { Const, Step, Ramp, Sine, Sweep, SineDwell, Pulse };
+  enum class Type { Const, Step, Ramp, Sine, Sweep, SineDwell, Pulse, Table };
 
   Type type_ = Type::Const;
   double value_ = 0.0;
@@ -41,6 +49,7 @@ class Profile {
   double offset_ = 0.0;
   double freq_end_ = 0.0;
   double duration_ = 0.0;
+  std::vector<double> times_, values_;  // table and file
 };
 
 }  // namespace vsim

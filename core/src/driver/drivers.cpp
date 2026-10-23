@@ -2,12 +2,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <numbers>
 #include <stdexcept>
 
 #include "vsim/driver/mpc.hpp"
 #include "vsim/sim/context.hpp"
 #include "vsim/track/speed_profile.hpp"
+#include "vsim/util/paths.hpp"
 
 namespace vsim {
 namespace {
@@ -75,9 +77,10 @@ void KeyboardDriver::step(double /*t*/, SignalBus& bus) {
 // --- ManeuverDriver -----------------------------------------------------------
 
 void ManeuverDriver::init_driver(const ParamTree& params, Context& ctx) {
-  steer_deg_ = Profile::from_params(params.subtree("driver.steer"), "driver.steer");
-  throttle_ = Profile::from_params(params.subtree("driver.throttle"), "driver.throttle");
-  brake_ = Profile::from_params(params.subtree("driver.brake"), "driver.brake");
+  const std::filesystem::path project = path_from_utf8(params.get_string("project.dir", "."));
+  steer_deg_ = Profile::from_params(params.subtree("driver.steer"), "driver.steer", project);
+  throttle_ = Profile::from_params(params.subtree("driver.throttle"), "driver.throttle", project);
+  brake_ = Profile::from_params(params.subtree("driver.brake"), "driver.brake", project);
   speed_hold_ = params.has("driver.speed_hold_kph");
   if (speed_hold_) {
     speed_target_ = params.get_double("driver.speed_hold_kph") / 3.6;

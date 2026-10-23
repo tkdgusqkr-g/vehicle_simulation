@@ -813,6 +813,40 @@ environment:
 - 시나리오에서 `realism.environment: ideal`을 명시하면 바람이 멈춥니다.
 - 예제: `scenarios/crosswind.yaml`(100 km/h 직진 중 옆 돌풍 → 코가 바람 쪽으로 돌아 2.5 m 벗어남), MPC 외란 시험에 5 m/s 바람 + 난류.
 
+## 실측 상관성 (correlate)
+
+실차 기록이 생기면 기록된 운전 입력을 그대로 넣고 차의 반응을 비교하고, 맞지 않는 파라미터를 찾고, 정지 기록으로 센서 잡음을 정합니다 (설계 §13.4).
+
+```yaml
+# run3.map.yaml: 기록의 열 이름·단위를 시뮬레이터에 연결
+time: time_s
+inputs:                                   # 재생할 운전 입력 (maneuver 프로파일로)
+  steer_deg: {to: steer}                  # 핸들각 [deg]
+  apps_pct: {to: throttle, scale: 0.01}   # 0..1
+  brake_bar: {to: brake, scale: 0.0167}   # 0..1 (최대 압력 60 bar 기준)
+channels:                                 # 비교: 기록 × scale + offset = 신호
+  speed_kph: {signal: veh.chassis.speed, scale: 0.27778}
+  yaw_dps: {signal: veh.chassis.yaw_rate, scale: 0.0174533}
+  ay: veh.chassis.ay
+```
+
+```powershell
+$env:PYTHONPATH = "python"
+$s = "templates/projects/example_fs_ev/scenarios/replay.yaml"
+# 재생과 비교: RMSE, NRMSE(실측 범위 대비), 최대 오차, 상관계수, 지연, 끝값 차이
+python -m vsim.correlate replay --scenario $s --log run3.csv --map run3.map.yaml --report replay.md
+# 파라미터 식별 (key=시작:최소:최대), 0~20 s로 맞추고 나머지 구간으로 확인
+python -m vsim.correlate identify --scenario $s --log run3.csv --map run3.map.yaml `
+  --param vehicle.mass_kg=280:250:330 --param vehicle.aero.cda_m2=1.3:0.8:2.0 --fit 0 20 --report identify.md
+# 정지 상태 기록으로 센서 잡음: noise_density, bias_instability, bias_tau_s, random_walk (센서 설정에 그대로)
+python -m vsim.correlate allan --log still.csv --column ax --scale 9.81
+```
+
+- 기록은 헤더가 있는 CSV(시간 열 + 채널), 또는 vsim의 `log.mcap`(다른 run과 비교). 입력은 임시 CSV로 써서 `driver.<steer|throttle|brake>: {type: file, ...}` 프로파일로 재생하고, 첫 속도로 `initial.speed_mps`, 기록 길이로 `time.t_end`를 정합니다. 트랙 위 기록이면 `--set track.template=...`.
+- 식별은 Levenberg-Marquardt(전진 차분 야코비안, 범위는 자르기)이고 채널마다 실측 표준편차로 나눠 같은 비중으로 맞춥니다. SciPy가 없어도 됩니다. 시뮬레이터로 만든 "실측"(질량 305 kg, CdA 1.6)에서 305 → 303.9 kg, 1.6 → 1.585를 찾고 속도 NRMSE가 2.2 → 0.2 %로 줄어듭니다(10 ms 운전자 주기만큼의 재생 시점 차이가 남는 오차).
+- 같은 프로파일 형식으로 시나리오에서 직접 써도 됩니다: `steer: {type: file, path: logs/run3.csv, column: steer_deg, time_column: time_s}`(경로는 프로젝트 기준), `{type: table, t: [...], values: [...]}`. `--set`에 YAML 목록·맵을 줄 수 있습니다: `--set "driver.steer={type: table, t: [0, 1], values: [0, 30]}"`.
+- Python: `from vsim import correlate` → `replay`, `compare`, `identify`, `identify_noise`, `allan_deviation`, `metrics`.
+
 ## 차고 공력과 유효 구름 반경
 
 ```yaml

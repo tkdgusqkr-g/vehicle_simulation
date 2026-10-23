@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <numbers>
 #include <stdexcept>
@@ -86,6 +88,29 @@ TEST(Profile, SweepAndSineWithDwell) {
   EXPECT_NEAR(dwell.value(1.9), -60.0, 1e-9);  // ... held
   EXPECT_NEAR(dwell.value(2.5), 0.0, 1e-9);    // cycle ends after the dwell
   EXPECT_EQ(dwell.value(3.0), 0.0);
+}
+
+// Replaying measured inputs: a table or a CSV column, linear between points.
+TEST(Profile, TableAndCsvFile) {
+  const Profile table = Profile::from_params(
+      ParamTree::from_yaml_string("{type: table, t: [0, 1, 3], values: [0, 10, -10], scale: 0.5, offset: 1}"), "t");
+  EXPECT_DOUBLE_EQ(table.value(-1.0), 1.0);
+  EXPECT_DOUBLE_EQ(table.value(0.5), 1.0 + 0.5 * 5.0);
+  EXPECT_DOUBLE_EQ(table.value(2.0), 1.0);
+  EXPECT_DOUBLE_EQ(table.value(9.0), 1.0 - 5.0);
+
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "vsim_profile_csv";
+  std::filesystem::create_directories(dir);
+  std::ofstream(dir / "log.csv") << "time, steer_deg, apps\n0.0, 0, 0.1\n0.5, 20, 0.2\n\n1.0, 40, 0.3\n";
+  const Profile file = Profile::from_params(
+      ParamTree::from_yaml_string("{type: file, path: log.csv, time_column: time, column: steer_deg}"), "t", dir);
+  EXPECT_DOUBLE_EQ(file.value(0.25), 10.0);
+  EXPECT_DOUBLE_EQ(file.value(2.0), 40.0);
+  EXPECT_THROW(Profile::from_params(ParamTree::from_yaml_string("{type: file, path: log.csv, column: nope}"), "t", dir),
+               std::invalid_argument);
+  EXPECT_THROW(Profile::from_params(ParamTree::from_yaml_string("{type: table, t: [1, 0], values: [0, 1]}"), "t"),
+               std::invalid_argument);
+  std::filesystem::remove_all(dir);
 }
 
 TEST(LapTimer, StartsOnTheTrackBehindTheLine) {

@@ -1,0 +1,22 @@
+# 실측 입력 재생 (python -m vsim.correlate): 기록된 조향·가속·브레이크를 그대로 넣고
+# 차의 반응을 실측과 비교합니다. correlate가 driver.steer/throttle/brake를 CSV 열로,
+# initial.speed_mps를 실측 첫 속도로, time.t_end를 기록 길이로 바꿉니다. 트랙이 있는
+# 기록이면 --set track.template=... 로 같은 노면을 줍니다.
+name: replay
+project: ..
+seed: 1
+
+time:
+  dt: 0.001
+  mode: fast
+  t_end: 60
+
+driver:
+  type: maneuver
+  steer: {type: const, value: 0}        # 핸들각 [deg]
+  throttle: {type: const, value: 0}     # 가속 페달 0..1
+  brake: {type: const, value: 0}        # 브레이크 페달 0..1
+
+logging:
+  rate_hz: 100
+  signals: ["veh.*", "drv.*", "pt.*", "bat.*", "vcu.*", "energy.*"]

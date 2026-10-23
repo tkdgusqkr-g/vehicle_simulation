@@ -87,7 +87,17 @@ Scenario Scenario::load(const std::filesystem::path& file, const Overrides& over
     merged.set(key, value);
   }
   for (const auto& [key, value] : overrides) {
-    merged.set(key, value);
+    const std::size_t first = value.find_first_not_of(" \t");
+    if (first != std::string::npos && (value[first] == '[' || value[first] == '{')) {
+      // A YAML list or map ("--set driver.steer.t=[0, 1, 2]") replaces the subtree.
+      const ParamTree parsed = ParamTree::from_yaml_string("value: " + value).subtree("value");
+      merged.set(key, "");
+      for (const auto& [child, item] : parsed.entries()) {
+        merged.set(key + "." + child, item);
+      }
+    } else {
+      merged.set(key, value);
+    }
   }
 
   Scenario result;

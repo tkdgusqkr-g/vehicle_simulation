@@ -2,13 +2,74 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <sstream>
 #include <limits>
 #include <numbers>
 #include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "vsim/util/paths.hpp"
 
 namespace vsim {
 
-Profile Profile::from_params(const ParamTree& config, std::string_view what) {
+namespace {
+
+std::vector<std::string> split_csv(const std::string& line) {
+  std::vector<std::string> cells;
+  std::stringstream stream(line);
+  std::string cell;
+  while (std::getline(stream, cell, ',')) {
+    const auto first = cell.find_first_not_of(" \t\r\"");
+    const auto last = cell.find_last_not_of(" \t\r\"");
+    cells.push_back(first == std::string::npos ? "" : cell.substr(first, last - first + 1));
+  }
+  return cells;
+}
+
+// Columns `time_column` and `column` of a CSV file with a header row.
+void read_csv_columns(const std::filesystem::path& file, const std::string& time_column, const std::string& column,
+                      std::vector<double>& times, std::vector<double>& values, std::string_view what) {
+  std::ifstream in(file);
+  if (!in) {
+    throw std::invalid_argument(std::string(what) + ": cannot read " + path_to_utf8(file));
+  }
+  std::string line;
+  std::getline(in, line);
+  const std::vector<std::string> header = split_csv(line);
+  const auto find = [&](const std::string& name) {
+    const auto it = std::find(header.begin(), header.end(), name);
+    if (it == header.end()) {
+      throw std::invalid_argument(std::string(what) + ": no column '" + name + "' in " + path_to_utf8(file));
+    }
+    return static_cast<std::size_t>(it - header.begin());
+  };
+  const std::size_t ti = find(time_column), vi = find(column);
+  std::size_t row = 1;
+  while (std::getline(in, line)) {
+    ++row;
+    if (line.find_first_not_of(" \t\r") == std::string::npos) {
+      continue;
+    }
+    const std::vector<std::string> cells = split_csv(line);
+    if (cells.size() <= std::max(ti, vi)) {
+      throw std::invalid_argument(std::string(what) + ": " + path_to_utf8(file) + " row " + std::to_string(row) +
+                                  " is short");
+    }
+    try {
+      times.push_back(std::stod(cells[ti]));
+      values.push_back(std::stod(cells[vi]));
+    } catch (const std::exception&) {
+      throw std::invalid_argument(std::string(what) + ": " + path_to_utf8(file) + " row " + std::to_string(row) +
+                                  " is not a number");
+    }
+  }
+}
+
+}  // namespace
+
+Profile Profile::from_params(const ParamTree& config, std::string_view what, const std::filesystem::path& base_dir) {
   Profile profile;
   if (config.empty()) {
     return profile;
@@ -68,9 +129,30 @@ Profile Profile::from_params(const ParamTree& config, std::string_view what) {
     if (!(profile.duration_ > 0.0 && profile.rate_ >= 0.0 && profile.rate_ <= profile.duration_)) {
       throw std::invalid_argument(std::string(what) + ": pulse needs period_s > 0 and 0 <= width_s <= period_s");
     }
+  } else if (type == "table" || type == "file") {
+    profile.type_ = Type::Table;
+    if (type == "table") {
+      profile.times_ = config.get_double_list("t");
+      profile.values_ = config.get_double_list("values");
+    } else {
+      std::filesystem::path file = path_from_utf8(config.get_string("path"));
+      if (file.is_relative() && !base_dir.empty()) {
+        file = base_dir / file;
+      }
+      read_csv_columns(file, config.get_string("time_column", "t"), config.get_string("column"), profile.times_,
+                       profile.values_, what);
+    }
+    const double scale = config.get_double("scale", 1.0), offset = config.get_double("offset", 0.0);
+    for (double& v : profile.values_) {
+      v = scale * v + offset;
+    }
+    if (profile.times_.empty() || profile.times_.size() != profile.values_.size() ||
+        !std::is_sorted(profile.times_.begin(), profile.times_.end())) {
+      throw std::invalid_argument(std::string(what) + ": " + type + " needs as many ascending times as values");
+    }
   } else {
     throw std::invalid_argument(std::string(what) + ": unknown profile type '" + type +
-                                "' (expected const, step, ramp, sine, sweep, sine_dwell or pulse)");
+                                "' (expected const, step, ramp, sine, sweep, sine_dwell, pulse, table or file)");
   }
   return profile;
 }
@@ -123,6 +205,19 @@ double Profile::value(double t) const {
         return before_;
       }
       return std::fmod(tau, duration_) < rate_ ? value_ : before_;
+    }
+    case Type::Table: {
+      if (t <= times_.front()) {
+        return values_.front();
+      }
+      if (t >= times_.back()) {
+        return values_.back();
+      }
+      const auto it = std::upper_bound(times_.begin(), times_.end(), t);
+      const std::size_t i = static_cast<std::size_t>(it - times_.begin());
+      const double span = times_[i] - times_[i - 1];
+      const double f = span > 0.0 ? (t - times_[i - 1]) / span : 1.0;
+      return values_[i - 1] + f * (values_[i] - values_[i - 1]);
     }
   }
   return 0.0;

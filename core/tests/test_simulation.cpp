@@ -6,6 +6,8 @@
 #include <fstream>
 #include <random>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include "test_support.hpp"
 
@@ -104,6 +106,12 @@ TEST(Scenario, OverridePrecedence) {
   EXPECT_EQ(Scenario::load(file).params.get_double("vehicle.mass_kg"), 350.0);
   EXPECT_EQ(Scenario::load(file, {{"vehicle.mass_kg", "400"}}).params.get_double("vehicle.mass_kg"),
             400.0);
+  // A YAML list or map as the value replaces the subtree.
+  const Scenario listed = Scenario::load(file, {{"driver.steer", "{type: table, t: [0, 1], values: [0, 5]}"},
+                                                {"logging.signals", "[veh.*, bat.*]"}});
+  EXPECT_EQ(listed.params.get_string("driver.steer.type"), "table");
+  EXPECT_EQ(listed.params.get_double_list("driver.steer.values"), (std::vector<double>{0.0, 5.0}));
+  EXPECT_EQ(listed.params.get_string_list("logging.signals"), (std::vector<std::string>{"veh.*", "bat.*"}));
   const Scenario scenario = Scenario::load(file);
   EXPECT_EQ(scenario.name, "precedence");
   EXPECT_EQ(scenario.params.get_string("project.name"), "example_fs_ev");
