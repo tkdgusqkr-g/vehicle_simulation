@@ -1,0 +1,16 @@
+test: brake_fade
+description: PH-17 107 → 30 km/h 반복 제동 15회. 앞 디스크가 먼저 뜨거워지고(배분 76 %), 차가운 뒤 패드 → 앞 패드 페이드 순으로 제동 밸런스가 바뀌며 같은 페달에서 감속도가 줄어듭니다.
+scenario: ../scenarios/brake_fade.yaml
+checks:
+  - name: 앞 디스크 400 °C 이상, 뒤는 200 °C 미만
+    expr: "max(veh.wheel.fl.brake_temp) > 400 and max(veh.wheel.rl.brake_temp) < 200"
+  - name: 첫 제동은 뒤 패드가 차가워 앞으로 쏠림 (밸런스 0.77 이상)
+    expr: "at(veh.brake.balance, 5) > 0.77"
+  - name: 마지막 제동은 앞 패드 페이드로 뒤로 이동 (0.755 미만)
+    expr: "at(veh.brake.balance, 89) < 0.755"
+  - name: 앞 패드 마찰 0.96 미만으로 감소
+    expr: "at(veh.wheel.fl.brake_mu, 89) < 0.96"
+  - name: 같은 페달에서 감속도 감소 (6번째 대비 15번째)
+    expr: "mean(window(veh.chassis.ax, 34.0, 35.6)) < mean(window(veh.chassis.ax, 88.0, 89.6))"
+  - name: 에너지 수지 오차 1 J 미만
+    expr: "abs(final(energy.residual)) < 1"

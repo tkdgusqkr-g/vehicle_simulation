@@ -17,6 +17,7 @@ add_executable(vsim_tests
   test_simulation.cpp
   test_single_track.cpp
   test_suspension.cpp
+  test_thermal.cpp
   test_tire.cpp
   test_track.cpp
   test_track_mesh.cpp

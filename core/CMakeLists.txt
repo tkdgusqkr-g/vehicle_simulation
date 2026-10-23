@@ -41,6 +41,7 @@ add_library(vsim_core STATIC
   src/models/vehicle/corners.cpp
   src/models/vehicle/single_track.cpp
   src/models/vehicle/suspension.cpp
+  src/models/vehicle/thermal.cpp
   src/models/vehicle/two_track.cpp
   src/plugin/fmu_plugin.cpp
   src/plugin/native_plugin.cpp

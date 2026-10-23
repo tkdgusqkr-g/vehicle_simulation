@@ -80,7 +80,7 @@ struct MpcTrack {
 //            weights: {lateral, heading, speed, steer_rate, accel_rate, progress},
 //            human: {enabled, delay_s: 0.15, bandwidth_hz: 2.5, steer_rate_deg_per_s: 600, noise_deg: 0.3},
 //            model: {grip_scale: 0.95, mu: (fixed, instead of the tyre data), learn: true,
-//                    front_gain: 1, rear_gain: 1},
+//                    feel_grip: true, front_gain: 1, rear_gain: 1},
 //            profile: {lateral_share: 0.8, brake_share: 0.55, max_kph: 110}, speed_profile: file.csv}
 class MpcDriver final : public DriverBlock {
  public:
@@ -110,6 +110,7 @@ class MpcDriver final : public DriverBlock {
   MpcModel::State simulate(MpcModel::State x, const MpcModel::Input& u, double dt, int sub) const;
   double pursuit_steer(double x, double y, double yaw, double speed);
   void learn(SignalBus& bus, double vx, double vy, double r);
+  void feel_grip(const SignalBus& bus);
 
   MpcModel model_;
   MpcTrack ref_;
@@ -151,6 +152,11 @@ class MpcDriver final : public DriverBlock {
   bool learn_ = true, have_last_ = false;
   double last_r_ = 0.0;
   std::array<double, 7> felt_{};
+  // Feeling the tire grip (temperature, pressure).
+  bool feel_grip_ = true;
+  std::array<double, 2> base_mu_{}, felt_grip_{1.0, 1.0};
+  double speed_scale_ = 1.0;
+  std::array<SignalId, 4> grip_in_{};
 
   SignalId x_in_ = 0, y_in_ = 0, yaw_in_ = 0, vx_in_ = 0, vy_in_ = 0, r_in_ = 0, ax_in_ = 0, ay_in_ = 0;
   SignalId front_gain_out_ = 0, rear_gain_out_ = 0;

@@ -60,6 +60,7 @@ class Driveline {
     double gear = 0.0;   // [W]
     double brake = 0.0;  // [W]
     double diff = 0.0;   // [W], limited-slip friction
+    std::array<double, kCorners> brake_wheel{};  // [W] brake power at each wheel
   };
 
   void init(const DrivelineConfig& config, double wheel_inertia, double rotor_inertia);

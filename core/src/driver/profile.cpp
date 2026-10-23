@@ -57,9 +57,20 @@ Profile Profile::from_params(const ParamTree& config, std::string_view what) {
     if (!(profile.freq_ > 0.0 && profile.duration_ >= 0.0)) {
       throw std::invalid_argument(std::string(what) + ": sine_dwell needs freq_hz > 0 and dwell_s >= 0");
     }
+  } else if (type == "pulse") {
+    profile.type_ = Type::Pulse;
+    profile.at_ = config.get_double("start_s", 0.0);
+    profile.duration_ = config.get_double("period_s");
+    profile.rate_ = config.get_double("width_s");
+    profile.value_ = config.get_double("value", 1.0);
+    profile.before_ = config.get_double("base", 0.0);
+    profile.max_ = config.get_double("count", std::numeric_limits<double>::infinity());
+    if (!(profile.duration_ > 0.0 && profile.rate_ >= 0.0 && profile.rate_ <= profile.duration_)) {
+      throw std::invalid_argument(std::string(what) + ": pulse needs period_s > 0 and 0 <= width_s <= period_s");
+    }
   } else {
     throw std::invalid_argument(std::string(what) + ": unknown profile type '" + type +
-                                "' (expected const, step, ramp, sine, sweep or sine_dwell)");
+                                "' (expected const, step, ramp, sine, sweep, sine_dwell or pulse)");
   }
   return profile;
 }
@@ -105,6 +116,13 @@ double Profile::value(double t) const {
         return offset_ + amplitude_ * std::sin(2.0 * std::numbers::pi * freq_ * (tau - duration_));
       }
       return offset_;
+    }
+    case Type::Pulse: {
+      const double tau = t - at_;
+      if (tau < 0.0 || std::floor(tau / duration_) >= max_) {
+        return before_;
+      }
+      return std::fmod(tau, duration_) < rate_ ? value_ : before_;
     }
   }
   return 0.0;

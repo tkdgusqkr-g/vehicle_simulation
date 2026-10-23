@@ -333,7 +333,11 @@ struct StateStream {
                                           {"wheel_load", "fz", {}},
                                           {"wheel_hub", "hub_offset", {}},
                                           {"wheel_camber", "camber", {}},
-                                          {"wheel_surface", "surface", {}}};
+                                          {"wheel_surface", "surface", {}},
+                                          {"tire_temp", "tire_temp", {}},
+                                          {"tire_pressure", "tire_pressure", {}},
+                                          {"tire_grip", "tire_grip", {}},
+                                          {"brake_temp", "brake_temp", {}}};
 
   void resolve(const vsim::SignalBus& bus) {
     for (Field& field : fields) {
@@ -453,6 +457,10 @@ std::string hello_message(const vsim::Simulation& sim, std::uint64_t track_gener
   vehicle["tire_radius"] = params.get_double("vehicle.wheel.radius_m");
   vehicle["tire_width"] = params.get_double("vehicle.tire.width_m", 0.2);
   vehicle["cg_height"] = params.get_double("vehicle.cg_height_m", 0.3);
+  if (params.has_prefix("vehicle.tire.thermal")) {
+    vehicle["tire_optimum_c"] = params.get_double("vehicle.tire.thermal.optimum_c", 70.0);
+    vehicle["tire_window_c"] = params.get_double("vehicle.tire.thermal.window_c", 40.0);
+  }
   json hello;
   hello["vsim_version"] = vsim::version();
   hello["scenario"] = sim.scenario().name;

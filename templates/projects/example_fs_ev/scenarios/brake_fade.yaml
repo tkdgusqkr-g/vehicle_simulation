@@ -1,0 +1,21 @@
+# 반복 제동 (PH-17): 가속 → 강한 제동을 되풀이해서 디스크 온도와 패드 마찰, 제동 밸런스 변화를 봅니다.
+name: brake_fade
+project: ..
+seed: 1
+
+time:
+  dt: 0.001
+  mode: fast
+  t_end: 90
+
+initial:
+  speed_mps: 15
+
+driver:
+  type: maneuver
+  throttle: {type: pulse, start_s: 0, period_s: 6, width_s: 3.5, value: 1.0}
+  brake: {type: pulse, start_s: 3.6, period_s: 6, width_s: 2.3, value: 0.6}   # 타이어 한계보다 약하게(패드 마찰이 감속도로 나옴), 가속 전에 떼기(BSPC)
+
+logging:
+  rate_hz: 100
+  signals: ["veh.*", "drv.*", "pt.*", "vcu.*", "energy.*"]

@@ -17,7 +17,7 @@ checks:
     expr: "final(track.lap) >= 2"
   - name: 코스 이탈 없음
     expr: "final(track.off_track_count) == 0"
-  - name: 베스트 랩 16.8초 이내 (추종 모드보다 빠름)
-    expr: "final(track.best_lap) < 16.8"
+  - name: 베스트 랩 17.0초 이내 (추종 모드보다 빠름)
+    expr: "final(track.best_lap) < 17.0"
   - name: Pure Pursuit 대체 없음
     expr: "max(drv.mpc.status) < 2"

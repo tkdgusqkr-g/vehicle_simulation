@@ -240,6 +240,11 @@ void Driveline::accelerations(std::span<const double> q, const Loads& loads,
     const double brake = std::clamp(hold, -capacity[dof], capacity[dof]);
     torque[dof] += brake;
     losses.brake -= brake * q[dof];
+    for (std::size_t wheel = 0; wheel < kCorners; ++wheel) {  // shared in proportion to capacity
+      if (wheel_dof_[wheel] == dof) {
+        losses.brake_wheel[wheel] -= brake * q[dof] * loads.brake_capacity[wheel] / capacity[dof];
+      }
+    }
   }
 
   for (std::size_t row = 0; row < n; ++row) {

@@ -116,6 +116,9 @@ struct TwoTrackModel::Eval {
   double yaw_accel = 0.0;  // [rad/s^2]
   double ffb = 0.0;
   double brake_pressure = 0.0;
+  // Thermal (PH-13, PH-17).
+  std::array<double, kCorners> tire_grip{1.0, 1.0, 1.0, 1.0}, tire_pressure{}, brake_mu{1.0, 1.0, 1.0, 1.0};
+  std::array<double, kCorners> slip_heat{}, rolling_heat{};
 
   std::array<double, kCorners> motor_torque{}, motor_speed{}, motor_avail{};
   std::array<double, kCorners> motor_loss{}, motor_power{};
@@ -141,6 +144,7 @@ struct TwoTrackModel::Eval {
 struct TwoTrackModel::Signals {
   struct Wheel {
     SignalId fz, fx, fy, mz, slip_ratio, slip_angle, omega, steer;
+    SignalId tire_temp, tire_core_temp, tire_pressure, tire_grip, brake_temp, brake_mu;
   };
   struct Axle {
     SignalId fz, fx, fy, slip_angle;
@@ -160,7 +164,7 @@ struct TwoTrackModel::Signals {
   SignalId z, roll, pitch, vz, roll_rate, pitch_rate, roll_accel, pitch_accel, az, rack, potential, road_z, heave;
   std::array<Corner3, kCorners> corner3;
   std::array<Axle, 2> axle;
-  SignalId drag, downforce, brake_pressure, ffb;
+  SignalId drag, downforce, brake_pressure, brake_balance, ffb;
   std::vector<Motor> motor;
   SignalId power_mech, power_elec;
   SignalId soc, voltage, current, power, ocv, open_voltage, battery_temp, overloaded;
@@ -269,6 +273,9 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   const std::filesystem::path project_dir = path_from_utf8(params.get_string("project.dir", "."));
   tires_[0] = make_tire(params, "front", project_dir);
   tires_[1] = make_tire(params, "rear", project_dir);
+  tire_thermal_ = TireThermalParams::from_params(params);
+  brake_thermal_ = BrakeThermalParams::from_params(params);
+  road_temp_ = params.get_double("environment.road_temp_c", p_.ambient_temp);
 
   const std::size_t motors = driveline_.motor_count();
   wheel_offset_ = kChassisSize;
@@ -278,7 +285,8 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   energy_offset_ = battery_offset_ + 4;
   body_offset_ = energy_offset_ + kEnergyCount;
   unsprung_offset_ = body_offset_ + kBodySize;
-  size_ = full_ ? unsprung_offset_ + 2 * kCorners : body_offset_;
+  thermal_offset_ = full_ ? unsprung_offset_ + 2 * kCorners : body_offset_;
+  size_ = thermal_offset_ + 3 * kCorners;
   torque_cmd_.assign(motors, 0.0);
   network_ = ElectricalNetwork::powers_plant(params);
   dc_voltage_.assign(motors, 0.0);
@@ -291,6 +299,9 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   soc0_ = params.get_double("initial.soc", soc0_);
   battery_temp0_ = params.get_double("initial.battery_temp_c", p_.ambient_temp);
   motor_temp0_ = params.get_double("initial.motor_temp_c", motor_.coolant_temp);
+  // Tires start warm (at their optimum) unless the scenario says otherwise; brakes at ambient.
+  tire_temp0_ = params.get_double("initial.tire_temp_c", tire_thermal_.enabled ? tire_thermal_.optimum : p_.ambient_temp);
+  brake_temp0_ = params.get_double("initial.brake_temp_c", p_.ambient_temp);
   if (!(soc0_ >= 0.0 && soc0_ <= 1.0)) {
     throw std::invalid_argument("initial.soc must be in [0, 1]");
   }
@@ -329,7 +340,13 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
                   bus.declare(base + "slip_ratio", "-", "transient slip ratio"),
                   bus.declare(base + "slip_angle", "rad", "transient slip angle"),
                   bus.declare(base + "omega", "rad/s", "wheel speed"),
-                  bus.declare(base + "steer", "rad", "road wheel angle")};
+                  bus.declare(base + "steer", "rad", "road wheel angle"),
+                  bus.declare(base + "tire_temp", "degC", "tread surface temperature"),
+                  bus.declare(base + "tire_core_temp", "degC", "carcass and inflation air temperature"),
+                  bus.declare(base + "tire_pressure", "kPa", "inflation pressure (gauge)"),
+                  bus.declare(base + "tire_grip", "-", "grip factor from temperature and pressure"),
+                  bus.declare(base + "brake_temp", "degC", "brake disc temperature"),
+                  bus.declare(base + "brake_mu", "-", "pad friction relative to nominal")};
   }
   for (std::size_t a = 0; a < 2; ++a) {
     const std::string base = std::string("veh.axle.") + (a == 0 ? "front." : "rear.");
@@ -341,6 +358,7 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   s.drag = bus.declare("veh.aero.drag", "N", "aerodynamic drag");
   s.downforce = bus.declare("veh.aero.downforce", "N", "aerodynamic downforce");
   s.brake_pressure = bus.declare("veh.brake.pressure", "bar", "brake line pressure");
+  s.brake_balance = bus.declare("veh.brake.balance", "-", "front share of the brake torque capacity");
   s.ffb = bus.declare("veh.ffb.torque_sw", "N*m",
                       "road torque at the steering wheel, positive counter-clockwise");
   s.motor.clear();
@@ -555,6 +573,10 @@ void TwoTrackModel::initial_state(std::span<double> x) const {
   }
   x[battery_offset_] = soc0_;
   x[battery_offset_ + 3] = battery_temp0_;
+  for (std::size_t c = 0; c < kCorners; ++c) {
+    x[thermal_offset_ + 3 * c] = x[thermal_offset_ + 3 * c + 1] = tire_temp0_;
+    x[thermal_offset_ + 3 * c + 2] = brake_temp0_;
+  }
   if (full_) {
     x[body_offset_ + kZ] = z0_;
     x[body_offset_ + kRoll] = roll0_;
@@ -786,6 +808,18 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
     e.power_mech += e.motor_torque[i] * e.motor_speed[i];
   }
 
+  // Tire grip from temperature and pressure, pad friction from disc temperature.
+  for (std::size_t c = 0; c < kCorners; ++c) {
+    const double surface = x[thermal_offset_ + 3 * c], core = x[thermal_offset_ + 3 * c + 1];
+    e.tire_pressure[c] = tire_thermal_.pressure(core);
+    if (tire_thermal_.enabled) {
+      e.tire_grip[c] = tire_thermal_.temperature_grip(surface) * tire_thermal_.pressure_grip(e.tire_pressure[c]);
+    }
+    if (brake_thermal_.enabled) {
+      e.brake_mu[c] = brake_thermal_.pad_mu(x[thermal_offset_ + 3 * c + 2]);
+    }
+  }
+
   // Tires with transient slip.
   e.brake_pressure = brake_ * p_.brake_pressure_max;
   Driveline::Loads loads;
@@ -831,7 +865,8 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
     // so it fades out towards standstill like the slip damping fades in (a
     // parked car with toe and camber does not creep).
     const double inclination = (is_left(c) ? -1.0 : 1.0) * e.camber[c] * (1.0 - fade);
-    const TireForces f = tire.evaluate({e.fz[c], kappa_used, std::atan(tan_alpha_used), inclination, e.mu[c]});
+    const TireForces f =
+        tire.evaluate({e.fz[c], kappa_used, std::atan(tan_alpha_used), inclination, e.mu[c] * e.tire_grip[c]});
     e.fx[c] = f.fx;
     e.fy[c] = f.fy;
     e.mz[c] = f.mz;
@@ -844,11 +879,14 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
     fy_body += fy_b;
     yaw_moment += px[c] * fy_b - py[c] * fx_b + f.mz;
     slip_power += f.fx * slip_velocity - f.fy * vy_wheel - f.mz * r;
+    e.slip_heat[c] = std::max(0.0, f.fx * slip_velocity - f.fy * vy_wheel);
 
     const double rolling = p_.rolling_resistance * e.fz[c] * radius * std::tanh(e.omega[c] / kRollingSmoothing);
     rolling_power += rolling * e.omega[c];
+    e.rolling_heat[c] = std::max(0.0, rolling * e.omega[c]);
     loads.wheel_torque[c] = -f.fx * radius - rolling;
-    loads.brake_capacity[c] = 0.5 * e.brake_pressure * (front ? p_.brake_gain_front : p_.brake_gain_rear);
+    loads.brake_capacity[c] =
+        0.5 * e.brake_pressure * (front ? p_.brake_gain_front : p_.brake_gain_rear) * e.brake_mu[c];
     if (!full_) {
       if (front) {
         e.ffb += (f.mz - p_.mechanical_trail * f.fy) / p_.steering_ratio;
@@ -960,6 +998,31 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
 
   Driveline::Losses losses;
   driveline_.accelerations(q, loads, dx.subspan(wheel_offset_, driveline_.dof_count()), losses);
+
+  // Tire and brake temperatures.
+  for (std::size_t c = 0; c < kCorners; ++c) {
+    const std::size_t o = thermal_offset_ + 3 * c;
+    const double surface = x[o], core = x[o + 1], disc = x[o + 2];
+    const double rim = tire_thermal_.enabled && brake_thermal_.enabled ? tire_thermal_.rim_brake * (disc - core) : 0.0;
+    if (tire_thermal_.enabled) {
+      const TireThermalParams& t = tire_thermal_;
+      const double to_core = t.surface_core * (surface - core);
+      const double to_air = (t.surface_air + t.surface_air_speed * speed) * (surface - p_.ambient_temp);
+      const double to_road = e.fz[c] > 0.0 ? t.road_contact * (surface - road_temp_) : 0.0;
+      dx[o] = (t.slip_share * e.slip_heat[c] - to_core - to_air - to_road) / t.surface_capacity;
+      const double core_air = (t.core_air + t.core_air_speed * speed) * (core - p_.ambient_temp);
+      dx[o + 1] = (e.rolling_heat[c] + to_core + rim - core_air) / t.core_capacity;
+    } else {
+      dx[o] = dx[o + 1] = 0.0;
+    }
+    if (brake_thermal_.enabled) {
+      const double capacity = brake_thermal_.heat_capacity[is_front(c) ? 0 : 1];
+      const double cooling = brake_thermal_.cooling_power(disc, p_.ambient_temp, speed);
+      dx[o + 2] = (losses.brake_wheel[c] - cooling - rim) / capacity;
+    } else {
+      dx[o + 2] = 0.0;
+    }
+  }
 
   for (std::size_t i = 0; i < motors; ++i) {
     const double torque = x[motor_offset_ + 2 * i];
@@ -1106,6 +1169,12 @@ void TwoTrackModel::write_outputs(double /*t*/, std::span<const double> x, Signa
     bus.set(w.slip_angle, e.slip_angle[c]);
     bus.set(w.omega, e.omega[c]);
     bus.set(w.steer, e.steer[c]);
+    bus.set(w.tire_temp, x[thermal_offset_ + 3 * c]);
+    bus.set(w.tire_core_temp, x[thermal_offset_ + 3 * c + 1]);
+    bus.set(w.tire_pressure, e.tire_pressure[c]);
+    bus.set(w.tire_grip, e.tire_grip[c]);
+    bus.set(w.brake_temp, x[thermal_offset_ + 3 * c + 2]);
+    bus.set(w.brake_mu, e.brake_mu[c]);
     const std::size_t a = is_front(c) ? 0 : 1;
     axle_fz[a] += e.fz[c];
     axle_fx[a] += e.fx[c];
@@ -1121,6 +1190,11 @@ void TwoTrackModel::write_outputs(double /*t*/, std::span<const double> x, Signa
   bus.set(s.drag, e.drag);
   bus.set(s.downforce, e.downforce);
   bus.set(s.brake_pressure, e.brake_pressure);
+  {
+    const double gf = p_.brake_gain_front * 0.5 * (e.brake_mu[0] + e.brake_mu[1]);
+    const double gr = p_.brake_gain_rear * 0.5 * (e.brake_mu[2] + e.brake_mu[3]);
+    bus.set(s.brake_balance, gf + gr > 0.0 ? gf / (gf + gr) : 0.0);
+  }
   bus.set(s.ffb, e.ffb);
 
   for (std::size_t i = 0; i < s.motor.size(); ++i) {

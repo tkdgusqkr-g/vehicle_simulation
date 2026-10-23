@@ -13,6 +13,7 @@
 #include "vsim/models/tire/tire.hpp"
 #include "vsim/models/vehicle/corners.hpp"
 #include "vsim/models/vehicle/suspension.hpp"
+#include "vsim/models/vehicle/thermal.hpp"
 #include "vsim/sim/plant.hpp"
 
 namespace vsim {
@@ -139,6 +140,8 @@ class TwoTrackModel final : public PlantModel {
   const MotorParams& motor_params() const { return motor_; }
   const BatteryParams& battery_params() const { return battery_; }
   const Driveline& driveline() const { return driveline_; }
+  const TireThermalParams& tire_thermal() const { return tire_thermal_; }
+  const BrakeThermalParams& brake_thermal() const { return brake_thermal_; }
 
   // State offsets, for tests and tools.
   std::size_t wheel_dof_offset() const { return wheel_offset_; }
@@ -146,6 +149,8 @@ class TwoTrackModel final : public PlantModel {
   std::size_t battery_offset() const { return battery_offset_; }
   std::size_t body_offset() const { return body_offset_; }          // full model
   std::size_t unsprung_offset() const { return unsprung_offset_; }  // zu[4], then vzu[4]
+  // Per corner: tire surface and core temperature, brake disc temperature [degC].
+  std::size_t thermal_offset() const { return thermal_offset_; }
   const KcTable& kc(std::size_t axle) const { return kc_[axle]; }
   // Static figures of the suspension (full model).
   double sprung_mass() const { return sprung_mass_; }
@@ -178,7 +183,11 @@ class TwoTrackModel final : public PlantModel {
   std::size_t energy_offset_ = 0;
   std::size_t body_offset_ = 0;
   std::size_t unsprung_offset_ = 0;
+  std::size_t thermal_offset_ = 0;
   std::size_t size_ = 0;
+  TireThermalParams tire_thermal_;
+  BrakeThermalParams brake_thermal_;
+  double road_temp_ = 25.0;
 
   // Full model.
   bool full_ = false;
@@ -201,7 +210,7 @@ class TwoTrackModel final : public PlantModel {
 
   // Initial conditions.
   double x0_ = 0.0, y0_ = 0.0, yaw0_ = 0.0, v0_ = 0.0;
-  double soc0_ = 0.9, battery_temp0_ = 25.0, motor_temp0_ = 35.0;
+  double soc0_ = 0.9, battery_temp0_ = 25.0, motor_temp0_ = 35.0, tire_temp0_ = 25.0, brake_temp0_ = 25.0;
   double kinetic0_ = 0.0;
 
   // Inputs, latched once per step.

@@ -4,6 +4,12 @@ M9 기준 안내입니다. 설계는 [design.md](design.md)를 보세요.
 
 ## 지금 되는 것
 
+**M11 (디테일 마감, 진행 중)**
+- **타이어 온도·공기압** (PH-13): 바퀴마다 트레드 표면과 카커스(내부 공기) 온도. 미끄럼 마찰열·구름 저항 열·브레이크 림 열로 데워지고 공기·노면으로 식음. 표면 온도의 최적 창(포물선)과 공기압(이상기체로 내부 온도를 따라감)이 그립을 바꿈. 차가운 타이어로 나가면 첫 랩이 1초 이상 느림
+- **브레이크 열** (PH-17): 디스크 온도(브레이크 일률로 가열, 속도에 따른 대류·복사 냉각)와 패드 마찰 곡선(차가우면 덜 듣고 뜨거우면 페이드). 앞뒤 온도가 달라 제동 밸런스가 바뀜
+- MPC 드라이버가 타이어 그립 변화를 느끼고 기대 그립·목표 속도를 낮춤
+- 라이브 뷰 대시보드에 바퀴별 타이어 온도(색)·공기압·브레이크 온도
+
 **M10 (스스로 한계까지)**
 - **MPC 드라이버** (`driver.type: mpc`): 1.5~2초 앞을 예측하면서 조향과 가감속을 매 50 ms 최적화합니다. 차량의 타이어 데이터로 자기 모델(축별 타이어 곡선, 하중 이동)을 맞추고, 달리면서 앞뒤 축이 실제로 얼마나 무는지 배웁니다
 - **추종 모드** (`mode: track`): 주행 라인과 속도 프로파일을 사람처럼 따라감. 반응 지연 0.15 s, 근육 지연(2차 필터), 핸들 속도 한계, 손떨림. 예제 오토크로스 20.3 s
@@ -644,6 +650,7 @@ build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/sce
 - **예측 모델**: 센터라인 기준 Frenet 좌표의 dynamic single-track (상태 s, n, Δψ, vx, vy, r / 입력 앞바퀴 조향각, 종가속도). 걷는 속도에서는 kinematic 모델로 넘어갑니다.
 - **차를 아는 드라이버**: 시작할 때 차량의 타이어 모델(`simple` 또는 `.tir`)을 축 하중과 코너링 하중 이동(롤센터·롤 강성 배분)으로 평가해서 앞뒤 축의 타이어 곡선(마찰, 하중 민감도, Magic Formula B·C)을 맞추고, 그립의 95 %를 기대합니다 (`model.grip_scale`).
 - **달리면서 배우기**: 잰 횡가속도·요 가속도로 앞뒤 축의 횡력을 구하고, 그 힘에 필요한 슬립각과 실제 슬립각의 비로 축별 슬립 강성(`drv.mpc.front_gain`, `drv.mpc.rear_gain`)을 6초 평균으로 고칩니다. 애커만, 컴플라이언스·롤 스티어, 토, 캠버처럼 single-track에 없는 것을 흡수합니다 (예제 차: 앞 0.87, 뒤 1.12 → 실제 차가 모델보다 언더스티어).
+- **타이어 그립 느끼기**: 타이어 온도·공기압으로 그립이 바뀌면(`veh.wheel.*.tire_grip`, 1초 필터) 축별 기대 그립과 목표 속도(√그립)를 함께 낮춥니다. 끄기 `model.feel_grip: false`.
 - **최적화**: 50 ms마다 예측 구간 30단계를 이전 계획 주변에서 선형화해서 QP를 풀고(내부점법), 크게 바뀌면 다시 선형화해서 최대 3번(신뢰 영역 안의 순차 QP).
 - **제약**: 트랙 경계(차 반폭 + 여유), 마찰원(팔각형 |ax| + |ay| ≤ 1.25 g, |ay| ≤ g), 앞뒤 타이어 슬립각이 최대 횡력 슬립각 이하, 조향각·조향 속도·저크. 지킬 수 없으면 벌점이 큰 여유 변수로 풉니다.
 - **페달**: 계획한 가속도를 공칭 역맵(모터 토크·기어비, 브레이크 게인 + 회생)으로 페달로 바꾸고, 느끼는 가속도(PI, 생각보다 덜 서면 더 밟음)와 계획 속도(PI)로 보정합니다.
@@ -667,7 +674,7 @@ driver:
   #   max_kph: 110
   # speed_profile: profiles/autocross.csv   # 기록한 속도 프로파일 (s_m, v_mps; 프로젝트 기준 상대 경로)
   # human: {enabled: true, delay_s: 0.15, bandwidth_hz: 2.5, steer_rate_deg_per_s: 600, noise_deg: 0.3}
-  # model: {grip_scale: 0.95, learn: true, front_gain: 1, rear_gain: 1}   # mu: 1.4 → 타이어 데이터 대신 고정 마찰
+  # model: {grip_scale: 0.95, learn: true, feel_grip: true, front_gain: 1, rear_gain: 1}   # mu: 1.4 → 고정 마찰
   # weights: {lateral: 3, heading: 1, speed: 0.6, steer_rate: 20, accel_rate: 0.02, progress: 7}
   # road_wheel_rate_deg_per_s: 90, max_jerk: 60
 ```
@@ -697,6 +704,40 @@ python -m vsim.profiles templates/projects/example_fs_ev/scenarios/autocross_mpc
 | `drv.mpc.delta_cmd`, `drv.mpc.ax_cmd` | 손이 따라갈 앞바퀴 조향각, 계획한 종가속도 |
 | `drv.mpc.front_gain`, `drv.mpc.rear_gain` | 드라이버가 배운 앞뒤 축 슬립 강성 (1 = 타이어 데이터 그대로) |
 | `drv.mpc.path.<0..7>.x/y` | 계획한 경로 점 (라이브 뷰 점선) |
+
+---
+
+## 타이어 온도와 브레이크 열
+
+차량 파일의 `tire.thermal`, `tire.pressure`, `brakes.thermal`이 있으면 켜집니다 (예제 차량에 있음, 지우면 온도 영향 없음).
+
+```yaml
+tire:
+  thermal: {optimum_c: 75, window_c: 45, grip_loss: 0.12, surface_heat_capacity_j_per_k: 350,
+            core_heat_capacity_j_per_k: 3000, surface_core_w_per_k: 12, surface_air_w_per_k: 1,
+            surface_air_w_per_k_per_mps: 0.3, core_air_w_per_k: 2, core_air_w_per_k_per_mps: 0.5,
+            road_contact_w_per_k: 1.5, slip_heat_share: 0.6, rim_brake_w_per_k: 0.8}
+  pressure: {cold_kpa: 62, cold_c: 20, optimum_kpa: 90, grip_loss: 0.5}
+brakes:
+  thermal: {front_heat_capacity_j_per_k: 350, rear_heat_capacity_j_per_k: 280, cooling_w_per_k: 2.0,
+            cooling_w_per_k_per_mps: 0.4, emissivity_area_m2: 0.02,
+            pad_mu_temp_c: [20, 120, 400, 600], pad_mu_factor: [0.85, 1.0, 1.0, 0.65]}
+```
+
+- **그립** = 노면 μ × 온도 그립 `max(min_grip, 1 − grip_loss·((T표면 − 최적)/window)²)` × 공기압 그립 `1 − grip_loss·((p − p최적)/p최적)²`. 타이어 모델의 정점 힘을 낮추고 강성은 그대로 둡니다.
+- **열 흐름**: 표면 ← 미끄럼 일률 × `slip_heat_share`, 표면 → 공기(속도에 비례해 늘어남)·노면(`environment.road_temp_c`, 기본 기온)·카커스; 카커스 ← 구름 저항 일률 + 브레이크 디스크(림) − 공기.
+- **공기압**: 게이지압, 절대압이 카커스 절대온도에 비례 (`cold_kpa` @ `cold_c`).
+- **브레이크**: 바퀴마다 디스크 하나, 브레이크 일률(구동계가 계산한 바퀴별 제동 손실)로 가열, `(cooling + cooling_per_mps × 속도)·ΔT + 방사`로 냉각. 패드 마찰 배율은 표에서 보간해서 바퀴별 제동 토크 용량에 곱합니다.
+- **시작 온도**: 타이어는 최적 온도(데워진 상태), 브레이크는 기온. 차가운 타이어로 시작하려면 `--set initial.tire_temp_c=20`, 디스크는 `initial.brake_temp_c`.
+
+| 신호 | 내용 |
+|---|---|
+| `veh.wheel.<fl/fr/rl/rr>.tire_temp`, `tire_core_temp` | 트레드 표면, 카커스·내부 공기 온도 [°C] |
+| `veh.wheel.<..>.tire_pressure`, `tire_grip` | 공기압 [kPa 게이지], 온도·공기압 그립 배율 |
+| `veh.wheel.<..>.brake_temp`, `brake_mu` | 디스크 온도 [°C], 패드 마찰 배율 |
+| `veh.brake.balance` | 앞 제동 토크 비율 (패드 온도 반영) |
+
+예제 시험: `tire_warmup.test.yaml`(차가운 타이어 레이싱, 첫 랩 −1.4 s), `brake_fade.test.yaml`(107 → 30 km/h 15회 반복 제동, `scenarios/brake_fade.yaml`).
 
 ---
 

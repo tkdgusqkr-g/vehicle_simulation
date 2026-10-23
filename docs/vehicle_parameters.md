@@ -88,6 +88,10 @@
 | 이완 길이 (relaxation length) | m | ★ | | |
 | 수직 강성 / 수직 감쇠 | N/mm, N·s/m | ★★ | L3용 (`vertical_stiffness_n_per_mm`, 기본 100 / `vertical_damping_n_s_per_m`, 기본 150) | |
 | 캠버 강성 (캠버 추력) | 1/rad (Fz 대비) | ★ | `.tir`에 있으면 불필요. 단순 모델: `camber_stiffness` (기본 0.8) | |
+| 작동 온도 범위, 최적 표면 온도 | °C | ★★ | 타이어 열(PH-13): `tire.thermal.optimum_c`, `window_c`, `grip_loss` | |
+| 차가운 공기압 / 최적 공기압 | kPa | ★★ | `tire.pressure.cold_kpa`, `cold_c`, `optimum_kpa` (게이지압). 이상기체로 내부 온도를 따라 변함 | |
+| 타이어 질량 (트레드·카커스) | kg | ★ | 열용량 추정용 (`surface_heat_capacity_j_per_k`, `core_heat_capacity_j_per_k`) | |
+| 주행 중 타이어 온도 기록 (적외선 센서, 파이로미터) | °C | ★ | 열 모델 계수(`*_w_per_k`) 맞추기용 | |
 
 ## 5. 공력
 
@@ -138,6 +142,9 @@ L3 모델이 하드포인트에서 K&C를 직접 풉니다 (`vsim-core --export-
 | **방법 B** 마스터실린더 지름 앞 / 뒤, 밸런스바 설정 | mm, % | ★★★ | | |
 | **방법 B** 캘리퍼 피스톤 총 면적, 디스크 유효반경 | mm², mm | ★★★ | | |
 | **방법 B** 패드 마찰계수 (가능하면 온도별) | — | ★★ | 브레이크 열(PH-17)용 | |
+| 패드 마찰 - 디스크 온도 곡선 | 표 | ★★ | `brakes.thermal.pad_mu_temp_c`, `pad_mu_factor` (명목값 대비 배율) | |
+| 디스크 질량·재질 (앞 / 뒤) | kg | ★★ | 열용량 (`front_heat_capacity_j_per_k` = 질량 × 비열, 강 약 460 J/kg·K) | |
+| 주행 중 디스크 온도 기록 (서모 페인트, 적외선) | °C | ★ | 냉각 계수(`cooling_w_per_k`, `cooling_w_per_k_per_mps`) 맞추기용 | |
 
 ## 9. 모터
 

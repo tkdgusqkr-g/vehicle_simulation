@@ -1,0 +1,18 @@
+test: tire_warmup
+description: PH-13 차가운 타이어(20 °C, 공기압 62 kPa)로 출발한 레이싱 MPC. 첫 랩은 그립이 낮아 느리고(약 0.8), 타이어가 데워지며 공기압이 오르고 랩타임이 줄어듭니다.
+scenario: ../scenarios/autocross_mpc.yaml
+duration_s: 66
+overrides:
+  driver.mode: race
+  initial.tire_temp_c: 20
+checks:
+  - name: 3랩 완주, 코스 이탈 없음
+    expr: "final(track.lap) >= 3 and final(track.off_track_count) == 0"
+  - name: 출발 직후 그립 0.9 미만 (차가움)
+    expr: "at(veh.wheel.fl.tire_grip, 5) < 0.9"
+  - name: 3랩째 그립 0.93 이상
+    expr: "at(veh.wheel.fl.tire_grip, 60) > 0.93"
+  - name: 공기압 상승 (62 → 66 kPa 이상; 내부 공기는 몇 분에 걸쳐 데워짐)
+    expr: "at(veh.wheel.fl.tire_pressure, 1) < 63 and at(veh.wheel.fl.tire_pressure, 60) > 66"
+  - name: 첫 랩이 세 번째 랩보다 0.5초 이상 느림
+    expr: "changes(track.last_lap)[0] - changes(track.last_lap)[2] > 0.5"

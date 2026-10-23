@@ -10,6 +10,7 @@
 
 #include "vsim/driver/qp.hpp"
 #include "vsim/models/tire/tire.hpp"
+#include "vsim/models/vehicle/corners.hpp"
 #include "vsim/sim/context.hpp"
 #include "vsim/util/paths.hpp"
 
@@ -26,6 +27,8 @@ double deg_to_rad(double deg) { return deg * kPi / 180.0; }
 constexpr double kTrustDelta = 0.06, kTrustAccel = 4.0;
 // Damping ratio of the neuromuscular steering filter.
 constexpr double kHandDamping = 0.7;
+// How fast the driver's feel for the tire grip follows the tires [s].
+constexpr double kFeelTime = 1.0;
 // Learning the axles: signal filter and averaging time [s].
 constexpr double kLearnFilter = 0.05, kLearnTime = 6.0;
 // Largest correction of the pedal for the acceleration the driver feels [m/s^2].
@@ -367,6 +370,10 @@ void MpcDriver::init_driver(const ParamTree& params, Context& ctx) {
   ka_p_ = params.get_double("driver.accel_kp", ka_p_);
   ka_i_ = params.get_double("driver.accel_ki", ka_i_);
   learn_ = params.get_bool("driver.model.learn", true);
+  feel_grip_ = params.get_bool("driver.model.feel_grip", true);
+  base_mu_ = {model_.front.mu, model_.rear.mu};
+  felt_grip_ = {1.0, 1.0};
+  speed_scale_ = 1.0;
   model_.front.gain = params.get_double("driver.model.front_gain", 1.0);
   model_.rear.gain = params.get_double("driver.model.rear_gain", 1.0);
   if (!(model_.front.gain > 0.0 && model_.rear.gain > 0.0)) {
@@ -491,6 +498,10 @@ void MpcDriver::init_driver(const ParamTree& params, Context& ctx) {
   r_in_ = bus.declare("veh.chassis.yaw_rate", "rad/s", "yaw rate");
   ax_in_ = bus.declare("veh.chassis.ax", "m/s^2", "longitudinal acceleration (body frame)");
   ay_in_ = bus.declare("veh.chassis.ay", "m/s^2", "lateral acceleration (body frame)");
+  for (std::size_t c = 0; c < grip_in_.size(); ++c) {
+    grip_in_[c] = bus.declare("veh.wheel." + std::string(kCornerNames[c]) + ".tire_grip", "-",
+                              "grip factor from temperature and pressure");
+  }
   front_gain_out_ = bus.declare("drv.mpc.front_gain", "-", "front axle slip stiffness the driver has learnt (1: the tyre data)");
   rear_gain_out_ = bus.declare("drv.mpc.rear_gain", "-", "rear axle slip stiffness the driver has learnt (1: the tyre data)");
   status_out_ = bus.declare("drv.mpc.status", "-", "0 solved, 1 previous plan, 2 pure pursuit fallback");
@@ -655,7 +666,7 @@ std::optional<std::vector<MpcModel::Input>> MpcDriver::qp_step(const MpcModel::S
     penalise(k, MpcModel::N, xb[k][MpcModel::N] - ref_.at(ref_.n_ref, s), w_lateral_ * terminal);
     penalise(k, MpcModel::Dpsi, xb[k][MpcModel::Dpsi] - ref_.at(ref_.psi_ref, s), w_heading_ * terminal);
     if (!race_) {
-      penalise(k, MpcModel::Vx, xb[k][MpcModel::Vx] - ref_.at(ref_.v_ref, s), w_speed_ * terminal);
+      penalise(k, MpcModel::Vx, xb[k][MpcModel::Vx] - speed_scale_ * ref_.at(ref_.v_ref, s), w_speed_ * terminal);
     }
   }
   if (race_) {  // progress: maximise s at the end of the horizon
@@ -727,7 +738,7 @@ std::optional<std::vector<MpcModel::Input>> MpcDriver::qp_step(const MpcModel::S
       }
     }
     if (race_) {
-      const double cap = ref_.at(ref_.v_cap, s);
+      const double cap = speed_scale_ * ref_.at(ref_.v_cap, s);
       set_row(row_of(k, MpcModel::Vx), 3 * k, 1.0, slack, std::max(cap, 1.0) * 0.1, cap - xb[k][MpcModel::Vx]);
     }
   }
@@ -850,6 +861,27 @@ void MpcDriver::learn(SignalBus& bus, double vx, double vy, double r) {
   }
 }
 
+void MpcDriver::feel_grip(const SignalBus& bus) {
+  // The grip the tires have now (temperature, pressure) as the driver feels it through the
+  // car: it scales what the driver expects of each axle and the speeds it aims for (cornering
+  // speed goes with the square root of the grip).
+  if (!feel_grip_) {
+    return;
+  }
+  const double a = period_ / (kFeelTime + period_);
+  for (std::size_t axle = 0; axle < 2; ++axle) {
+    double grip = 0.0;
+    for (std::size_t side = 0; side < 2; ++side) {
+      const double g = bus.get(grip_in_[2 * axle + side]);
+      grip += 0.5 * (g > 0.0 ? g : 1.0);  // 0: the plant has no tire temperatures
+    }
+    felt_grip_[axle] += a * (grip - felt_grip_[axle]);
+  }
+  model_.front.mu = base_mu_[0] * felt_grip_[0];
+  model_.rear.mu = base_mu_[1] * felt_grip_[1];
+  speed_scale_ = std::sqrt(std::min(felt_grip_[0], felt_grip_[1]));
+}
+
 double MpcDriver::pursuit_steer(double x, double y, double yaw, double speed) {
   const double wheelbase = model_.lf + model_.lr;
   const double rx = x - model_.lr * std::cos(yaw), ry = y - model_.lr * std::sin(yaw);
@@ -871,6 +903,7 @@ void MpcDriver::step(double t, SignalBus& bus) {
   s_hint_ = here.s;
   const MpcModel::State state = {here.s, here.n, std::remainder(yaw - here.heading, 2.0 * kPi), vx, vy, r};
   learn(bus, vx, vy, r);
+  feel_grip(bus);
   bus.set(s_out_, here.s);
   bus.set(n_out_, here.n);
   bus.set(nref_out_, ref_.at(ref_.n_ref, here.s));
@@ -933,7 +966,7 @@ void MpcDriver::step(double t, SignalBus& bus) {
     now = {plan_->input_at(t + delay_ + lead)[0], u[1], plan_->speed_at(t + delay_)};
   } else {
     ++fallbacks_;
-    const double v_ref = ref_.at(ref_.v_ref, here.s + vx * 0.3);
+    const double v_ref = speed_scale_ * ref_.at(ref_.v_ref, here.s + vx * 0.3);
     now = {pursuit_steer(x, y, yaw, vx), std::clamp((v_ref - vx) * 2.0, -8.0, 8.0), v_ref};
   }
   delay_line_.push_back(now);
@@ -979,7 +1012,7 @@ void MpcDriver::step(double t, SignalBus& bus) {
   command_.brake = std::clamp(-u, 0.0, 1.0);
   write_command(bus, command_);
   bus.set(target_out_, act.v);
-  bus.set(vref_out_, ref_.at(race_ ? ref_.v_cap : ref_.v_ref, here.s));
+  bus.set(vref_out_, speed_scale_ * ref_.at(race_ ? ref_.v_cap : ref_.v_ref, here.s));
   bus.set(ax_out_, act.ax);
   bus.set(delta_out_, act.delta);
 }

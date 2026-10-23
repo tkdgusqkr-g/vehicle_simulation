@@ -48,6 +48,11 @@
   #brake-bar > div { background: var(--brake); }
   .bar-label { font-size: 11px; color: var(--muted); text-align: center; margin-top: 4px; }
   #wheel { width: 64px; height: 64px; }
+  #tires { display: none; grid-template-columns: repeat(2, 46px); gap: 4px 10px; font-variant-numeric: tabular-nums; }
+  .tire { border-radius: 6px; padding: 3px 0 2px; text-align: center; background: #222833; position: relative; overflow: hidden; }
+  .tire b { display: block; font-size: 14px; font-weight: 600; color: #0b0d10; }
+  .tire span { display: block; font-size: 10px; color: #0b0d10; opacity: 0.8; }
+  .tire i { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; }
   #numbers { font-variant-numeric: tabular-nums; color: var(--muted); }
   #numbers b { color: var(--text); font-weight: 500; }
   #laps { top: 12px; left: 50%; transform: translateX(-50%); display: none; gap: 18px; align-items: baseline;
@@ -106,6 +111,15 @@
       </g>
     </svg>
     <div class="bar-label" id="steer-deg">0°</div>
+  </div>
+  <div>
+    <div id="tires" title="타이어 표면 온도 °C · 공기압 kPa · 아래 줄은 브레이크 디스크 온도">
+      <div class="tire" id="tire-fl"><b>-</b><span>-</span><i></i></div>
+      <div class="tire" id="tire-fr"><b>-</b><span>-</span><i></i></div>
+      <div class="tire" id="tire-rl"><b>-</b><span>-</span><i></i></div>
+      <div class="tire" id="tire-rr"><b>-</b><span>-</span><i></i></div>
+    </div>
+    <div class="bar-label" id="tires-label" style="display:none">타이어 °C · kPa</div>
   </div>
 </div>
 
@@ -216,6 +230,35 @@ function zoom(factor) { pixelsPerMeter = Math.min(200, Math.max(3, pixelsPerMete
 canvas.addEventListener("wheel", (event) => { event.preventDefault(); zoom(event.deltaY < 0 ? 1.1 : 0.9); },
   { passive: false });
 
+// Tire temperature colour: blue cold, green in the window around the optimum, red hot.
+function tireColor(temp) {
+  const optimum = vehicle.tire_optimum_c, window = vehicle.tire_window_c || 40;
+  const e = Math.max(-1, Math.min(1, (temp - optimum) / window));
+  const hue = e < 0 ? 140 + 80 * -e : 140 - 140 * e;
+  return `hsl(${hue}, 70%, ${55 - 8 * Math.abs(e)}%)`;
+}
+
+function brakeColor(temp) {
+  const e = Math.max(0, Math.min(1, (temp - 50) / 550));
+  return `hsl(${50 - 50 * e}, 90%, ${35 + 25 * e}%)`;
+}
+
+function updateTires(s) {
+  const show = Array.isArray(s.tire_temp) && vehicle.tire_optimum_c !== undefined;
+  document.getElementById("tires").style.display = show ? "grid" : "none";
+  document.getElementById("tires-label").style.display = show ? "block" : "none";
+  if (!show) return;
+  ["fl", "fr", "rl", "rr"].forEach((c, i) => {
+    const box = document.getElementById(`tire-${c}`);
+    box.style.background = tireColor(s.tire_temp[i]);
+    box.querySelector("b").textContent = s.tire_temp[i].toFixed(0);
+    box.querySelector("span").textContent = s.tire_pressure ? s.tire_pressure[i].toFixed(0) : "";
+    box.querySelector("i").style.background = s.brake_temp ? brakeColor(s.brake_temp[i]) : "transparent";
+    box.title = `${c.toUpperCase()}: 표면 ${s.tire_temp[i].toFixed(1)} °C, 공기압 ${s.tire_pressure ? s.tire_pressure[i].toFixed(1) : "-"} kPa, ` +
+      `그립 ${s.tire_grip ? (s.tire_grip[i] * 100).toFixed(1) : "-"} %, 브레이크 ${s.brake_temp ? s.brake_temp[i].toFixed(0) : "-"} °C`;
+  });
+}
+
 // --- State --------------------------------------------------------------------
 function onState(s) {
   if (state && Math.hypot(s.x - state.x, s.y - state.y) > 20) trail = [];  // reset jumped
@@ -259,6 +302,7 @@ function onState(s) {
   document.getElementById("steer-deg").textContent = `${steerDeg.toFixed(0)}°`;
   document.getElementById("paused").style.display = s.paused ? "block" : "none";
   if (track && s.lap !== undefined) updateLaps(s);
+  updateTires(s);
 }
 
 const lapTime = (seconds) => {

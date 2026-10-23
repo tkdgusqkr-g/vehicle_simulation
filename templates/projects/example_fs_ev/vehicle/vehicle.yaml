@@ -113,6 +113,25 @@ tire:
     Ey: 0.2
     pneumatic_trail_m: 0.025   # 셀프 얼라이닝 토크
     camber_stiffness: 0.8      # 캠버 1 rad당 횡력/하중 (캠버 추력)
+  thermal:                     # 타이어 온도 (PH-13). 지우면 온도·공기압 영향 없음
+    optimum_c: 75              # 그립이 가장 좋은 표면 온도 (R25B 작동 범위 50~95 °C)
+    window_c: 45               # 최적 ± 이만큼에서 grip_loss만큼 그립 감소 (포물선)
+    grip_loss: 0.12
+    surface_heat_capacity_j_per_k: 350    # 트레드 표면층
+    core_heat_capacity_j_per_k: 3000      # 카커스 + 내부 공기
+    surface_core_w_per_k: 12
+    surface_air_w_per_k: 1                # 정지 시 + 속도 비례 냉각
+    surface_air_w_per_k_per_mps: 0.3
+    core_air_w_per_k: 2
+    core_air_w_per_k_per_mps: 0.5
+    road_contact_w_per_k: 1.5  # 노면과 열 교환 (environment.road_temp_c)
+    slip_heat_share: 0.6       # 미끄럼 마찰열 중 타이어로 가는 비율 (나머지는 노면)
+    rim_brake_w_per_k: 0.8     # 브레이크 열이 림을 통해 내부 공기로
+  pressure:                    # 공기압 (게이지). 내부 온도로 이상기체 변화
+    cold_kpa: 62               # 차갑게 넣은 압력 (약 9 psi, cold_c에서)
+    cold_c: 20
+    optimum_kpa: 90            # 그립이 가장 좋은 압력 (뜨거울 때 약 13 psi)
+    grip_loss: 0.5             # (압력 오차 / 최적)^2 당 그립 감소
   # 축별로 다르게 하려면 front: / rear: 아래에 simple: {...}를 지정
 
 aero:
@@ -177,6 +196,14 @@ brakes:
   max_pressure_bar: 30         # 페달 최대
   front_gain_nm_per_bar: 16    # 앞축 합계
   rear_gain_nm_per_bar: 5      # 뒤축 합계
+  thermal:                     # 디스크 온도와 패드 마찰 (PH-17). 지우면 온도 영향 없음
+    front_heat_capacity_j_per_k: 350   # 디스크 하나 (강 약 0.75 kg)
+    rear_heat_capacity_j_per_k: 280
+    cooling_w_per_k: 2.0               # 정지 시 + 속도 비례 냉각 (10" 휠 안의 작은 디스크)
+    cooling_w_per_k_per_mps: 0.4
+    emissivity_area_m2: 0.02           # 복사 (방사율 × 면적)
+    pad_mu_temp_c: [20, 120, 400, 600] # 디스크 온도 → 패드 마찰 배율
+    pad_mu_factor: [0.85, 1.0, 1.0, 0.65]
 
 # 센서 (설계 문서 §10.5). 위치는 무게중심 아래 지면 기준 [x 앞, y 왼쪽, z 위] m.
 # realism.sensors: real이면 잡음·지연·양자화·펄스 계측, realism.variation: real이면
