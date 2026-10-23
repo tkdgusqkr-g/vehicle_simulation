@@ -1,0 +1,22 @@
+# 차고 공력 (L3): 105 km/h에서 다운포스로 차가 내려앉고, 3초에 강하게 제동하면 코가 숙여져
+# 압력중심이 앞으로 갔다가 앞 차고가 실속점(-20 mm) 아래로 내려가면 언더트레이가 실속합니다.
+name: aero_dive
+project: ..
+seed: 1
+
+time:
+  dt: 0.001
+  mode: fast
+  t_end: 6
+
+initial:
+  speed_mps: 29
+
+driver:
+  type: maneuver
+  throttle: {type: step, at_s: 3, before: 0.25, value: 0}
+  brake: {type: step, at_s: 3, value: 0.8}
+
+logging:
+  rate_hz: 200
+  signals: ["veh.*", "drv.*", "energy.*"]

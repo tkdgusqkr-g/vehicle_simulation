@@ -85,10 +85,29 @@ class SensorSystem::Sensor {
     }
     // Samples land on plant steps: faster sensors sample every step.
     interval_ = std::max(s.dt, std::round(1.0 / rate / s.dt) * s.dt);
+    // The sensor's own temperature (for its temperature coefficients): the air, or a signal
+    // near it (temperature_signal: e.g. a motor's or the battery's), behind its thermal lag.
+    temperature_ = s.params.get_double("environment.ambient_temp_c", 25.0);
+    const std::string source = s.params.get_string(s.prefix + ".temperature_signal", "");
+    if (!source.empty()) {
+      temperature_source_ = Input{s.ctx.bus().find(source)};
+      if (!temperature_source_.id) {
+        throw std::invalid_argument(s.prefix + ".temperature_signal: no signal '" + source + "'");
+      }
+    }
+    thermal_tau_ = s.params.get_double(s.prefix + ".thermal_tau_s", 30.0);
+    if (!(thermal_tau_ > 0.0)) {
+      throw std::invalid_argument(s.prefix + ".thermal_tau_s must be positive");
+    }
   }
   virtual ~Sensor() = default;
 
   void tick(double t, double dt, SignalBus& bus) {
+    if (temperature_source_.id) {
+      const double source = temperature_source_.get(bus);
+      temperature_ = warmed_ ? temperature_ + (source - temperature_) * (1.0 - std::exp(-dt / thermal_tau_)) : source;
+      warmed_ = true;
+    }
     update(t, dt, bus);
     if (t + 1e-9 >= next_) {
       sample(t, bus);
@@ -112,6 +131,7 @@ class SensorSystem::Sensor {
     for (const ChannelFault& f : faults_from_params(s.params, s.prefix, key, supply)) {
       model.add_fault(f);
     }
+    model.set_temperature_source(&temperature_);
     return model;
   }
   SignalId output(const Setup& s, const std::string& key, const char* unit, const char* what) const {
@@ -120,6 +140,10 @@ class SensorSystem::Sensor {
 
   double interval_ = 0.001;
   double next_ = 0.0;
+  double temperature_ = 25.0;  // [degC]
+  double thermal_tau_ = 30.0;
+  Input temperature_source_;
+  bool warmed_ = false;
 };
 
 namespace {
@@ -144,6 +168,22 @@ class Imu final : public SensorSystem::Sensor {
     }
     mount_ = Mat3::from_euler(orient[0] * kDeg, orient[1] * kDeg, orient[2] * kDeg);
     anti_alias_ = p.get_double(s.prefix + ".anti_alias_hz", 0.0);
+    // Cross-axis sensitivity (axes not quite orthogonal, coupling on the die) and the
+    // gyros' sensitivity to acceleration, per unit.
+    if (s.variation) {
+      Rng rng = s.ctx.make_rng("variation.sensors." + s.name + ".cross_axis");
+      const double accel_cross = p.get_double(s.prefix + ".accel.cross_axis", 0.01);
+      const double gyro_cross = p.get_double(s.prefix + ".gyro.cross_axis", 0.01);
+      const double g_sensitivity = p.get_double(s.prefix + ".gyro.g_sensitivity_dps_per_g", 0.02) * kDeg / kG;
+      for (std::size_t i = 0; i < 9; ++i) {
+        const bool diagonal = i % 4 == 0;
+        accel_cross_.m[i] = diagonal ? 1.0 : accel_cross * rng.normal();
+        gyro_cross_.m[i] = diagonal ? 1.0 : gyro_cross * rng.normal();
+        g_sensitivity_.m[i] = g_sensitivity * rng.normal();
+      }
+    } else {
+      g_sensitivity_.m.fill(0.0);
+    }
 
     // A MEMS automotive IMU (datasheet-like defaults).
     ChannelParams a;
@@ -155,6 +195,9 @@ class Imu final : public SensorSystem::Sensor {
     a.resolution = 16.0 * kG / 32768.0;
     a.min = -16.0 * kG;
     a.max = 16.0 * kG;
+    a.bias_tempco = 0.1e-3 * kG;     // 0.1 mg/K
+    a.scale_tempco = 100e-6;         // 100 ppm/K
+    a.nonlinearity = 0.001;          // 0.1 % of full scale
     ChannelParams g;
     g.noise_density = 0.005 * kDeg;  // 0.005 deg/s/sqrt(Hz)
     g.bias_instability = 3.0 / 3600.0 * kDeg;
@@ -164,6 +207,9 @@ class Imu final : public SensorSystem::Sensor {
     g.resolution = 500.0 * kDeg / 32768.0;
     g.min = -500.0 * kDeg;
     g.max = 500.0 * kDeg;
+    g.bias_tempco = 0.01 * kDeg;     // 0.01 deg/s/K
+    g.scale_tempco = 100e-6;
+    g.nonlinearity = 0.001;
     for (int i = 0; i < 3; ++i) {
       const char axis = "xyz"[i];
       if (accel_) {
@@ -240,8 +286,13 @@ class Imu final : public SensorSystem::Sensor {
                                      ay_.get(bus) + tangential[1] + centripetal[1],
                                      az_.get(bus) + tangential[2] + centripetal[2] + kG};  // specific force: minus gravity
     // Into the body (rolled and pitched), then the sensor's mounting.
-    const std::array<double, 3> f = mount_.transpose_times(body.transpose_times(a));
-    const std::array<double, 3> rate = mount_.transpose_times(body.transpose_times(w));
+    const std::array<double, 3> f_axes = mount_.transpose_times(body.transpose_times(a));
+    const std::array<double, 3> f = accel_cross_.times(f_axes);
+    std::array<double, 3> rate = gyro_cross_.times(mount_.transpose_times(body.transpose_times(w)));
+    const std::array<double, 3> g_rate = g_sensitivity_.times(f_axes);
+    for (std::size_t i = 0; i < 3; ++i) {
+      rate[i] += g_rate[i];
+    }
     std::array<double, 3> vib{};
     if (real_) {
       for (const Vibration& v : vibration_) {
@@ -275,7 +326,7 @@ class Imu final : public SensorSystem::Sensor {
   };
   bool accel_, gyro_, real_ = false;
   std::array<double, 3> position_{};
-  Mat3 mount_;
+  Mat3 mount_, accel_cross_, gyro_cross_, g_sensitivity_;
   double anti_alias_ = 0.0;
   std::vector<ChannelModel> accel_ch_, gyro_ch_;
   std::array<SignalId, 3> accel_out_{}, gyro_out_{};
@@ -640,6 +691,9 @@ void SensorSystem::init(const ParamTree& params, Context& ctx) {
       c.resolution = 100.0 / 4096.0;
       c.min = 0.0;
       c.max = 100.0;
+      c.bias_tempco = 0.01;      // [bar/K]
+      c.nonlinearity = 0.0025;   // 0.25 % of full scale
+      c.hysteresis = 0.1;        // [bar]
       sensor = std::make_unique<SignalSensor>(s, 1000.0, "veh.brake.pressure", "pressure", "bar",
                                               "brake line pressure", c);
     } else if (type == "current") {
@@ -649,6 +703,10 @@ void SensorSystem::init(const ParamTree& params, Context& ctx) {
       c.scale_error = 0.005;
       c.bandwidth = 1000.0;
       c.resolution = 0.05;
+      c.bias_tempco = 0.02;     // [A/K] Hall offset drift
+      c.scale_tempco = 200e-6;  // [1/K]
+      c.full_scale = 300.0;     // [A]
+      c.nonlinearity = 0.001;
       sensor = std::make_unique<SignalSensor>(s, 1000.0, "bat.current", "value", "A", "measured current", c);
     } else if (type == "voltage") {
       ChannelParams c;

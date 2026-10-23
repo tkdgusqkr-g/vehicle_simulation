@@ -42,6 +42,7 @@ add_library(vsim_core STATIC
   src/models/vehicle/single_track.cpp
   src/env/wind.cpp
   src/models/vehicle/suspension.cpp
+  src/models/vehicle/aero.cpp
   src/models/vehicle/thermal.cpp
   src/models/vehicle/two_track.cpp
   src/plugin/fmu_plugin.cpp

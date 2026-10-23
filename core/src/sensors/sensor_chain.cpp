@@ -18,6 +18,12 @@ ChannelParams ChannelParams::from_params(const ParamTree& params, const std::str
   get("bandwidth_hz", p.bandwidth);
   get("latency_s", p.latency);
   get("resolution", p.resolution);
+  get("bias_tempco", p.bias_tempco);
+  get("scale_tempco", p.scale_tempco);
+  get("reference_temp_c", p.reference_temp);
+  get("nonlinearity", p.nonlinearity);
+  get("full_scale", p.full_scale);
+  get("hysteresis", p.hysteresis);
   const std::vector<double> range = params.get_double_list(prefix + ".range");
   if (range.size() == 2) {
     p.min = range[0];
@@ -26,7 +32,8 @@ ChannelParams ChannelParams::from_params(const ParamTree& params, const std::str
     throw std::invalid_argument(prefix + ".range needs [min, max]");
   }
   for (const double v : {p.scale_error, p.bias, p.noise_density, p.bias_instability, p.random_walk, p.bandwidth,
-                         p.latency, p.resolution}) {
+                         p.latency, p.resolution, p.bias_tempco, p.scale_tempco, p.nonlinearity, p.full_scale,
+                         p.hysteresis}) {
     if (!(v >= 0.0)) {
       throw std::invalid_argument(prefix + ": error parameters must not be negative");
     }
@@ -43,6 +50,16 @@ ChannelModel::ChannelModel(const ChannelParams& params, double rate, Rng noise, 
   if (variation) {
     scale_ = p_.scale_error * instance.normal();
     bias_ = p_.bias * instance.normal();
+    // Drawn after the older errors so those stay the same per seed.
+    bias_tempco_ = p_.bias_tempco * instance.normal();
+    scale_tempco_ = p_.scale_tempco * instance.normal();
+    const double full_scale =
+        p_.full_scale > 0.0 ? p_.full_scale
+                            : (std::isfinite(p_.min) && std::isfinite(p_.max) ? std::max(-p_.min, p_.max) : 0.0);
+    nonlinear_ = full_scale * p_.nonlinearity * instance.normal();
+    if (nonlinear_ != 0.0) {
+      full_scale_ = full_scale;
+    }
   }
   if (real_) {
     // Drifting bias as a first-order Gauss-Markov process: its Allan
@@ -68,7 +85,20 @@ double ChannelModel::sample(double t, double truth) {
     started_ = true;
     y = filtered_;
   }
-  y = y * (1.0 + scale_) + bias_;
+  if (real_ && p_.hysteresis > 0.0) {
+    // Play operator: the output follows only once the input moves past half the band.
+    const double half = 0.5 * p_.hysteresis;
+    play_ = play_started_ ? std::clamp(play_, y - half, y + half) : y;
+    play_started_ = true;
+    y = play_;
+  }
+  if (nonlinear_ != 0.0) {
+    // Cubic S-curve through 0 and both ends of the scale, largest (nonlinear_) at u = 1/sqrt(3).
+    const double u = std::clamp(y / full_scale_, -1.0, 1.0);
+    y += nonlinear_ * 1.5 * std::sqrt(3.0) * u * (1.0 - u * u);
+  }
+  const double temp_error = temperature_ ? *temperature_ - p_.reference_temp : 0.0;
+  y = y * (1.0 + scale_ + scale_tempco_ * temp_error) + bias_ + bias_tempco_ * temp_error;
   if (real_) {
     markov_ = markov_decay_ * markov_ + markov_kick_ * noise_.normal();
     walk_ += walk_kick_ * noise_.normal();

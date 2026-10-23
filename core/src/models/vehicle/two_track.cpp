@@ -115,6 +115,10 @@ struct TwoTrackModel::Eval {
   double airspeed = 0.0, aero_yaw = 0.0;      // through the air; flow angle (air from the left +)
   double aero_fx = 0.0, aero_fy = 0.0, aero_moment = 0.0;  // body frame, about the CG
   double aero_side = 0.0;                     // the crosswind part of aero_fy
+  double aero_front = 0.45;                   // front share of the downforce
+  double cla_factor = 1.0, cda_factor = 1.0;  // from the ride height map
+  std::array<double, 2> ride_height{};        // front, rear axle: change from static [m]
+  std::array<double, kCorners> rolling_radius{};  // effective [m]
   double ax = 0.0, ay = 0.0;
   double yaw_accel = 0.0;  // [rad/s^2]
   double ffb = 0.0;
@@ -147,7 +151,7 @@ struct TwoTrackModel::Eval {
 struct TwoTrackModel::Signals {
   struct Wheel {
     SignalId fz, fx, fy, mz, slip_ratio, slip_angle, omega, steer;
-    SignalId tire_temp, tire_core_temp, tire_pressure, tire_grip, brake_temp, brake_mu;
+    SignalId tire_temp, tire_core_temp, tire_pressure, tire_grip, brake_temp, brake_mu, rolling_radius;
   };
   struct Axle {
     SignalId fz, fx, fy, slip_angle;
@@ -169,6 +173,7 @@ struct TwoTrackModel::Signals {
   std::array<Axle, 2> axle;
   SignalId drag, downforce, brake_pressure, brake_balance, ffb;
   SignalId wind_x, wind_y, airspeed, aero_yaw, aero_side, aero_moment;
+  SignalId aero_front, ride_height_front, ride_height_rear;
   std::vector<Motor> motor;
   SignalId power_mech, power_elec;
   SignalId soc, voltage, current, power, ocv, open_voltage, battery_temp, overloaded;
@@ -206,6 +211,8 @@ TwoTrackModel::Params TwoTrackModel::params_from(const ParamTree& params) {
   p.wheel_radius = params.get_double("vehicle.wheel.radius_m");
   p.wheel_inertia = params.get_double("vehicle.wheel.inertia_kgm2");
   p.rolling_resistance = params.get_double("vehicle.tire.rolling_resistance", p.rolling_resistance);
+  p.radius_per_kpa = 1e-3 * params.get_double("vehicle.tire.rolling_radius.pressure_mm_per_kpa", 0.0);
+  p.radius_deflection_share = params.get_double("vehicle.tire.rolling_radius.deflection_share", 0.0);
   p.relaxation_x = params.get_double("vehicle.tire.relaxation_length_x_m", p.relaxation_x);
   p.relaxation_y = params.get_double("vehicle.tire.relaxation_length_y_m", p.relaxation_y);
   p.low_speed_damping = params.get_double("vehicle.tire.low_speed_damping_ratio", p.low_speed_damping);
@@ -283,6 +290,11 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   tires_[1] = make_tire(params, "rear", project_dir);
   tire_thermal_ = TireThermalParams::from_params(params);
   brake_thermal_ = BrakeThermalParams::from_params(params);
+  aero_map_ = AeroMap::from_params(params);
+  if (!(p_.radius_per_kpa >= 0.0) || !(p_.radius_deflection_share >= 0.0 && p_.radius_deflection_share <= 1.0)) {
+    throw std::invalid_argument(
+        "vehicle.tire.rolling_radius: pressure_mm_per_kpa >= 0, deflection_share in [0, 1]");
+  }
   road_temp_ = params.get_double("environment.road_temp_c", p_.ambient_temp);
 
   const std::size_t motors = driveline_.motor_count();
@@ -383,7 +395,8 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
                   bus.declare(base + "tire_pressure", "kPa", "inflation pressure (gauge)"),
                   bus.declare(base + "tire_grip", "-", "grip factor from temperature and pressure"),
                   bus.declare(base + "brake_temp", "degC", "brake disc temperature"),
-                  bus.declare(base + "brake_mu", "-", "pad friction relative to nominal")};
+                  bus.declare(base + "brake_mu", "-", "pad friction relative to nominal"),
+                  bus.declare(base + "rolling_radius", "m", "effective rolling radius")};
   }
   for (std::size_t a = 0; a < 2; ++a) {
     const std::string base = std::string("veh.axle.") + (a == 0 ? "front." : "rear.");
@@ -400,6 +413,9 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   s.aero_yaw = bus.declare("veh.aero.yaw_angle", "rad", "flow angle, air from the left +");
   s.aero_side = bus.declare("veh.aero.side_force", "N", "aerodynamic side force (body frame, left +)");
   s.aero_moment = bus.declare("veh.aero.yaw_moment", "N*m", "aerodynamic yaw moment about the CG");
+  s.aero_front = bus.declare("veh.aero.front_ratio", "-", "front share of the downforce");
+  s.ride_height_front = bus.declare("veh.aero.ride_height_front", "m", "front ride height change from static");
+  s.ride_height_rear = bus.declare("veh.aero.ride_height_rear", "m", "rear ride height change from static");
   s.brake_pressure = bus.declare("veh.brake.pressure", "bar", "brake line pressure");
   s.brake_balance = bus.declare("veh.brake.balance", "-", "front share of the brake torque capacity");
   s.ffb = bus.declare("veh.ffb.torque_sw", "N*m",
@@ -674,7 +690,6 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
   const double lf = p_.cg_to_front;
   const double lr = p_.cg_to_rear();
   const double wheelbase = p_.wheelbase;
-  const double radius = p_.wheel_radius;
   const std::span<const double> q = x.subspan(wheel_offset_, driveline_.dof_count());
   const double g = kGravity;
 
@@ -703,22 +718,33 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
   // the flow, downforce, and in a crosswind a side force behind or ahead of the CG.
   const double speed_sq = vx * vx + vy * vy;
   const double speed = std::sqrt(speed_sq);
+  double dynamic_pressure = 0.0, air_u = 0.0, air_v = 0.0;
   {
     const double cy = std::cos(yaw), sy = std::sin(yaw);
     const double ua = vx - (cy * wind_x_ + sy * wind_y_);
     const double va = vy - (-sy * wind_x_ + cy * wind_y_);
     const double air_sq = ua * ua + va * va;
     e.airspeed = std::sqrt(air_sq);
-    const double dynamic_pressure = 0.5 * p_.air_density * air_sq;
-    e.downforce = p_.cla * dynamic_pressure;
-    e.drag = p_.cda * dynamic_pressure;
-    const double along = e.airspeed > 0.0 ? e.drag / e.airspeed : 0.0;
+    dynamic_pressure = 0.5 * p_.air_density * air_sq;
     e.aero_yaw = e.airspeed > 1e-6 ? std::atan2(va, ua) : 0.0;
     e.aero_side = -dynamic_pressure * p_.side_force_area * std::sin(e.aero_yaw);
-    e.aero_fx = -along * ua;
-    e.aero_fy = -along * va + e.aero_side;
-    e.aero_moment = p_.side_force_x * e.aero_side;
+    air_u = ua;
+    air_v = va;
   }
+  // Downforce, its balance and drag at the ride heights: static here; the full
+  // model moves them below.
+  const auto set_aero = [&](const AeroMap::Sample& map) {
+    e.cla_factor = map.cla_factor;
+    e.cda_factor = map.cda_factor;
+    e.downforce = p_.cla * map.cla_factor * dynamic_pressure;
+    e.aero_front = std::clamp(p_.aero_front_ratio + map.front_ratio_shift, 0.0, 1.0);
+    e.drag = p_.cda * map.cda_factor * dynamic_pressure;
+    const double along = e.airspeed > 0.0 ? e.drag / e.airspeed : 0.0;
+    e.aero_fx = -along * air_u;
+    e.aero_fy = -along * air_v + e.aero_side;
+    e.aero_moment = p_.side_force_x * e.aero_side;
+  };
+  set_aero(aero_map_.at(0.0, 0.0));
 
   // Contact patches: position in the body frame (from the CG), velocity, and
   // what each one stands on.
@@ -748,7 +774,7 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
     for (std::size_t c = 0; c < kCorners; ++c) {
       const bool front = is_front(c);
       const double axle_static = m * g * (front ? lr : lf) / wheelbase;
-      const double axle_aero = e.downforce * (front ? p_.aero_front_ratio : 1.0 - p_.aero_front_ratio);
+      const double axle_aero = e.downforce * (front ? e.aero_front : 1.0 - e.aero_front);
       const double lateral = (front ? lat_front : lat_rear) * (is_left(c) ? -1.0 : 1.0);
       const double longitudinal = 0.5 * long_transfer * (front ? -1.0 : 1.0);
       e.fz[c] = std::max(0.0, 0.5 * (axle_static + axle_aero) + longitudinal + lateral);
@@ -824,6 +850,18 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
       const std::size_t other = c ^ 1u;
       const double arb = ax.anti_roll_bar * 180.0 / std::numbers::pi / (p_.track(c) * p_.track(c));
       e.arb_force[c] = arb * (s - e.travel[other]);
+    }
+    // Ride heights at the axle centrelines (body over the road) from static,
+    // and the aero map there.
+    for (std::size_t a = 0; a < 2; ++a) {
+      double change = 0.0;
+      for (const std::size_t c : {2 * a, 2 * a + 1}) {
+        change -= 0.5 * (e.travel[c] + e.deflection[c] - (free_radius_[c] - hub0_[c]));
+      }
+      e.ride_height[a] = change;
+    }
+    if (aero_map_.enabled) {
+      set_aero(aero_map_.at(e.ride_height[0], e.ride_height[1]));
     }
   }
 
@@ -910,6 +948,16 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
     const double vx_wheel = cos_s * vcx[c] + sin_s * vcy[c];
     const double vy_wheel = -sin_s * vcx[c] + cos_s * vcy[c];
     e.omega[c] = driveline_.wheel_speed(c, q);
+    // Effective rolling radius: grows with the inflation pressure, shrinks
+    // with part of the tire's extra deflection under load.
+    double radius = p_.wheel_radius;
+    if (tire_thermal_.enabled) {
+      radius += p_.radius_per_kpa * (e.tire_pressure[c] - tire_thermal_.optimum_pressure);
+    }
+    if (full_) {
+      radius -= p_.radius_deflection_share * (std::max(0.0, e.deflection[c]) - (free_radius_[c] - hub0_[c]));
+    }
+    e.rolling_radius[c] = radius;
     const double slip_velocity = e.omega[c] * radius - vx_wheel;
 
     const double kappa = x[slip_offset_ + 2 * c];
@@ -1016,7 +1064,7 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
   } else {
     // Generalized forces (Kane): body heave, roll, pitch; unsprung heave.
     const double ms = sprung_mass_, h = h_s_;
-    const double df_front = e.downforce * p_.aero_front_ratio;
+    const double df_front = e.downforce * e.aero_front;
     const double df_rear = e.downforce - df_front;
     const double xb_front = lf - x_s_, xb_rear = -lr - x_s_;
     double q_z = -ms * g - e.downforce;
@@ -1152,7 +1200,7 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
   energy[kDamperLoss] = 0.0;
   energy[kTireDampingLoss] = 0.0;
   if (full_) {
-    const double df_front = e.downforce * p_.aero_front_ratio;
+    const double df_front = e.downforce * e.aero_front;
     energy[kDragLoss] += df_front * (vz - pitch_rate * (lf - x_s_)) +
                          (e.downforce - df_front) * (vz - pitch_rate * (-lr - x_s_));
     for (std::size_t c = 0; c < kCorners; ++c) {
@@ -1255,6 +1303,7 @@ void TwoTrackModel::write_outputs(double /*t*/, std::span<const double> x, Signa
     bus.set(w.tire_grip, e.tire_grip[c]);
     bus.set(w.brake_temp, x[thermal_offset_ + 3 * c + 2]);
     bus.set(w.brake_mu, e.brake_mu[c]);
+    bus.set(w.rolling_radius, e.rolling_radius[c]);
     const std::size_t a = is_front(c) ? 0 : 1;
     axle_fz[a] += e.fz[c];
     axle_fx[a] += e.fx[c];
@@ -1273,6 +1322,9 @@ void TwoTrackModel::write_outputs(double /*t*/, std::span<const double> x, Signa
   bus.set(s.aero_yaw, e.aero_yaw);
   bus.set(s.aero_side, e.aero_side);
   bus.set(s.aero_moment, e.aero_moment);
+  bus.set(s.aero_front, e.aero_front);
+  bus.set(s.ride_height_front, e.ride_height[0]);
+  bus.set(s.ride_height_rear, e.ride_height[1]);
   bus.set(s.brake_pressure, e.brake_pressure);
   {
     const double gf = p_.brake_gain_front * 0.5 * (e.brake_mu[0] + e.brake_mu[1]);

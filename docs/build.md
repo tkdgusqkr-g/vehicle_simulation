@@ -561,6 +561,7 @@ python -m vsim.phenomena templates/projects/example_fs_ev/scenarios/acceleration
 - 진동 피크를 보려면 로그를 센서 주기로 남깁니다(`--set logging.rate_hz=500`). 기본 100 Hz 로그는 그 자체로 aliasing을 만듭니다.
 - 테스트 식에서 `peak_freq(sens.imu.az, 5, 100)`, `peak_amp(...)`를 쓸 수 있습니다. 예: [apps_fault.test.yaml](../templates/projects/example_fs_ev/tests/apps_fault.test.yaml)
 - 센서를 끄고 참값으로 제어하려면 `--set control.use_sensors=false`, 센서를 아예 빼려면 `--set vehicle.sensors=`
+- 변환기 단계(M11): 개체마다 바이어스·스케일 온도계수(`bias_tempco` [단위/K], `scale_tempco` [1/K], 기준 `reference_temp_c` 25 °C), 양 끝과 0에서 0인 S자 비선형성(`nonlinearity`, 풀스케일 대비), 히스테리시스(`hysteresis`, 폭), IMU 축간 간섭(`accel.cross_axis`, `gyro.cross_axis`, 1 % 기본)과 자이로 가속도 민감도(`gyro.g_sensitivity_dps_per_g`, 0.02). 센서 온도는 기온, 또는 `temperature_signal`(예: `pt.motor.fl.temp`)을 `thermal_tau_s`(기본 30 s) 늦게 따라갑니다. 온도계수·비선형성·축간 간섭은 `variation: real`일 때 개체마다 뽑고, 히스테리시스는 `sensors: real`일 때 들어갑니다.
 
 | 센서 신호 | 내용 |
 |---|---|
@@ -792,6 +793,40 @@ environment:
 - 난류는 공기에 얼어붙은 소용돌이를 차가 지나가는 것으로 보고 시간 상수를 `length_m / 대기 속도`로 둔 1차 Gauss-Markov입니다(Dryden 스펙트럼의 저차 근사). 시드를 따릅니다.
 - 시나리오에서 `realism.environment: ideal`을 명시하면 바람이 멈춥니다.
 - 예제: `scenarios/crosswind.yaml`(100 km/h 직진 중 옆 돌풍 → 코가 바람 쪽으로 돌아 2.5 m 벗어남), MPC 외란 시험에 5 m/s 바람 + 난류.
+
+## 차고 공력과 유효 구름 반경
+
+```yaml
+aero:
+  ride_height_map:            # L3 (vehicle.model: full)
+    front_mm: [-30, -20, -10, 0, 10, 20]   # 정적 차고 대비 앞축 중심선 차고 변화
+    rear_mm: [-30, -20, -10, 0, 10, 20]
+    cla_factor: [[...], ...]               # cla_m2에 곱함, 행 = front_mm, 열 = rear_mm
+    front_ratio_shift: [[...], ...]        # front_ratio에 더함 (선택, 기본 0)
+    cda_factor: [[...], ...]               # cda_m2에 곱함 (선택, 기본 1)
+tire:
+  rolling_radius: {pressure_mm_per_kpa: 0.02, deflection_share: 0.3}
+```
+
+- 차고는 축마다 두 바퀴의 (서스펜션 이동 + 타이어 처짐 변화)로 구한 차체-노면 높이 변화입니다. 피치는 앞뒤 차고 차이로 들어갑니다. 표 사이는 쌍선형 보간, 바깥은 가장자리 값. L2(two_track)는 (0, 0) 값을 씁니다.
+- 예제 차량의 맵: 낮아질수록 다운포스가 늘다가(앞 −20 mm에서 +10 %) 그 아래에서 언더트레이가 실속(−16 %), 코가 내려가면 압력중심이 앞으로 갔다가 실속하면 뒤로 갑니다. 29 m/s 순항에서 앞뒤 약 −17 mm(다운포스 +6 %), 고속 제동 시작 때 앞이 −33 mm까지 내려가 실속합니다.
+- 유효 구름 반경 = `wheel.radius_m` + `pressure_mm_per_kpa`·(공기압 − 최적 공기압) − `deflection_share`·(타이어 처짐 − 정적 처짐). 슬립과 바퀴 토크가 같은 반경을 써서 에너지 수지는 그대로이고, 휠속 센서로 차속을 추정하는 VCU는 이 차이만큼 틀립니다(차가운 타이어 −0.6 mm면 약 +0.3 %).
+- 맵을 끄려면 키를 지우거나 `--set vehicle.aero.ride_height_map=off`.
+- 신호: `veh.aero.ride_height_front`, `veh.aero.ride_height_rear` [m], `veh.aero.front_ratio`, `veh.wheel.<..>.rolling_radius` [m].
+
+## 사운드
+
+브라우저 3D 화면과 Unreal 뷰어에서 <kbd>N</kbd>으로 켜고 끕니다 (처음엔 꺼짐, 브라우저는 `?volume=0.6`으로 음량).
+
+| 소리 | 무엇을 따르나 |
+|---|---|
+| 모터 윙윙 (10차, 2차 고조파) | 로터 회전수 = 바퀴 속도 × 감속비 (`VehicleInfo.gear_ratio`), 크기는 출력 |
+| 기어 맞물림 (23차), 인버터 스위칭 (8 kHz) | 로터 회전수, 출력 |
+| 타이어 스퀼 | 그립 정점을 넘은 슬립(슬립각 0.05 rad, 슬립률 0.06 이상), 하중이 크면 높은 음 |
+| 노면 소음, 바람 | 속도 |
+| 연석 진동 | 바퀴가 연석 위(`wheel_surface`) |
+
+- Unreal: `UVsimCarSound`(USynthComponent)가 오디오 스레드에서 `vsim_car_sound.h`를 돌립니다(엔진 없이 테스트됨). 상태는 `SynthCommand`로 넘기고 40 ms에 걸쳐 바뀌어 딸깍거리지 않습니다. 시뮬레이터가 끊기면 조용해집니다.
 
 ---
 

@@ -90,6 +90,7 @@
 | 캠버 강성 (캠버 추력) | 1/rad (Fz 대비) | ★ | `.tir`에 있으면 불필요. 단순 모델: `camber_stiffness` (기본 0.8) | |
 | 작동 온도 범위, 최적 표면 온도 | °C | ★★ | 타이어 열(PH-13): `tire.thermal.optimum_c`, `window_c`, `grip_loss` | |
 | 차가운 공기압 / 최적 공기압 | kPa | ★★ | `tire.pressure.cold_kpa`, `cold_c`, `optimum_kpa` (게이지압). 이상기체로 내부 온도를 따라 변함 | |
+| 유효 구름 반경의 공기압·하중 변화 | mm/kPa, - | ★ | `tire.rolling_radius.pressure_mm_per_kpa`, `deflection_share`(늘어난 처짐 중 반경이 줄어드는 비율, 레이디얼 약 0.3). `wheel.radius_m`은 최적 압력·정적 하중에서의 값. 휠속 센서로 추정한 차속이 이만큼 틀어짐 | |
 | 타이어 질량 (트레드·카커스) | kg | ★ | 열용량 추정용 (`surface_heat_capacity_j_per_k`, `core_heat_capacity_j_per_k`) | |
 | 주행 중 타이어 온도 기록 (적외선 센서, 파이로미터) | °C | ★ | 열 모델 계수(`*_w_per_k`) 맞추기용 | |
 
@@ -100,7 +101,8 @@
 | Cl·A (다운포스) | m² | ★★★ | CFD, 풍동 | |
 | Cd·A (항력) | m² | ★★★ | CFD, 풍동 | |
 | 압력중심 (앞축 분배) | % | ★★★ | | |
-| 속도 / 차고 / 피치 / yaw 의존 맵 | 표 | ★ | L3, 측풍(PH-15)용 | |
+| 차고 맵 (앞/뒤 차고 변화에 따른 Cl·A, 앞축 분배, Cd·A) | 표 | ★★ | L3: `aero.ride_height_map`의 `front_mm`, `rear_mm`(정적 차고 대비), `cla_factor`·`cda_factor`(곱), `front_ratio_shift`(더함). 피치는 앞뒤 차고 차이로 들어감. 지면 효과, 실속 | |
+| 속도 / yaw 의존 맵 | 표 | ★ | 측풍(PH-15)은 아래 측력 계수로 | |
 | 측력 계수 × 면적 (yaw 각 1 rad당), 측력 작용점 | m²/rad, m | ★★ | 측풍(PH-15): `aero.side_force_area_m2_per_rad`(기본 1.2), `aero.side_force_x_m`(무게중심 앞 +, 기본 −0.25) | |
 | 위 값의 기준 조건 (공기 밀도, 속도) | — | ★★ | | |
 
@@ -334,6 +336,7 @@ sensors:
 | `rate_hz` | Hz | 출력 주기 (물리 스텝 1 ms의 배수로 맞춤) |
 | `signal` | | 재는 버스 신호 (temperature, signal 종류는 필수; 다른 종류는 기본값을 바꿀 때) |
 | `faults` | | `[{channel, type, at_s, until_s, value}]`, type: offset · stuck · open(0) · short(전원) · value · noise · scale. `channel`을 빼면 모든 채널 |
+| `temperature_signal`, `thermal_tau_s` | , s | 센서 온도가 따라가는 신호(없으면 기온 `environment.ambient_temp_c`)와 그 열 지연(기본 30 s). 온도계수에 쓰임 (M11) |
 
 **채널 오차 항목** (채널 이름 아래, 또는 IMU는 `accel:`·`gyro:` 아래에 공통으로)
 
@@ -349,12 +352,18 @@ sensors:
 | `latency_s` | s | 출력 지연 | |
 | `resolution` | 측정 단위 | 분해능 (ADC LSB, 데이터 형식) | |
 | `range` | [최소, 최대] | 측정 범위 (포화) | |
+| `bias_tempco` | 단위/K | 영점 온도계수 (1σ) | `realism.variation: real` |
+| `scale_tempco` | 1/K | 감도 온도계수 (1σ, ppm/K × 1e-6) | `realism.variation: real` |
+| `reference_temp_c` | °C | 온도계수의 기준 (기본 25) | |
+| `nonlinearity` | 풀스케일 비율 | 비선형성 (1σ, 0·양 끝에서 0인 S자, 1/√3 지점에서 최대) | `realism.variation: real` |
+| `full_scale` | 측정 단위 | 비선형성의 풀스케일 (기본 `range`의 큰 쪽) | |
+| `hysteresis` | 측정 단위 | 히스테리시스 폭 (방향이 바뀌면 폭만큼 움직여야 출력이 따라감) | `realism.sensors: real` |
 
 **종류별**
 
 | type | 채널 (단위) | 기본 주기 | 종류별 항목 |
 |---|---|---|---|
-| `imu` | ax, ay, az (m/s², 비력: 정지 시 az = +9.81), gx, gy, gz (rad/s) | 500 Hz | `anti_alias_hz`(샘플링 전 2차 필터, 0이면 없음), `misalignment_deg`(개체별 장착 오차 1σ, 기본 0.5), `vibration: [{motor, order, amplitude, axis}]` |
+| `imu` | ax, ay, az (m/s², 비력: 정지 시 az = +9.81), gx, gy, gz (rad/s) | 500 Hz | `anti_alias_hz`(샘플링 전 2차 필터, 0이면 없음), `misalignment_deg`(개체별 장착 오차 1σ, 기본 0.5), `accel.cross_axis`·`gyro.cross_axis`(축간 간섭 1σ, 기본 0.01), `gyro.g_sensitivity_dps_per_g`(가속도에 의한 자이로 오차 1σ, 기본 0.02), `vibration: [{motor, order, amplitude, axis}]` |
 | `accelerometer` / `gyro` | IMU의 절반 | 500 Hz | IMU와 같음 |
 | `wheel_speed` | omega (rad/s), pulses | 200 Hz | `wheel`(fl…, 없으면 위치로), `teeth`(48), `timeout_s`(0.1), `timer_resolution_s`(1e-6), `tooth_error_deg`(0.05, 개체 편차), `directional`(true) |
 | `pedal` | ch1, ch2 (V) | 1 kHz | `pedal`(throttle), `ch1_v`·`ch2_v`: [0 % 전압, 100 % 전압] |

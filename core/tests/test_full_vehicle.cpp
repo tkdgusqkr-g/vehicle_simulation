@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "test_support.hpp"
+#include "vsim/models/vehicle/aero.hpp"
 #include "vsim/models/vehicle/two_track.hpp"
 #include "vsim/sim/context.hpp"
 #include "vsim/sim/integrator.hpp"
@@ -338,6 +339,102 @@ TEST(Full, FourPostRigMatchesTheQuarterCar) {
     EXPECT_NEAR(measured_body, analytic_body, 0.03 * analytic_body + 0.002) << f << " Hz";
     EXPECT_NEAR(measured_wheel, analytic_wheel, 0.03 * analytic_wheel + 0.002) << f << " Hz";
   }
+}
+
+
+// Ride height aero map (§6.4): downforce compresses the springs, the map
+// gives more downforce closer to the road; diving under braking moves the
+// balance forward until the front stalls.
+TEST(Full, AeroFollowsTheRideHeightMap) {
+  Simulation sim(load_example("straight_accel", {{"initial.speed_mps", "28"}, {"driver.throttle.value", "0.25"}}));
+  const ParamTree& params = sim.scenario().params;
+  const AeroMap map = AeroMap::from_params(params);
+  ASSERT_TRUE(map.enabled);
+  sim.run_for(1.5);
+  const double front = signal(sim, "veh.aero.ride_height_front"), rear = signal(sim, "veh.aero.ride_height_rear");
+  EXPECT_LT(front, -0.01);
+  EXPECT_LT(rear, -0.01);
+  const AeroMap::Sample at = map.at(front, rear);
+  EXPECT_GT(at.cla_factor, 1.05);
+  const double airspeed = signal(sim, "veh.aero.airspeed");
+  const double q = 0.5 * params.get_double("vehicle.aero.air_density_kgm3") * airspeed * airspeed;
+  EXPECT_NEAR(signal(sim, "veh.aero.downforce"), params.get_double("vehicle.aero.cla_m2") * at.cla_factor * q, 1e-6);
+  EXPECT_NEAR(signal(sim, "veh.aero.drag"), params.get_double("vehicle.aero.cda_m2") * at.cda_factor * q, 1e-6);
+  EXPECT_NEAR(signal(sim, "veh.aero.front_ratio"),
+              params.get_double("vehicle.aero.front_ratio") + at.front_ratio_shift, 1e-12);
+
+  // Softer front springs put the nose below the stall point: less downforce
+  // there and the balance moves rearwards instead of forwards.
+  Simulation soft(load_example("straight_accel", {{"initial.speed_mps", "30"},
+                                                  {"driver.throttle.value", "0.3"},
+                                                  {"vehicle.suspension.front.spring_rate_n_per_mm", "14"}}));
+  soft.run_for(1.5);
+  EXPECT_LT(signal(soft, "veh.aero.ride_height_front"), -0.022);
+  EXPECT_LT(signal(soft, "veh.aero.front_ratio"), params.get_double("vehicle.aero.front_ratio"));
+  EXPECT_GT(signal(sim, "veh.aero.front_ratio"), params.get_double("vehicle.aero.front_ratio"));
+  // The books still balance with the map moving the forces (V-03).
+  EXPECT_LT(std::abs(signal(soft, "energy.residual")), 1e-6 * signal(soft, "energy.battery_chemical"));
+
+  // Without the map, the fixed figures.
+  Simulation fixed(load_example("straight_accel", {{"initial.speed_mps", "28"},
+                                                   {"driver.throttle.value", "0.25"},
+                                                   {"vehicle.aero.ride_height_map", "off"}}));
+  fixed.run_for(0.5);
+  EXPECT_DOUBLE_EQ(signal(fixed, "veh.aero.front_ratio"), params.get_double("vehicle.aero.front_ratio"));
+}
+
+TEST(Full, RollingRadiusFollowsPressureAndLoad) {
+  const auto radius_after = [](const std::string& tire_temp, const char* corner, double seconds,
+                               Scenario::Overrides extra, const char* scenario = "sine_steer") {
+    extra["initial.tire_temp_c"] = tire_temp;
+    Simulation sim(load_example(scenario, extra));
+    sim.run_for(seconds);
+    return std::pair{signal(sim, std::string("veh.wheel.") + corner + ".rolling_radius"),
+                     signal(sim, std::string("veh.wheel.") + corner + ".tire_pressure")};
+  };
+  const ParamTree params = load_example("sine_steer").params;
+  const double nominal = params.get_double("vehicle.wheel.radius_m");
+  const double per_kpa = 1e-3 * params.get_double("vehicle.tire.rolling_radius.pressure_mm_per_kpa");
+  const double optimum = params.get_double("vehicle.tire.pressure.optimum_kpa");
+  ASSERT_GT(per_kpa, 0.0);
+  // Cold tires: lower pressure, smaller radius, as the pressure says (static load).
+  const auto [cold, cold_pressure] = radius_after("20", "fl", 0.5, {{"driver.throttle.value", "0"}}, "straight_accel");
+  EXPECT_LT(cold_pressure, optimum - 20.0);
+  EXPECT_NEAR(cold, nominal + per_kpa * (cold_pressure - optimum), 2e-6);
+  // Cornering left: the loaded outer tire rolls on a smaller radius.
+  const Scenario::Overrides turn = {{"driver.steer.type", "const"}, {"driver.steer.value", "30"}};
+  EXPECT_LT(radius_after("75", "fr", 6.0, turn).first + 5e-4, radius_after("75", "fl", 6.0, turn).first);
+}
+
+
+TEST(AeroMap, BilinearAndHeldAtTheEdges) {
+  const ParamTree params = ParamTree::from_yaml_string(R"(
+vehicle:
+  aero:
+    ride_height_map:
+      front_mm: [-10, 0, 10]
+      rear_mm: [0, 20]
+      cla_factor: [[1.2, 1.0], [1.0, 0.8], [0.9, 0.7]]
+      front_ratio_shift: [[0.1, 0.0], [0.0, -0.1], [-0.1, -0.2]]
+)");
+  const AeroMap map = AeroMap::from_params(params);
+  ASSERT_TRUE(map.enabled);
+  EXPECT_DOUBLE_EQ(map.at(0.0, 0.0).cla_factor, 1.0);
+  EXPECT_NEAR(map.at(-0.005, 0.01).cla_factor, 0.25 * (1.2 + 1.0 + 1.0 + 0.8), 1e-12);
+  EXPECT_NEAR(map.at(0.005, 0.005).front_ratio_shift, 0.5 * (0.75 * 0.0 + 0.25 * -0.1) + 0.5 * (0.75 * -0.1 + 0.25 * -0.2),
+              1e-12);
+  EXPECT_DOUBLE_EQ(map.at(-0.05, -0.05).cla_factor, 1.2);  // held at the corner
+  EXPECT_DOUBLE_EQ(map.at(0.05, 0.05).cla_factor, 0.7);
+  EXPECT_DOUBLE_EQ(map.at(0.0, 0.0).cda_factor, 1.0);  // not given: 1
+
+  ParamTree bad = params;
+  bad.set("vehicle.aero.ride_height_map.cla_factor.2", "[0.9]");
+  EXPECT_THROW(AeroMap::from_params(bad), std::invalid_argument);
+  bad = params;
+  bad.set("vehicle.aero.ride_height_map.front_mm.1", "-20");
+  EXPECT_THROW(AeroMap::from_params(bad), std::invalid_argument);
+  EXPECT_FALSE(AeroMap::from_params(ParamTree{}).enabled);
+  EXPECT_DOUBLE_EQ(AeroMap{}.at(-0.02, 0.01).cla_factor, 1.0);
 }
 
 }  // namespace

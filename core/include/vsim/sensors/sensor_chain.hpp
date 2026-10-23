@@ -29,10 +29,19 @@ struct ChannelParams {
   double resolution = 0.0;         // [unit] quantization step (ADC, data format); 0: none
   double min = -std::numeric_limits<double>::infinity();  // output range (saturation)
   double max = std::numeric_limits<double>::infinity();
+  // Transducer: temperature coefficients (per unit, realism.variation) against the sensor's
+  // temperature, terminal-based nonlinearity (per unit, zero at 0 and full scale) and hysteresis.
+  double bias_tempco = 0.0;        // standard deviation of the bias temperature coefficient [unit/K]
+  double scale_tempco = 0.0;       // standard deviation of the scale temperature coefficient [1/K]
+  double reference_temp = 25.0;    // [degC] where the coefficients give no error
+  double nonlinearity = 0.0;       // standard deviation of the largest deviation, fraction of full scale
+  double full_scale = 0.0;         // [unit]; 0: the larger end of the range (none if unbounded)
+  double hysteresis = 0.0;         // [unit] width of the play band (realism.sensors)
 
   // Reads <prefix>.<key> for scale_error, bias, noise_density,
   // bias_instability, bias_tau_s, random_walk, bandwidth_hz, latency_s,
-  // resolution, range: [min, max]; missing keys keep `defaults`.
+  // resolution, range: [min, max], bias_tempco, scale_tempco, reference_temp_c,
+  // nonlinearity, full_scale, hysteresis; missing keys keep `defaults`.
   static ChannelParams from_params(const ParamTree& params, const std::string& prefix, ChannelParams defaults);
 };
 
@@ -55,6 +64,8 @@ class ChannelModel {
 
   // One sample of the physical value at time t; returns the sensor output.
   double sample(double t, double truth);
+  // The sensor's own temperature [degC], read at every sample (reference if not set).
+  void set_temperature_source(const double* temperature) { temperature_ = temperature; }
   double output() const { return output_; }
   void add_fault(const ChannelFault& fault) { faults_.push_back(fault); }
 
@@ -64,6 +75,10 @@ class ChannelModel {
   bool real_;
   Rng noise_;
   double scale_ = 0.0, bias_ = 0.0;  // per unit
+  double bias_tempco_ = 0.0, scale_tempco_ = 0.0, nonlinear_ = 0.0;  // per unit
+  double full_scale_ = 1.0, play_ = 0.0;
+  bool play_started_ = false;
+  const double* temperature_ = nullptr;
   double markov_ = 0.0, markov_decay_ = 0.0, markov_kick_ = 0.0;
   double walk_ = 0.0, walk_kick_ = 0.0;
   double white_ = 0.0;

@@ -11,6 +11,7 @@
 #include "vsim/models/powertrain/battery.hpp"
 #include "vsim/models/powertrain/motor.hpp"
 #include "vsim/models/tire/tire.hpp"
+#include "vsim/models/vehicle/aero.hpp"
 #include "vsim/models/vehicle/corners.hpp"
 #include "vsim/models/vehicle/suspension.hpp"
 #include "vsim/models/vehicle/thermal.hpp"
@@ -85,6 +86,10 @@ class TwoTrackModel final : public PlantModel {
     double wheel_radius = 0.203;
     double wheel_inertia = 0.3;         // [kg m^2] wheel, tire, hub
     double rolling_resistance = 0.015;
+    // Effective rolling radius (wheel_radius at the optimum pressure and static load): grows with
+    // the inflation pressure, shrinks with a share of the extra tire deflection (full model).
+    double radius_per_kpa = 0.0;        // [m/kPa]
+    double radius_deflection_share = 0.0;
     double relaxation_x = 0.10;         // [m]
     double relaxation_y = 0.25;         // [m]
     double low_speed_damping = 0.5;     // damping ratio of the tire modes near standstill
@@ -145,6 +150,7 @@ class TwoTrackModel final : public PlantModel {
   const Driveline& driveline() const { return driveline_; }
   const TireThermalParams& tire_thermal() const { return tire_thermal_; }
   const BrakeThermalParams& brake_thermal() const { return brake_thermal_; }
+  const AeroMap& aero_map() const { return aero_map_; }
 
   // State offsets, for tests and tools.
   std::size_t wheel_dof_offset() const { return wheel_offset_; }
@@ -195,6 +201,7 @@ class TwoTrackModel final : public PlantModel {
   std::size_t size_ = 0;
   TireThermalParams tire_thermal_;
   BrakeThermalParams brake_thermal_;
+  AeroMap aero_map_;
   double road_temp_ = 25.0;
 
   // Full model.

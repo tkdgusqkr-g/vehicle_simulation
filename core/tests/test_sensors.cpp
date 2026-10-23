@@ -207,6 +207,54 @@ TEST(SensorChannel, VariationIsFixedPerUnit) {
   EXPECT_NEAR(a1 - a0, 1.0, 0.05);  // scale error of a few percent at most
 }
 
+// Transducer stage: temperature coefficients (linear in the temperature
+// change, scale part proportional to the reading), terminal-based
+// nonlinearity (zero at 0 and full scale, odd) and hysteresis (play band).
+TEST(SensorChannel, TemperatureNonlinearityAndHysteresis) {
+  ChannelParams p;
+  p.bias_tempco = 0.01;
+  p.scale_tempco = 1e-3;
+  ChannelModel drift = make_channel(p, 100.0, false, true);
+  double temperature = 25.0;
+  drift.set_temperature_source(&temperature);
+  const auto read = [&](double t, double truth) {
+    temperature = t;
+    return drift.sample(0.0, truth);
+  };
+  const double base = read(25.0, 2.0), warm = read(65.0, 2.0), hot = read(105.0, 2.0);
+  EXPECT_GT(std::abs(warm - base), 1e-3);
+  EXPECT_NEAR(hot - base, 2.0 * (warm - base), 1e-12);
+  EXPECT_NE(read(65.0, 0.0) - read(25.0, 0.0), warm - base);  // the scale part follows the reading
+  ChannelModel ideal = make_channel(p, 100.0, false, false);
+  ideal.set_temperature_source(&temperature);
+  EXPECT_EQ(ideal.sample(0.0, 2.0), 2.0);  // per-unit coefficients only with realism.variation
+
+  ChannelParams n;
+  n.nonlinearity = 0.01;
+  n.min = -10.0;
+  n.max = 10.0;
+  ChannelModel curve = make_channel(n, 100.0, false, true, 3);
+  EXPECT_DOUBLE_EQ(curve.sample(0.0, 0.0), 0.0);
+  EXPECT_NEAR(curve.sample(0.0, 10.0), 10.0, 1e-12);
+  EXPECT_NEAR(curve.sample(0.0, -10.0), -10.0, 1e-12);
+  const double u = 10.0 / std::sqrt(3.0);
+  const double peak = curve.sample(0.0, u) - u;
+  EXPECT_GT(std::abs(peak), 1e-3);
+  EXPECT_LT(std::abs(peak), 0.5);  // a few sigma of 1 % of 10
+  EXPECT_NEAR(curve.sample(0.0, -u) + u, -peak, 1e-12);
+  for (const double x : {1.0, 3.0, 8.0}) {
+    EXPECT_LT(std::abs(curve.sample(0.0, x) - x), std::abs(peak)) << x;
+  }
+
+  ChannelParams h;
+  h.hysteresis = 0.2;
+  ChannelModel play = make_channel(h, 100.0, true, false);
+  EXPECT_DOUBLE_EQ(play.sample(0.0, 0.0), 0.0);
+  EXPECT_NEAR(play.sample(0.01, 1.0), 0.9, 1e-12);   // rising: lags by half the band
+  EXPECT_NEAR(play.sample(0.02, 0.85), 0.9, 1e-12);  // turned round: held inside the band
+  EXPECT_NEAR(play.sample(0.03, 0.5), 0.6, 1e-12);   // falling: leads by half the band
+}
+
 // --- Sensors on a hand-made bus -----------------------------------------------------------
 
 // The sensor block alone: the plant signals it reads are set directly.
@@ -286,6 +334,41 @@ TEST(Sensors, ImuLeverArmAndMounting) {
   EXPECT_NEAR(rig.get("sens.turned.ax"), 0.0, 1e-9);
   EXPECT_NEAR(rig.get("sens.turned.ay"), -3.0, 1e-9);
   EXPECT_NEAR(rig.get("sens.turned.gz"), 1.0, 1e-9);
+}
+
+// Per-unit cross-axis coupling and gyro g-sensitivity; the sensor warms
+// towards the signal it is mounted near, behind its thermal lag.
+TEST(Sensors, ImuCrossAxisGSensitivityAndTemperature) {
+  const auto reading = [](const std::string& extra, double ax, const char* channel) {
+    Rig rig("    - {name: imu, type: imu, position: [0, 0, 0.3], misalignment_deg: 0" + extra + "}\n", false, true);
+    rig.set("veh.chassis.ax", ax);
+    rig.step();
+    return rig.get(std::string("sens.imu.") + channel);
+  };
+  const std::string quiet = ", accel: {cross_axis: 0}, gyro: {cross_axis: 0, g_sensitivity_dps_per_g: 0}";
+  EXPECT_DOUBLE_EQ(reading(quiet, 5.0, "ay"), reading(quiet, 0.0, "ay"));
+  EXPECT_DOUBLE_EQ(reading(quiet, 5.0, "gz"), reading(quiet, 0.0, "gz"));
+  const std::string coupled = ", accel: {cross_axis: 0.02}, gyro: {g_sensitivity_dps_per_g: 0.1}";
+  EXPECT_GT(std::abs(reading(coupled, 5.0, "ay") - reading(coupled, 0.0, "ay")), 1e-3);
+  EXPECT_GT(std::abs(reading(coupled, 5.0, "gz") - reading(coupled, 0.0, "gz")), 1e-6);
+
+  // Mounted near something that heats from 25 to 85 degC, one second lag.
+  const std::string near = "    - {name: imu, type: imu, position: [0, 0, 0.3], temperature_signal: drv.cmd.throttle,"
+                           " thermal_tau_s: 1.0}\n";
+  Rig warming(near, false, true), still(near, false, true);
+  for (Rig* rig : {&warming, &still}) {
+    rig->set("drv.cmd.throttle", 25.0);
+    rig->step();
+  }
+  warming.set("drv.cmd.throttle", 85.0);
+  warming.run_for(1.0);
+  still.run_for(1.0);
+  const double after_tau = warming.get("sens.imu.az") - still.get("sens.imu.az");
+  warming.run_for(5.0);
+  still.run_for(5.0);
+  const double settled = warming.get("sens.imu.az") - still.get("sens.imu.az");
+  EXPECT_GT(std::abs(settled), 1e-4);
+  EXPECT_NEAR(after_tau / settled, 1.0 - std::exp(-1.0), 0.01);
 }
 
 // PH-03: wheel speed from a toothed ring is accurate when the teeth pass
