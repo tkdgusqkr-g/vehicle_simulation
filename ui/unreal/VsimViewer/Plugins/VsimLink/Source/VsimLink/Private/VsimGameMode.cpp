@@ -15,7 +15,7 @@ AVsimGameMode::AVsimGameMode()
 void AVsimGameMode::BeginPlay()
 {
 	Super::BeginPlay();
-	// A level may already contain one (to set LinkName or bFlipTrackWinding).
+	// A level may already contain one (to set LinkName or bFlipWinding).
 	if (TActorIterator<AVsimWorld>(GetWorld()))
 	{
 		return;

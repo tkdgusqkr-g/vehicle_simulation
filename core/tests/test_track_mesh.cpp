@@ -69,7 +69,9 @@ TEST(TrackMesh, RoadCoversTheTrackAndFacesUp) {
 
 TEST(TrackMesh, HasLinesConesAndGround) {
   const Track track = ring(20.0, 2.0);
-  const TrackMesh mesh = make_track_mesh(track);
+  TrackMeshOptions options;
+  options.scenery = false;
+  const TrackMesh mesh = make_track_mesh(track, options);
   for (const char* name : {"ground", "asphalt", "edge_lines", "start_line", "sector_lines", "cones_blue",
                            "cones_yellow", "cones_orange"}) {
     EXPECT_NE(find(mesh, name), nullptr) << name;

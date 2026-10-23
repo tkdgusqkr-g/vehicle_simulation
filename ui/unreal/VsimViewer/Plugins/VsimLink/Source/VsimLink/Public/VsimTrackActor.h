@@ -1,14 +1,15 @@
-// The track scenery published by the simulator (asphalt, lines, cones,
-// ground) as a procedural mesh, one section and colour per part.
+// The track and its scenery as published by the simulator (asphalt, lines,
+// cones, ground, trees, grandstand, tents, gantry): one procedural mesh,
+// one section and material per part.
 #pragma once
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "VsimMesh.h"
 #include "vsim_link.h"
 #include "VsimTrackActor.generated.h"
 
 class UMaterialInstanceDynamic;
-class UMaterialInterface;
 class UProceduralMeshComponent;
 
 UCLASS()
@@ -19,8 +20,8 @@ class VSIMLINK_API AVsimTrackActor : public AActor
 public:
 	AVsimTrackActor();
 
-	/** Replaces the mesh with the region's sections. Returns false if the region is inconsistent. */
-	bool Build(const vsim_link::TrackRegion& Region, bool bFlipWinding);
+	/** Replaces the mesh with the region's sections. */
+	void Build(const vsim_link::MeshRegion& Region, const FVsimMaterialSet& Materials, bool bFlipWinding);
 	void Clear();
 
 	/**
@@ -35,9 +36,6 @@ public:
 	TObjectPtr<UProceduralMeshComponent> Mesh;
 
 private:
-	UPROPERTY()
-	TObjectPtr<UMaterialInterface> BaseMaterial;
-
 	UPROPERTY()
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> Materials;
 

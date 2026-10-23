@@ -7,6 +7,7 @@
 #include "Components/SkyAtmosphereComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/VolumetricCloudComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
@@ -48,6 +49,10 @@ AVsimWorld::AVsimWorld()
 	Fog->SetupAttachment(Origin);
 	Fog->SetFogDensity(0.003f);
 
+	// Volumetric clouds with the engine's default cloud material.
+	Clouds = CreateDefaultSubobject<UVolumetricCloudComponent>(TEXT("Clouds"));
+	Clouds->SetupAttachment(Origin);
+
 	// Grass to the horizon under the track's own ground.
 	Ground = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Ground"));
 	Ground->SetupAttachment(Origin);
@@ -64,11 +69,21 @@ void AVsimWorld::BeginPlay()
 	Super::BeginPlay();
 	Reader = MakeUnique<FVsimLinkReader>(LinkName);
 
-	if (UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr,
-			TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial")))
+	// PBR materials made in the editor by Content/Python/init_unreal.py; the
+	// engine's basic shape material (colour only) if they are not there.
+	PbrMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Vsim/M_VsimPBR.M_VsimPBR"));
+	PbrTwoSidedMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Vsim/M_VsimPBR_TwoSided.M_VsimPBR_TwoSided"));
+	PaintMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Vsim/M_VsimPaint.M_VsimPaint"));
+	BasicMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	if (!PbrMaterial)
 	{
-		UMaterialInstanceDynamic* Grass = UMaterialInstanceDynamic::Create(Base, this);
-		Grass->SetVectorParameterValue(TEXT("Color"), FLinearColor::FromSRGBColor(FColor(85, 112, 63)));
+		UE_LOG(LogTemp, Warning, TEXT("vsim: /Game/Vsim/M_VsimPBR missing, using basic materials (open the project in the editor once)"));
+	}
+	if (UMaterialInterface* GrassParent = PbrMaterial ? PbrMaterial.Get() : BasicMaterial.Get())
+	{
+		UMaterialInstanceDynamic* Grass = UMaterialInstanceDynamic::Create(GrassParent, this);
+		Grass->SetVectorParameterValue(TEXT("Color"), FLinearColor::FromSRGBColor(FColor(78, 104, 58)));
+		Grass->SetScalarParameterValue(TEXT("Roughness"), 1.0f);
 		Ground->SetMaterial(0, Grass);
 	}
 
@@ -79,7 +94,6 @@ void AVsimWorld::BeginPlay()
 	Track = World->SpawnActor<AVsimTrackActor>(AVsimTrackActor::StaticClass(), FTransform::Identity, Spawn);
 	Car = World->SpawnActor<AVsimCarActor>(AVsimCarActor::StaticClass(), FTransform::Identity, Spawn);
 	FreeCamera = World->SpawnActor<ACameraActor>(ACameraActor::StaticClass(), FTransform::Identity, Spawn);
-	Car->Configure(State.info);  // default dimensions until the simulator answers
 	Car->UseCamera(Camera);
 }
 
@@ -141,7 +155,8 @@ void AVsimWorld::Tick(float DeltaSeconds)
 			State = Newest;
 		}
 		UpdateTrack();
-		Car->Configure(State.info);
+		UpdateCar();
+		Car->ConfigureCameras(State.info);
 		Car->ApplyState(State);
 		// How old the newest driver input in this state is when the game
 		// thread uses it; the frame being built reaches the screen about one
@@ -152,10 +167,20 @@ void AVsimWorld::Tick(float DeltaSeconds)
 	UpdateCamera(DeltaSeconds);
 }
 
+FVsimMaterialSet AVsimWorld::MaterialSet() const
+{
+	FVsimMaterialSet Set;
+	Set.Pbr = PbrMaterial;
+	Set.PbrTwoSided = PbrTwoSidedMaterial;
+	Set.Paint = PaintMaterial;
+	Set.Basic = BasicMaterial;
+	return Set;
+}
+
 void AVsimWorld::UpdateTrack()
 {
 	uint64 Generation = 0;
-	const vsim_link::TrackRegion* Region = Reader->GetTrack(Generation);
+	const vsim_link::MeshRegion* Region = Reader->GetTrack(Generation);
 	if (Generation == TrackGeneration)
 	{
 		return;
@@ -168,14 +193,23 @@ void AVsimWorld::UpdateTrack()
 	}
 	else if (Region)
 	{
-		if (!Track->Build(*Region, bFlipTrackWinding))
-		{
-			UE_LOG(LogTemp, Warning, TEXT("vsim: track mesh %llu is inconsistent, not shown"), Generation);
-		}
+		Track->Build(*Region, MaterialSet(), bFlipWinding);
 		TvSpots = Track->CameraSpots();
 		TrackGeneration = Generation;
 	}
 	// else: not mappable yet, try again next frame
+}
+
+void AVsimWorld::UpdateCar()
+{
+	uint64 Generation = 0;
+	const vsim_link::MeshRegion* Region = Reader->GetCar(Generation);
+	if (Generation == CarGeneration || Generation == 0 || !Region)
+	{
+		return;
+	}
+	Car->Build(*Region, MaterialSet(), bFlipWinding);
+	CarGeneration = Generation;
 }
 
 void AVsimWorld::UpdateCamera(float DeltaSeconds)

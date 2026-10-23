@@ -18,10 +18,12 @@ public:
 	/** A consistent copy of the newest state. */
 	bool Read(vsim_link::VehicleState& Out) const;
 	/**
-	 * The track the simulator publishes now. OutGeneration is its generation
-	 * (0: no track). Returns nullptr while the region cannot be mapped yet.
+	 * The track (with scenery) / car mesh the simulator publishes now.
+	 * OutGeneration is its generation (0: none). Returns nullptr while the
+	 * region cannot be mapped yet.
 	 */
-	const vsim_link::TrackRegion* GetTrack(uint64& OutGeneration);
+	const vsim_link::MeshRegion* GetTrack(uint64& OutGeneration);
+	const vsim_link::MeshRegion* GetCar(uint64& OutGeneration);
 
 	void SendKeys(uint32 Keys);
 	void SendCommand(vsim_link::Command Command);
@@ -43,8 +45,13 @@ private:
 	bool Usable() const;
 
 	FString Name;
+	const vsim_link::MeshRegion* Follow(uint64 Generation, const char (&RegionName)[64], FMapping& Mapping,
+		uint64& MappedGeneration);
+
 	FMapping State;
 	FMapping Track;
+	FMapping Car;
 	uint64 TrackGeneration = 0;
+	uint64 CarGeneration = 0;
 	double NextAttempt = 0.0;
 };

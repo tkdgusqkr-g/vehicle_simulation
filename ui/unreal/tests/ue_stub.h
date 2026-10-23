@@ -37,6 +37,9 @@ class FString {
   FString(const std::wstring& s) : s_(s) {}
   const TCHAR* operator*() const { return s_.c_str(); }
   FString operator+(const FString& o) const { return FString(s_ + o.s_); }
+  bool StartsWith(const TCHAR* p) const { return s_.rfind(p, 0) == 0; }
+  bool operator==(const TCHAR* o) const { return s_ == o; }
+  bool operator!=(const TCHAR* o) const { return s_ != o; }
   void Reset() { s_.clear(); }
   template <typename... A> static FString Printf(const TCHAR*, A...) { return FString(); }
  private:
@@ -65,6 +68,7 @@ template <typename T> class TObjectPtr {
   template <typename U, typename = std::enable_if_t<std::is_convertible_v<U*, T*>>> TObjectPtr(U* p) : p_(p) {}
   T* operator->() const { return p_; }
   operator T*() const { return p_; }
+  T* Get() const { return p_; }
   explicit operator bool() const { return p_ != nullptr; }
  private:
   T* p_ = nullptr;
@@ -89,13 +93,20 @@ struct FVector {
   FVector operator*(double s) const { return {X * s, Y * s, Z * s}; }
   FVector operator/(double s) const { return {X / s, Y / s, Z / s}; }
   FVector GetSafeNormal2D() const { return *this; }
+  FVector GetSafeNormal() const { return *this; }
+  double Size() const { return std::sqrt(X * X + Y * Y + Z * Z); }
+  FVector& operator=(const FVector&) = default;
+  static const FVector XAxisVector;
   struct FRotator Rotation() const;
   static double Dist(const FVector&, const FVector&) { return 0; }
   static double DistSquared(const FVector&, const FVector&) { return 0; }
   static const FVector ZeroVector;
 };
 struct FVector2D { FVector2D(double, double) {} };
-struct FRotator { double Pitch = 0, Yaw = 0, Roll = 0; FRotator() = default; FRotator(double p, double y, double r) : Pitch(p), Yaw(y), Roll(r) {} static const FRotator ZeroRotator; };
+struct FRotator { double Pitch = 0, Yaw = 0, Roll = 0; FRotator() = default; FRotator(double p, double y, double r) : Pitch(p), Yaw(y), Roll(r) {} FVector RotateVector(const FVector& v) const { return v; } static const FRotator ZeroRotator; };
+struct FQuat { FQuat(const FVector&, double) {} };
+struct FMatrix { FRotator Rotator() const { return {}; } };
+struct FRotationMatrix { static FMatrix MakeFromX(const FVector&) { return {}; } };
 inline FRotator FVector::Rotation() const { return {}; }
 struct FTransform { static const FTransform Identity; };
 struct FColor { FColor(uint8, uint8, uint8, uint8 = 255) {} };
@@ -133,6 +144,7 @@ class UMaterialInstanceDynamic : public UMaterialInterface {
  public:
   static UMaterialInstanceDynamic* Create(UMaterialInterface*, UObject*) { return nullptr; }
   void SetVectorParameterValue(FName, const FLinearColor&) {}
+  void SetScalarParameterValue(FName, float) {}
 };
 class UFont : public UObject {};
 namespace EComponentMobility { enum Type { Static, Stationary, Movable }; }
@@ -150,6 +162,7 @@ class USceneComponent : public UActorComponent {
   void SetupAttachment(USceneComponent*, FName = FName(L"")) {}
   void SetRelativeLocation(const FVector&) {}
   void SetRelativeRotation(const FRotator&) {}
+  void SetRelativeRotation(const FQuat&) {}
   void SetRelativeScale3D(const FVector&) {}
   void SetVisibility(bool) {}
 };
@@ -180,6 +193,7 @@ enum ESkyLightSourceType { SLS_CapturedScene, SLS_SpecifiedCubemap };
 class USkyLightComponent : public ULightComponent { public: bool bRealTimeCapture = false; ESkyLightSourceType SourceType = SLS_CapturedScene; };
 class USkyAtmosphereComponent : public USceneComponent {};
 class UExponentialHeightFogComponent : public USceneComponent { public: void SetFogDensity(float) {} };
+class UVolumetricCloudComponent : public USceneComponent {};
 enum ETickingGroup { TG_PrePhysics, TG_PostUpdateWork };
 struct FActorTickFunction { bool bCanEverTick = false; ETickingGroup TickGroup = TG_PrePhysics; };
 namespace EEndPlayReason { enum Type { Destroyed, Quit }; }

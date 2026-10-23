@@ -8,10 +8,11 @@
 // must stay identical to core/include/vsim/link/vsim_link.h (a test checks).
 //
 // Objects (named shared memory, same user session):
-//   Windows  "Local\vsim_state_v1"   CreateFileMapping / OpenFileMapping
-//   POSIX    "/vsim_state_v1"        shm_open
-// The state region names the current track region (track_region); a new
-// track gets a new region and a new track_generation.
+//   Windows  "Local\vsim_state_v2"   CreateFileMapping / OpenFileMapping
+//   POSIX    "/vsim_state_v2"        shm_open
+// The state region names the current track and car mesh regions
+// (track_region, car_region); a new track or car model gets a new region
+// and a new generation.
 //
 // Frame: x east, y north, z up [m], yaw counter-clockwise from +x [rad],
 // right-handed. Unreal (left-handed, cm): X = 100 x, Y = -100 y, Z = 100 z,
@@ -31,10 +32,10 @@
 
 namespace vsim_link {
 
-inline constexpr std::uint32_t kVersion = 1;
+inline constexpr std::uint32_t kVersion = 2;
 inline constexpr std::uint32_t kStateMagic = 0x4B4C5356;  // "VSLK"
-inline constexpr std::uint32_t kTrackMagic = 0x4B525456;  // "VTRK"
-inline constexpr char kStateName[] = "vsim_state_v1";
+inline constexpr std::uint32_t kMeshMagic = 0x48534D56;   // "VMSH"
+inline constexpr char kStateName[] = "vsim_state_v2";
 
 enum Corner : int { kFrontLeft = 0, kFrontRight = 1, kRearLeft = 2, kRearRight = 3 };
 
@@ -99,8 +100,14 @@ struct VehicleState {
   std::int32_t sector;       // current sector, 0-based
   std::uint8_t lap_valid, last_lap_valid, off_track, finished;
   std::uint8_t paused, wheel_connected, reserved8[2];
-  std::uint32_t reserved32;
+  float wheel_z[4];          // [m] hub height change from static (suspension travel, up +)
+  float wheel_camber[4];     // [rad], top of the wheel outwards +
+  float tire_temp[4];        // [degC] tread surface; 0: not modelled
+  float brake_temp[4];       // [degC] disc; 0: not modelled
+  float road_z;              // [m] road height under the CG
+  float reserved_f[16];
   std::uint64_t track_generation;  // track this state is on; 0: none
+  std::uint64_t car_generation;    // car model shown; 0: none
   VehicleInfo info;
 };
 
@@ -124,42 +131,86 @@ struct StateRegion {
   std::atomic<std::int64_t> heartbeat_ns;   // publisher alive (steady clock)
   std::atomic<std::uint64_t> track_generation;  // 0: no track
   char track_region[64];                    // name of the region holding that track's mesh
+  std::atomic<std::uint64_t> car_generation;    // 0: no car model
+  char car_region[64];
   VehicleState state;
   ViewerChannel viewer;
 };
 
-// Track mesh region, written once before track_generation points to it.
-// Arrays are referenced by byte offsets from the start of the region:
-// positions and normals 3 floats per vertex, uvs 2 floats, indices uint32
-// (three per triangle, counter-clockwise seen from the front). The
-// "asphalt" section has two vertices per row along the track, right edge
-// then left edge, in driving order (renderers use it to place cameras).
-struct TrackSection {
-  char name[32];               // asphalt, edge_lines, cones_blue, ...
-  float color[4];              // sRGB 0..1
-  std::uint32_t vertex_count;
-  std::uint32_t index_count;
-  std::uint64_t positions, normals, uvs, indices;
+// Mesh region (the track with its scenery, or the car), written once before
+// the state's generation points to it. Header, then MeshPart[part_count],
+// then MeshSectionInfo[section_count], then the arrays, referenced by byte
+// offsets from the start of the region: positions and normals 3 floats per
+// vertex, uvs 2 floats, indices uint32 (three per triangle, counter-
+// clockwise seen from the front). Coordinates: vsim frame, metres; car parts
+// in the car frame (origin on the ground below the CG, x forward, y left).
+//
+// Track: one part (role kRoleStatic). Its "asphalt" section has two vertices
+// per row along the track, right edge then left edge, in driving order
+// (renderers use it to place cameras).
+//
+// Car parts move like this (see VehicleState):
+//   kRoleBody           whole car pose, then pitch/roll about (0, 0, cg_height)
+//   kRoleWheel          at pivot (hub) + wheel_z: steer about z, then spin about y
+//   kRoleUpright        at pivot + wheel_z: steer only
+//   kRoleSteeringWheel  with the body, turned by steering_wheel about `axis`
+//   kRoleLink           a tube along +x from 0 to 1, stretched from `pivot`
+//                       (on the body) to hub + wheel_z + `outer` (turned by
+//                       the steer angle if kPartSteers)
+// Mesh vertices of wheels, uprights and steering wheels are relative to the
+// pivot.
+enum MeshKind : std::uint32_t { kMeshTrack = 1, kMeshCar = 2 };
+enum PartRole : std::uint32_t {
+  kRoleStatic = 0, kRoleBody = 1, kRoleWheel = 2, kRoleUpright = 3, kRoleSteeringWheel = 4, kRoleLink = 5
 };
+enum PartFlags : std::uint32_t { kPartSteers = 1u };
+enum SectionFlags : std::uint32_t { kSectionCastShadow = 1u, kSectionDoubleSided = 2u };
 
-struct TrackRegion {
-  std::uint32_t magic;          // kTrackMagic
+struct MeshRegion {
+  std::uint32_t magic;          // kMeshMagic
   std::uint32_t version;        // kVersion
   std::uint64_t generation;
   std::uint64_t size;           // bytes of the whole region
-  std::uint32_t section_count;  // TrackSection[section_count] follows this header
+  std::uint32_t kind;           // MeshKind
+  std::uint32_t part_count;
+  std::uint32_t section_count;
   std::uint32_t reserved;
   char name[64];
-  double length;                // [m]
+  double length;                // [m] track length; 0 for the car
   double min[3], max[3];        // bounding box [m]
+  float cg_height;              // [m] car: body pitch/roll pivot height
+  float reserved_f[3];
+};
+
+struct MeshPart {
+  char name[32];
+  std::uint32_t role;           // PartRole
+  std::int32_t corner;          // 0..3 or -1
+  std::uint32_t first_section;  // index into the sections
+  std::uint32_t section_count;
+  float pivot[3];
+  float axis[3];
+  float outer[3];
+  std::uint32_t flags;          // PartFlags
+};
+
+struct MeshSectionInfo {
+  char name[32];                // material name: asphalt, paint, carbon, tyre, ...
+  float color[4];               // sRGB 0..1
+  float metallic, roughness;
+  std::uint32_t flags;          // SectionFlags
+  std::uint32_t vertex_count;
+  std::uint32_t index_count;
+  std::uint32_t reserved;
+  std::uint64_t positions, normals, uvs, indices;
 };
 
 static_assert(std::atomic<std::uint32_t>::is_always_lock_free && std::atomic<std::int64_t>::is_always_lock_free,
               "the link needs address-free atomics");
-static_assert(std::is_trivially_copyable_v<VehicleState> && std::is_trivially_copyable_v<TrackRegion>);
-static_assert(sizeof(VehicleInfo) == 176 && sizeof(VehicleState) == 496 && sizeof(StateRegion) == 632,
+static_assert(std::is_trivially_copyable_v<VehicleState> && std::is_trivially_copyable_v<MeshRegion>);
+static_assert(sizeof(VehicleInfo) == 176 && sizeof(VehicleState) == 632 && sizeof(StateRegion) == 840,
               "layout change: bump kVersion and the object names");
-static_assert(sizeof(TrackSection) == 88 && sizeof(TrackRegion) == 152);
+static_assert(sizeof(MeshRegion) == 176 && sizeof(MeshPart) == 88 && sizeof(MeshSectionInfo) == 104);
 
 inline std::int64_t now_ns() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -213,13 +264,32 @@ inline void send_command(StateRegion& region, Command command) {
                               std::memory_order_release);
 }
 
-inline const TrackSection* track_sections(const TrackRegion& region) {
-  return reinterpret_cast<const TrackSection*>(reinterpret_cast<const char*>(&region) + sizeof(TrackRegion));
+inline bool mesh_valid(const MeshRegion& region, std::uint64_t mapped_size) {
+  return region.magic == kMeshMagic && region.version == kVersion && region.size <= mapped_size &&
+         sizeof(MeshRegion) + std::uint64_t(region.part_count) * sizeof(MeshPart) +
+                 std::uint64_t(region.section_count) * sizeof(MeshSectionInfo) <=
+             region.size;
+}
+
+inline const MeshPart* mesh_parts(const MeshRegion& region) {
+  return reinterpret_cast<const MeshPart*>(reinterpret_cast<const char*>(&region) + sizeof(MeshRegion));
+}
+
+inline const MeshSectionInfo* mesh_sections(const MeshRegion& region) {
+  return reinterpret_cast<const MeshSectionInfo*>(reinterpret_cast<const char*>(mesh_parts(region)) +
+                                                  region.part_count * sizeof(MeshPart));
 }
 
 template <typename T>
-inline const T* track_array(const TrackRegion& region, std::uint64_t offset) {
+inline const T* mesh_array(const MeshRegion& region, std::uint64_t offset) {
   return reinterpret_cast<const T*>(reinterpret_cast<const char*>(&region) + offset);
+}
+
+// The arrays of a section lie inside the region.
+inline bool section_valid(const MeshRegion& region, const MeshSectionInfo& s) {
+  const auto fits = [&](std::uint64_t offset, std::uint64_t bytes) { return offset + bytes <= region.size; };
+  return fits(s.positions, 12ull * s.vertex_count) && fits(s.normals, 12ull * s.vertex_count) &&
+         fits(s.uvs, 8ull * s.vertex_count) && fits(s.indices, 4ull * s.index_count);
 }
 
 }  // namespace vsim_link

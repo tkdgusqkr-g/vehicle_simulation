@@ -20,6 +20,7 @@ Materials/MaterialInstanceDynamic.h Materials/MaterialInterface.h ProceduralMesh
 UObject/ConstructorHelpers.h Camera/CameraComponent.h Camera/CameraActor.h Components/SceneComponent.h
 Components/StaticMeshComponent.h Components/DirectionalLightComponent.h
 Components/ExponentialHeightFogComponent.h Components/SkyAtmosphereComponent.h Components/SkyLightComponent.h
+Components/VolumetricCloudComponent.h
 Engine/StaticMesh.h Engine/World.h Engine/Canvas.h Engine/Engine.h Engine/Font.h EngineUtils.h
 InputCoreTypes.h Modules/ModuleManager.h""".split()
 

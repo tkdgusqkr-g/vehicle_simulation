@@ -19,6 +19,7 @@ FVsimLinkReader::FVsimLinkReader(const FString& InName) : Name(InName) {}
 FVsimLinkReader::~FVsimLinkReader()
 {
 	Track.Close();
+	Car.Close();
 	State.Close();
 }
 
@@ -111,7 +112,9 @@ bool FVsimLinkReader::Connect()
 	}
 	NextAttempt = Now + 0.5;
 	Track.Close();
+	Car.Close();
 	TrackGeneration = 0;
+	CarGeneration = 0;
 	State.Open(Name);
 	return Usable();
 }
@@ -121,7 +124,30 @@ bool FVsimLinkReader::Read(vsim_link::VehicleState& Out) const
 	return State.Data && vsim_link::read_state(*Region(), Out);
 }
 
-const vsim_link::TrackRegion* FVsimLinkReader::GetTrack(uint64& OutGeneration)
+const vsim_link::MeshRegion* FVsimLinkReader::Follow(uint64 Generation, const char (&RegionName)[64],
+	FMapping& Mapping, uint64& MappedGeneration)
+{
+	if (Generation == 0)
+	{
+		Mapping.Close();
+		MappedGeneration = 0;
+		return nullptr;
+	}
+	if (Generation != MappedGeneration)
+	{
+		ANSICHAR NameBuffer[65] = {};
+		FMemory::Memcpy(NameBuffer, RegionName, 64);
+		MappedGeneration = Mapping.Open(FString(UTF8_TO_TCHAR(NameBuffer))) ? Generation : 0;
+	}
+	if (!Mapping.Data || Mapping.Size < sizeof(vsim_link::MeshRegion))
+	{
+		return nullptr;
+	}
+	const auto* Mesh = static_cast<const vsim_link::MeshRegion*>(Mapping.Data);
+	return vsim_link::mesh_valid(*Mesh, Mapping.Size) && Mesh->generation == Generation ? Mesh : nullptr;
+}
+
+const vsim_link::MeshRegion* FVsimLinkReader::GetTrack(uint64& OutGeneration)
 {
 	OutGeneration = 0;
 	if (!State.Data)
@@ -129,28 +155,20 @@ const vsim_link::TrackRegion* FVsimLinkReader::GetTrack(uint64& OutGeneration)
 		return nullptr;
 	}
 	const vsim_link::StateRegion& R = *Region();
-	const uint64 Generation = R.track_generation.load(std::memory_order_acquire);
-	OutGeneration = Generation;
-	if (Generation == 0)
-	{
-		Track.Close();
-		TrackGeneration = 0;
-		return nullptr;
-	}
-	if (Generation != TrackGeneration)
-	{
-		ANSICHAR RegionName[sizeof(R.track_region) + 1] = {};
-		FMemory::Memcpy(RegionName, R.track_region, sizeof(R.track_region));
-		TrackGeneration = Track.Open(FString(UTF8_TO_TCHAR(RegionName))) ? Generation : 0;
-	}
-	if (!Track.Data || Track.Size < sizeof(vsim_link::TrackRegion))
+	OutGeneration = R.track_generation.load(std::memory_order_acquire);
+	return Follow(OutGeneration, R.track_region, Track, TrackGeneration);
+}
+
+const vsim_link::MeshRegion* FVsimLinkReader::GetCar(uint64& OutGeneration)
+{
+	OutGeneration = 0;
+	if (!State.Data)
 	{
 		return nullptr;
 	}
-	const auto* Mesh = static_cast<const vsim_link::TrackRegion*>(Track.Data);
-	const bool bValid = Mesh->magic == vsim_link::kTrackMagic && Mesh->version == vsim_link::kVersion &&
-		Mesh->size <= Track.Size && Mesh->generation == Generation;
-	return bValid ? Mesh : nullptr;
+	const vsim_link::StateRegion& R = *Region();
+	OutGeneration = R.car_generation.load(std::memory_order_acquire);
+	return Follow(OutGeneration, R.car_region, Car, CarGeneration);
 }
 
 void FVsimLinkReader::SendKeys(uint32 Keys)

@@ -10,6 +10,7 @@
 #include "vsim/sim/input_hub.hpp"
 #include "vsim/sim/signal_bus.hpp"
 #include "vsim/track/track_mesh.hpp"
+#include "vsim/visual/vehicle_visual.hpp"
 
 namespace vsim {
 
@@ -25,11 +26,13 @@ class StateLink {
 
   const std::string& name() const { return name_; }
   void publish(const vsim_link::VehicleState& state);
-  // Puts the mesh in a new track region; returns its generation. Viewers
-  // switch when the state's track_generation changes.
+  // Puts the mesh in a new region; returns its generation. Viewers switch
+  // when the state's track_generation / car_generation changes.
   std::uint64_t publish_track(const TrackMesh& mesh, const std::string& track_name, double length);
+  std::uint64_t publish_car(const VisualModel& model);
   void clear_track();
-  std::uint64_t track_generation() const { return generation_; }
+  std::uint64_t track_generation() const { return track_generation_; }
+  std::uint64_t car_generation() const { return car_generation_; }
 
   struct ViewerInput {
     bool alive = false;               // heartbeat within the last second
@@ -48,7 +51,10 @@ class StateLink {
   std::string name_;
   SharedMemory state_;
   SharedMemory track_, previous_track_;
-  std::uint64_t generation_ = 0;
+  SharedMemory car_, previous_car_;
+  std::uint64_t generation_ = 0;  // shared by tracks and cars
+  std::uint64_t track_generation_ = 0;
+  std::uint64_t car_generation_ = 0;
   std::uint32_t last_command_ = 0;
 };
 
@@ -62,16 +68,19 @@ class StateLinkReader {
   // simulator restart. False while there is none.
   bool connect();
   bool read(vsim_link::VehicleState& state) const;
-  // The current track region (mapped on first use per generation); nullptr without one.
-  const vsim_link::TrackRegion* track();
+  // The current track / car mesh regions (mapped on first use per
+  // generation); nullptr without one.
+  const vsim_link::MeshRegion* track();
+  const vsim_link::MeshRegion* car();
   void send_keys(std::uint32_t keys);
   void send_command(vsim_link::Command command);
 
  private:
   std::string name_;
   SharedMemory state_;
-  SharedMemory track_;
+  SharedMemory track_, car_;
   std::uint64_t track_generation_ = 0;
+  std::uint64_t car_generation_ = 0;
 };
 
 // Fills a VehicleState from a simulation's signals: pose, wheels, energy,

@@ -46,6 +46,9 @@ add_library(vsim_core STATIC
   src/track/track.cpp
   src/track/track_mesh.cpp
   src/util/paths.cpp
+  src/visual/gltf.cpp
+  src/visual/mesh.cpp
+  src/visual/vehicle_visual.cpp
   "${CMAKE_CURRENT_BINARY_DIR}/generated/version.cpp")
 target_include_directories(vsim_core PUBLIC include)
 target_link_libraries(vsim_core PRIVATE yaml-cpp nlohmann_json::nlohmann_json vsim_mcap)

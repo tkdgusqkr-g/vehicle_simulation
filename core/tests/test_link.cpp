@@ -15,6 +15,7 @@
 #include "test_support.hpp"
 #include "vsim/link/state_link.hpp"
 #include "vsim/sim/simulation.hpp"
+#include "vsim/visual/vehicle_visual.hpp"
 
 namespace vsim {
 namespace {
@@ -93,29 +94,32 @@ TEST(Link, TrackMeshesArriveWithNewGenerations) {
   const TrackMesh mesh = make_track_mesh(track);
   EXPECT_EQ(link.publish_track(mesh, track.name(), track.length()), 1u);
 
-  const vsim_link::TrackRegion* region = reader.track();
+  const vsim_link::MeshRegion* region = reader.track();
   ASSERT_NE(region, nullptr);
   EXPECT_EQ(region->generation, 1u);
+  EXPECT_EQ(region->kind, vsim_link::kMeshTrack);
   EXPECT_STREQ(region->name, "straight");
   EXPECT_DOUBLE_EQ(region->length, 75.0);
+  ASSERT_EQ(region->part_count, 1u);
   ASSERT_EQ(region->section_count, mesh.sections.size());
-  const vsim_link::TrackSection* sections = vsim_link::track_sections(*region);
+  const vsim_link::MeshSectionInfo* sections = vsim_link::mesh_sections(*region);
   for (std::size_t i = 0; i < mesh.sections.size(); ++i) {
     const MeshSection& m = mesh.sections[i];
-    const vsim_link::TrackSection& section = sections[i];
+    const vsim_link::MeshSectionInfo& section = sections[i];
+    ASSERT_TRUE(vsim_link::section_valid(*region, section));
     EXPECT_EQ(section.name, m.name);
     ASSERT_EQ(section.vertex_count, m.vertex_count());
     ASSERT_EQ(section.index_count, m.indices.size());
     EXPECT_EQ(section.color[2], m.color[2]);
-    const float* positions = vsim_link::track_array<float>(*region, section.positions);
-    const float* normals = vsim_link::track_array<float>(*region, section.normals);
-    const float* uvs = vsim_link::track_array<float>(*region, section.uvs);
-    const auto* indices = vsim_link::track_array<std::uint32_t>(*region, section.indices);
+    EXPECT_EQ(section.roughness, m.roughness);
+    const float* positions = vsim_link::mesh_array<float>(*region, section.positions);
+    const float* normals = vsim_link::mesh_array<float>(*region, section.normals);
+    const float* uvs = vsim_link::mesh_array<float>(*region, section.uvs);
+    const auto* indices = vsim_link::mesh_array<std::uint32_t>(*region, section.indices);
     EXPECT_TRUE(std::equal(m.positions.begin(), m.positions.end(), positions)) << m.name;
     EXPECT_TRUE(std::equal(m.normals.begin(), m.normals.end(), normals)) << m.name;
     EXPECT_TRUE(std::equal(m.uvs.begin(), m.uvs.end(), uvs)) << m.name;
     EXPECT_TRUE(std::equal(m.indices.begin(), m.indices.end(), indices)) << m.name;
-    EXPECT_LE(section.indices + 4 * section.index_count, region->size);
   }
 
   def.name = "second";
@@ -127,6 +131,49 @@ TEST(Link, TrackMeshesArriveWithNewGenerations) {
 
   link.clear_track();
   EXPECT_EQ(reader.track(), nullptr);
+}
+
+TEST(Link, CarModelArrivesWithPartRoles) {
+  const std::string name = link_name("car");
+  StateLink link(name);
+  StateLinkReader reader(name);
+  ASSERT_TRUE(reader.connect());
+  EXPECT_EQ(reader.car(), nullptr);
+  const VisualModel car = make_formula_car(test::load_example("drive").params);
+  const std::uint64_t generation = link.publish_car(car);
+  const vsim_link::MeshRegion* region = reader.car();
+  ASSERT_NE(region, nullptr);
+  EXPECT_EQ(region->generation, generation);
+  EXPECT_EQ(region->kind, vsim_link::kMeshCar);
+  EXPECT_FLOAT_EQ(region->cg_height, 0.28f);
+  ASSERT_EQ(region->part_count, car.parts.size());
+  const vsim_link::MeshPart* parts = vsim_link::mesh_parts(*region);
+  const vsim_link::MeshSectionInfo* sections = vsim_link::mesh_sections(*region);
+  std::uint32_t next_section = 0;
+  for (std::size_t i = 0; i < car.parts.size(); ++i) {
+    const VisualPart& expected = car.parts[i];
+    const vsim_link::MeshPart& part = parts[i];
+    EXPECT_EQ(part.name, expected.name);
+    EXPECT_EQ(part.role, static_cast<std::uint32_t>(expected.role));
+    EXPECT_EQ(part.corner, expected.corner);
+    EXPECT_EQ(part.first_section, next_section);
+    EXPECT_EQ(part.section_count, expected.sections.size());
+    EXPECT_FLOAT_EQ(part.pivot[2], static_cast<float>(expected.pivot.z));
+    EXPECT_EQ((part.flags & vsim_link::kPartSteers) != 0, expected.steers);
+    for (std::uint32_t k = 0; k < part.section_count; ++k) {
+      const vsim_link::MeshSectionInfo& s = sections[part.first_section + k];
+      EXPECT_TRUE(vsim_link::section_valid(*region, s));
+      EXPECT_EQ(s.name, expected.sections[k].name);
+      EXPECT_EQ(s.metallic, expected.sections[k].metallic);
+    }
+    next_section += part.section_count;
+  }
+  EXPECT_EQ(next_section, region->section_count);
+  EXPECT_GT(link.publish_track(make_track_mesh(Track(TrackDefinition::from_file(std::string(VSIM_SOURCE_DIR) +
+                                                                                     "/templates/tracks/skidpad.track.json"))),
+                               "skidpad", 1.0),
+            generation);
+  EXPECT_NE(reader.car(), nullptr) << "a new track keeps the car";
 }
 
 TEST(Link, TakesOverAStaleRegionAndKeepsCounting) {

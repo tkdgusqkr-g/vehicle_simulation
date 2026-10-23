@@ -6,6 +6,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "VsimLinkReader.h"
+#include "VsimMesh.h"
 #include "VsimTypes.h"
 #include "vsim_link.h"
 #include "VsimWorld.generated.h"
@@ -16,6 +17,8 @@ class AVsimCarActor;
 class AVsimTrackActor;
 class UDirectionalLightComponent;
 class UExponentialHeightFogComponent;
+class UMaterialInterface;
+class UVolumetricCloudComponent;
 class USkyAtmosphereComponent;
 class USkyLightComponent;
 class UStaticMeshComponent;
@@ -34,11 +37,11 @@ public:
 
 	/** Shared-memory name; vsim-core --link-name must match. */
 	UPROPERTY(EditAnywhere, Category = "vsim")
-	FString LinkName = TEXT("vsim_state_v1");
+	FString LinkName = TEXT("vsim_state_v2");
 
-	/** Set if the road is invisible from above (triangle winding the other way round). */
+	/** Set if the road and car are invisible from outside (triangle winding the other way round). */
 	UPROPERTY(EditAnywhere, Category = "vsim")
-	bool bFlipTrackWinding = false;
+	bool bFlipWinding = false;
 
 	// For the HUD and the player controller.
 	bool IsConnected() const { return bConnected; }
@@ -53,6 +56,8 @@ public:
 
 private:
 	void UpdateTrack();
+	void UpdateCar();
+	FVsimMaterialSet MaterialSet() const;
 	void UpdateCamera(float DeltaSeconds);
 	APlayerController* Player() const;
 
@@ -67,6 +72,21 @@ private:
 
 	UPROPERTY(VisibleAnywhere, Category = "vsim")
 	TObjectPtr<UExponentialHeightFogComponent> Fog;
+
+	UPROPERTY(VisibleAnywhere, Category = "vsim")
+	TObjectPtr<UVolumetricCloudComponent> Clouds;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> PbrMaterial;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> PbrTwoSidedMaterial;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> PaintMaterial;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> BasicMaterial;
 
 	UPROPERTY(VisibleAnywhere, Category = "vsim")
 	TObjectPtr<UStaticMeshComponent> Ground;
@@ -84,6 +104,7 @@ private:
 	vsim_link::VehicleState State{};
 	bool bConnected = false;
 	uint64 TrackGeneration = 0;
+	uint64 CarGeneration = 0;
 	TArray<FVector> TvSpots;
 	EVsimCamera Camera = EVsimCamera::Chase;
 	double InputLatencyMs = 0.0;

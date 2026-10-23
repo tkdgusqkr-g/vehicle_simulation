@@ -39,6 +39,8 @@
 #include "vsim/sim/simulation.hpp"
 #include "vsim/track/track.hpp"
 #include "vsim/track/track_mesh.hpp"
+#include "vsim/visual/gltf.hpp"
+#include "vsim/visual/vehicle_visual.hpp"
 #include "vsim/util/paths.hpp"
 #include "vsim/version.hpp"
 
@@ -59,6 +61,7 @@ struct Options {
   std::string log_dir;
   std::string input_profiles;
   std::string export_track;
+  std::string export_car;
   std::string link_name = vsim_link::kStateName;
   bool no_wheel = false;
   bool virtual_wheel = false;
@@ -82,6 +85,7 @@ constexpr const char* kUsage = R"(usage: vsim-core --scenario <file.yaml> [optio
   --input-profiles <d> wheel profile directory (default: config/input in the source tree)
   --virtual-wheel      add a virtual steering wheel driven by input.virtual (UI tests)
   --export-track-glb <file>  write the scenario's track as a 3D model (glTF binary) and exit
+  --export-car-glb <file>    write the car's 3D model (glTF binary) and exit
   --version            print the version and exit
 
 In realtime mode open ui/live/index.html in a browser to watch and drive.
@@ -143,6 +147,8 @@ std::optional<Options> parse_args(const std::vector<std::string>& args) {
       options.input_profiles = value();
     } else if (arg == "--export-track-glb") {
       options.export_track = value();
+    } else if (arg == "--export-car-glb") {
+      options.export_car = value();
     } else if (arg == "--set") {
       const std::string& assignment = value();
       const auto eq = assignment.find('=');
@@ -284,7 +290,8 @@ json track_geometry(const vsim::Track& track) {
           {"sectors", sectors}};
 }
 
-std::string hello_message(const vsim::Simulation& sim, std::uint64_t track_generation) {
+std::string hello_message(const vsim::Simulation& sim, std::uint64_t track_generation,
+                          std::uint64_t car_generation) {
   const vsim::ParamTree& params = sim.scenario().params;
   json vehicle;
   vehicle["model"] = params.get_string("vehicle.model", "two_track");
@@ -306,6 +313,7 @@ std::string hello_message(const vsim::Simulation& sim, std::uint64_t track_gener
   const std::shared_ptr<const vsim::Track> track = sim.track();
   hello["track"] = track ? track_geometry(*track) : json(nullptr);
   hello["track_generation"] = track_generation;  // track.mesh fetches the 3D model for it
+  hello["car_generation"] = car_generation;      // vehicle.model fetches the car
   return json{{"jsonrpc", "2.0"}, {"method", "hello"}, {"params", hello}}.dump();
 }
 
@@ -342,6 +350,14 @@ std::string track_mesh_message(const vsim::Simulation& sim, std::uint64_t genera
 
 std::int64_t to_ns(Clock::time_point t) {
   return t == Clock::time_point{} ? 0 : std::chrono::duration_cast<std::chrono::nanoseconds>(t.time_since_epoch()).count();
+}
+
+// The car's 3D model as a glTF binary, parts tagged with their roles.
+std::string car_model_message(const vsim::VisualModel& car, std::uint64_t generation) {
+  return json{{"jsonrpc", "2.0"},
+              {"method", "vehicle.model"},
+              {"params", {{"generation", generation}, {"name", car.name}, {"glb", base64(vsim::to_glb(car))}}}}
+      .dump();
 }
 
 std::string notice(const std::string& level, const std::string& text) {
@@ -433,7 +449,9 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
   StateStream stream;
   stream.resolve(sim.bus());
   std::uint64_t track_generation = 1;
-  server.set_hello(hello_message(sim, track_generation));
+  const std::uint64_t car_generation = 1;
+  const vsim::VisualModel car_model = vsim::make_formula_car(sim.scenario().params);
+  server.set_hello(hello_message(sim, track_generation, car_generation));
   if (const auto error = server.start()) {
     std::cerr << "error: cannot listen on " << options.host << ":" << options.port << ": "
               << *error << "\n";
@@ -515,6 +533,7 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
   };
   publish_track();
   if (link) {
+    link->publish_car(car_model);
     std::cout << "Shared-memory link '" << link->name() << "' for the Unreal viewer (ui/unreal)\n";
   }
 
@@ -578,8 +597,8 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
             after_reset();
             publish_track();
             ++track_generation;
-            server.set_hello(hello_message(sim, track_generation));
-            server.broadcast(hello_message(sim, track_generation));
+            server.set_hello(hello_message(sim, track_generation, car_generation));
+            server.broadcast(hello_message(sim, track_generation, car_generation));
             const auto current = sim.track();
             const std::string name = current ? current->name() : std::string("(none)");
             server.broadcast(notice("info", "track: " + name));
@@ -641,6 +660,8 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
             wheel_service->set_virtual(axes, buttons);
           }
   #endif
+        } else if (method == "vehicle.model") {
+          server.broadcast(car_model_message(car_model, car_generation));
         } else if (method == "track.mesh") {
           server.broadcast(track_mesh_message(sim, track_generation));
         } else if (method == "track.get") {
@@ -724,6 +745,7 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
       link_state.paused = paused;
       link_state.wheel_connected = wheel.connected;
       link_state.track_generation = link->track_generation();
+      link_state.car_generation = link->car_generation();
       link->publish(link_state);
     }
 
@@ -814,6 +836,17 @@ int main(int argc, char** argv) {
                                               options->overrides),
                          sim_options);
 
+    if (!options->export_car.empty()) {
+      std::ofstream out(vsim::path_from_utf8(options->export_car), std::ios::binary);
+      out << vsim::to_glb(vsim::make_formula_car(sim.scenario().params));
+      if (!out) {
+        throw std::runtime_error("cannot write " + options->export_car);
+      }
+      std::cout << "Car model written to " << options->export_car << "\n";
+      if (options->export_track.empty()) {
+        return 0;
+      }
+    }
     if (!options->export_track.empty()) {
       const auto track = sim.track();
       if (!track) {

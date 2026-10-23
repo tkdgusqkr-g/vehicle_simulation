@@ -19,9 +19,10 @@
 namespace vsim {
 namespace {
 
+using vsim_link::MeshPart;
+using vsim_link::MeshRegion;
+using vsim_link::MeshSectionInfo;
 using vsim_link::StateRegion;
-using vsim_link::TrackRegion;
-using vsim_link::TrackSection;
 
 constexpr double kGravity = 9.80665;
 
@@ -42,6 +43,108 @@ void copy_text(char (&out)[N], std::string_view text) {
 
 std::size_t align8(std::size_t n) { return (n + 7) & ~std::size_t{7}; }
 
+struct PartInput {
+  std::string name;
+  std::uint32_t role = vsim_link::kRoleStatic;
+  int corner = -1;
+  Vec3 pivot, axis, outer;
+  std::uint32_t flags = 0;
+  const std::vector<MeshSection>* sections = nullptr;
+};
+
+// Writes a mesh region (layout in vsim_link.h) into new shared memory.
+SharedMemory write_mesh(const std::string& region_name, std::uint32_t kind, std::uint64_t generation,
+                        const std::string& name, double length, double cg_height, const std::vector<PartInput>& parts) {
+  std::size_t section_count = 0;
+  std::size_t size = 0;
+  double lo[3] = {1e30, 1e30, 1e30}, hi[3] = {-1e30, -1e30, -1e30};
+  for (const PartInput& part : parts) {
+    for (const MeshSection& m : *part.sections) {
+      ++section_count;
+      size += align8(m.positions.size() * 4) + align8(m.normals.size() * 4) + align8(m.uvs.size() * 4) +
+              align8(m.indices.size() * 4);
+      for (std::size_t i = 0; i < m.positions.size(); i += 3) {
+        const double p[3] = {m.positions[i] + part.pivot.x, m.positions[i + 1] + part.pivot.y,
+                             m.positions[i + 2] + part.pivot.z};
+        for (int a = 0; a < 3; ++a) {
+          lo[a] = std::min(lo[a], p[a]);
+          hi[a] = std::max(hi[a], p[a]);
+        }
+      }
+    }
+  }
+  const std::size_t header = align8(sizeof(MeshRegion) + parts.size() * sizeof(MeshPart) +
+                                    section_count * sizeof(MeshSectionInfo));
+  size += header;
+  SharedMemory memory = SharedMemory::create(region_name, size);
+  char* base = static_cast<char*>(memory.data());
+  std::memset(base, 0, size);
+
+  MeshRegion region{};
+  region.magic = vsim_link::kMeshMagic;
+  region.version = vsim_link::kVersion;
+  region.generation = generation;
+  region.size = size;
+  region.kind = kind;
+  region.part_count = static_cast<std::uint32_t>(parts.size());
+  region.section_count = static_cast<std::uint32_t>(section_count);
+  copy_text(region.name, name);
+  region.length = length;
+  for (int a = 0; a < 3; ++a) {
+    region.min[a] = section_count > 0 ? lo[a] : 0.0;
+    region.max[a] = section_count > 0 ? hi[a] : 0.0;
+  }
+  region.cg_height = static_cast<float>(cg_height);
+  std::memcpy(base, &region, sizeof region);
+
+  std::size_t offset = header;
+  const auto put = [&](const void* data, std::size_t bytes) {
+    std::memcpy(base + offset, data, bytes);
+    const std::size_t at = offset;
+    offset += align8(bytes);
+    return static_cast<std::uint64_t>(at);
+  };
+  char* part_table = base + sizeof(MeshRegion);
+  char* section_table = part_table + parts.size() * sizeof(MeshPart);
+  std::uint32_t section_index = 0;
+  for (std::size_t p = 0; p < parts.size(); ++p) {
+    const PartInput& in = parts[p];
+    MeshPart part{};
+    copy_text(part.name, in.name);
+    part.role = in.role;
+    part.corner = in.corner;
+    part.first_section = section_index;
+    part.section_count = static_cast<std::uint32_t>(in.sections->size());
+    const Vec3* vectors[3] = {&in.pivot, &in.axis, &in.outer};
+    float* targets[3] = {part.pivot, part.axis, part.outer};
+    for (int v = 0; v < 3; ++v) {
+      targets[v][0] = static_cast<float>(vectors[v]->x);
+      targets[v][1] = static_cast<float>(vectors[v]->y);
+      targets[v][2] = static_cast<float>(vectors[v]->z);
+    }
+    part.flags = in.flags;
+    std::memcpy(part_table + p * sizeof(MeshPart), &part, sizeof part);
+    for (const MeshSection& m : *in.sections) {
+      MeshSectionInfo info{};
+      copy_text(info.name, m.name);
+      std::copy(m.color.begin(), m.color.end(), info.color);
+      info.metallic = m.metallic;
+      info.roughness = m.roughness;
+      info.flags = (m.flags & kCastShadow ? vsim_link::kSectionCastShadow : 0u) |
+                   (m.flags & kDoubleSided ? vsim_link::kSectionDoubleSided : 0u);
+      info.vertex_count = static_cast<std::uint32_t>(m.vertex_count());
+      info.index_count = static_cast<std::uint32_t>(m.indices.size());
+      info.positions = put(m.positions.data(), m.positions.size() * 4);
+      info.normals = put(m.normals.data(), m.normals.size() * 4);
+      info.uvs = put(m.uvs.data(), m.uvs.size() * 4);
+      info.indices = put(m.indices.data(), m.indices.size() * 4);
+      std::memcpy(section_table + section_index * sizeof(MeshSectionInfo), &info, sizeof info);
+      ++section_index;
+    }
+  }
+  return memory;
+}
+
 }  // namespace
 
 // --- StateLink --------------------------------------------------------------
@@ -58,9 +161,9 @@ StateLink::StateLink(std::string name) : name_(std::move(name)) {
       throw std::runtime_error("another simulator (process " + std::to_string(pid) + ") publishes '" + name_ +
                                "'");
     }
-    // Continue the old run's numbering so a viewer that cached its track
-    // does not take the next track for it.
-    generation_ = r.track_generation.load();
+    // Continue the old run's numbering so a viewer that cached its meshes
+    // does not take the next ones for them.
+    generation_ = std::max(r.track_generation.load(), r.car_generation.load());
   }
   r.magic.store(0, std::memory_order_relaxed);
   std::atomic_thread_fence(std::memory_order_release);
@@ -71,6 +174,8 @@ StateLink::StateLink(std::string name) : name_(std::move(name)) {
   r.heartbeat_ns.store(now, std::memory_order_relaxed);
   r.track_generation.store(0, std::memory_order_relaxed);
   copy_text(r.track_region, "");
+  r.car_generation.store(0, std::memory_order_relaxed);
+  copy_text(r.car_region, "");
   std::memset(&r.state, 0, sizeof r.state);
   last_command_ = r.viewer.command.load();  // what an earlier run left is not for us
   r.magic.store(vsim_link::kStateMagic, std::memory_order_release);
@@ -83,59 +188,46 @@ void StateLink::publish(const vsim_link::VehicleState& state) {
 }
 
 std::uint64_t StateLink::publish_track(const TrackMesh& mesh, const std::string& track_name, double length) {
-  const std::uint64_t generation = generation_ + 1;
-  std::size_t size = align8(sizeof(TrackRegion) + mesh.sections.size() * sizeof(TrackSection));
-  for (const MeshSection& m : mesh.sections) {
-    size += align8(m.positions.size() * 4) + align8(m.normals.size() * 4) + align8(m.uvs.size() * 4) +
-            align8(m.indices.size() * 4);
-  }
+  const std::uint64_t generation = ++generation_;
   const std::string region_name = name_ + "_track_" + std::to_string(generation);
-  SharedMemory memory = SharedMemory::create(region_name, size);
-  char* base = static_cast<char*>(memory.data());
-  std::memset(base, 0, size);
-
-  TrackRegion header{};
-  header.magic = vsim_link::kTrackMagic;
-  header.version = vsim_link::kVersion;
-  header.generation = generation;
-  header.size = size;
-  header.section_count = static_cast<std::uint32_t>(mesh.sections.size());
-  copy_text(header.name, track_name);
-  header.length = length;
-  for (int a = 0; a < 3; ++a) {
-    header.min[a] = mesh.min[a];
-    header.max[a] = mesh.max[a];
-  }
-  std::memcpy(base, &header, sizeof header);
-
-  std::size_t offset = align8(sizeof(TrackRegion) + mesh.sections.size() * sizeof(TrackSection));
-  const auto put = [&](const void* data, std::size_t bytes) {
-    std::memcpy(base + offset, data, bytes);
-    const std::size_t at = offset;
-    offset += align8(bytes);
-    return static_cast<std::uint64_t>(at);
-  };
-  for (std::size_t i = 0; i < mesh.sections.size(); ++i) {
-    const MeshSection& m = mesh.sections[i];
-    TrackSection section{};
-    copy_text(section.name, m.name);
-    std::copy(m.color.begin(), m.color.end(), section.color);
-    section.vertex_count = static_cast<std::uint32_t>(m.vertex_count());
-    section.index_count = static_cast<std::uint32_t>(m.indices.size());
-    section.positions = put(m.positions.data(), m.positions.size() * 4);
-    section.normals = put(m.normals.data(), m.normals.size() * 4);
-    section.uvs = put(m.uvs.data(), m.uvs.size() * 4);
-    section.indices = put(m.indices.data(), m.indices.size() * 4);
-    std::memcpy(base + sizeof(TrackRegion) + i * sizeof(TrackSection), &section, sizeof section);
-  }
-
+  PartInput part;
+  part.name = "track";
+  part.sections = &mesh.sections;
+  SharedMemory memory = write_mesh(region_name, vsim_link::kMeshTrack, generation, track_name, length, 0.0, {part});
   // Readers may still be opening the previous region; it goes one track later.
   previous_track_ = std::move(track_);
   track_ = std::move(memory);
-  generation_ = generation;
   StateRegion& r = region();
   copy_text(r.track_region, region_name);
   r.track_generation.store(generation, std::memory_order_release);
+  track_generation_ = generation;
+  return generation;
+}
+
+std::uint64_t StateLink::publish_car(const VisualModel& model) {
+  const std::uint64_t generation = ++generation_;
+  const std::string region_name = name_ + "_car_" + std::to_string(generation);
+  std::vector<PartInput> parts;
+  for (const VisualPart& p : model.parts) {
+    PartInput in;
+    in.name = p.name;
+    in.role = static_cast<std::uint32_t>(p.role);
+    in.corner = p.corner;
+    in.pivot = p.pivot;
+    in.axis = p.axis;
+    in.outer = p.outer;
+    in.flags = p.steers ? vsim_link::kPartSteers : 0u;
+    in.sections = &p.sections;
+    parts.push_back(std::move(in));
+  }
+  SharedMemory memory =
+      write_mesh(region_name, vsim_link::kMeshCar, generation, model.name, 0.0, model.cg_height, parts);
+  previous_car_ = std::move(car_);
+  car_ = std::move(memory);
+  StateRegion& r = region();
+  copy_text(r.car_region, region_name);
+  r.car_generation.store(generation, std::memory_order_release);
+  car_generation_ = generation;
   return generation;
 }
 
@@ -145,6 +237,7 @@ void StateLink::clear_track() {
   copy_text(r.track_region, "");
   previous_track_ = std::move(track_);
   track_ = {};
+  track_generation_ = 0;
 }
 
 StateLink::ViewerInput StateLink::poll_viewer() {
@@ -192,6 +285,8 @@ bool StateLinkReader::connect() {
   state_ = SharedMemory::open(name_);
   track_ = {};
   track_generation_ = 0;
+  car_ = {};
+  car_generation_ = 0;
   return usable();
 }
 
@@ -199,28 +294,46 @@ bool StateLinkReader::read(vsim_link::VehicleState& state) const {
   return state_ && vsim_link::read_state(*static_cast<const StateRegion*>(state_.data()), state);
 }
 
-const TrackRegion* StateLinkReader::track() {
+namespace {
+
+// Maps the region a state field names when its generation changes.
+const MeshRegion* follow(const std::atomic<std::uint64_t>& generation_field, const char (&region_name)[64],
+                         SharedMemory& memory, std::uint64_t& mapped_generation) {
+  const std::uint64_t generation = generation_field.load(std::memory_order_acquire);
+  if (generation == 0) {
+    memory = {};
+    mapped_generation = 0;
+    return nullptr;
+  }
+  if (generation != mapped_generation) {
+    char name[sizeof region_name + 1] = {};
+    std::memcpy(name, region_name, sizeof region_name);
+    memory = SharedMemory::open(name);
+    mapped_generation = memory ? generation : 0;
+  }
+  if (!memory || memory.size() < sizeof(MeshRegion)) {
+    return nullptr;
+  }
+  const auto* region = static_cast<const MeshRegion*>(memory.data());
+  return vsim_link::mesh_valid(*region, memory.size()) && region->generation == generation ? region : nullptr;
+}
+
+}  // namespace
+
+const MeshRegion* StateLinkReader::track() {
   if (!state_) {
     return nullptr;
   }
   const auto& r = *static_cast<const StateRegion*>(state_.data());
-  const std::uint64_t generation = r.track_generation.load(std::memory_order_acquire);
-  if (generation == 0) {
-    track_ = {};
-    track_generation_ = 0;
+  return follow(r.track_generation, r.track_region, track_, track_generation_);
+}
+
+const MeshRegion* StateLinkReader::car() {
+  if (!state_) {
     return nullptr;
   }
-  if (generation != track_generation_) {
-    char name[sizeof r.track_region + 1] = {};
-    std::memcpy(name, r.track_region, sizeof r.track_region);
-    track_ = SharedMemory::open(name);
-    track_generation_ = track_ ? generation : 0;
-  }
-  if (!track_ || track_.size() < sizeof(TrackRegion)) {
-    return nullptr;
-  }
-  const auto* region = static_cast<const TrackRegion*>(track_.data());
-  return region->magic == vsim_link::kTrackMagic && region->size <= track_.size() ? region : nullptr;
+  const auto& r = *static_cast<const StateRegion*>(state_.data());
+  return follow(r.car_generation, r.car_region, car_, car_generation_);
 }
 
 void StateLinkReader::send_keys(std::uint32_t keys) {

@@ -36,7 +36,7 @@ constexpr const char* kUsage = R"(usage: vsim-link <command> [options]
                               report speed, track mesh and input latency
   reset | pause               send a command
 
-  --name <name>               link name (default vsim_state_v1)
+  --name <name>               link name (default vsim_state_v2)
 
 Start vsim-core in realtime mode first.
 )";
@@ -46,7 +46,7 @@ double ms(std::int64_t ns) { return static_cast<double>(ns) / 1e6; }
 void print_state(const vsim_link::VehicleState& s, std::int64_t now) {
   std::cout << std::fixed << std::setprecision(2) << "t " << s.sim_time << " s  frame " << s.frame << "  x "
             << s.x << "  y " << s.y << "  speed " << s.speed * 3.6 << " km/h  lap " << s.lap << "  track gen "
-            << s.track_generation << "  age " << ms(now - s.publish_ns) << " ms";
+            << s.track_generation << "  car gen " << s.car_generation << "  age " << ms(now - s.publish_ns) << " ms";
   if (s.input_ns != 0) {
     std::cout << "  input " << ms(now - s.input_ns) << " ms";
   }
@@ -165,11 +165,17 @@ int main(int argc, char** argv) {
       reader.send_keys(0);
       reader.read(state);
       print_state(state, vsim_link::now_ns());
-      if (const vsim_link::TrackRegion* track = reader.track()) {
+      if (const vsim_link::MeshRegion* track = reader.track()) {
         std::cout << "track '" << track->name << "': " << track->section_count << " sections, " << track->size
                   << " bytes\n";
       } else {
         std::cout << "track: none\n";
+      }
+      if (const vsim_link::MeshRegion* car = reader.car()) {
+        std::cout << "car '" << car->name << "': " << car->part_count << " parts, " << car->section_count
+                  << " sections, " << car->size << " bytes\n";
+      } else {
+        std::cout << "car: none\n";
       }
       if (samples > 0) {
         std::cout << std::setprecision(1) << "input -> state: mean " << sum / samples << " ms, max " << worst

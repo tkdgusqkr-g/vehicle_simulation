@@ -1,20 +1,20 @@
-// The car, built from the engine's basic shapes to the simulator's vehicle
-// dimensions: body with visual roll and pitch, steered and spinning wheels,
-// a turning steering wheel, and the chase / cockpit / nose cameras.
+// The car as published by the simulator (vsim_link.h, kMeshCar): body,
+// wheels, uprights, steering wheel and suspension links moved by the
+// vehicle state, plus the chase / cockpit / nose cameras.
 #pragma once
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "VsimMesh.h"
 #include "VsimTypes.h"
 #include "vsim_link.h"
 #include "VsimCarActor.generated.h"
 
 class UCameraComponent;
-class UMaterialInterface;
+class UMaterialInstanceDynamic;
+class UProceduralMeshComponent;
 class USceneComponent;
 class USpringArmComponent;
-class UStaticMesh;
-class UStaticMeshComponent;
 
 UCLASS()
 class VSIMLINK_API AVsimCarActor : public AActor
@@ -24,15 +24,19 @@ class VSIMLINK_API AVsimCarActor : public AActor
 public:
 	AVsimCarActor();
 
-	/** Rebuilds the parts when the vehicle dimensions change. */
-	void Configure(const vsim_link::VehicleInfo& Info);
+	/** Replaces the parts with the region's (a car mesh region). */
+	void Build(const vsim_link::MeshRegion& Region, const FVsimMaterialSet& Materials, bool bFlipWinding);
+	/** Places the cockpit and nose cameras for the vehicle's dimensions. */
+	void ConfigureCameras(const vsim_link::VehicleInfo& Info);
 	void ApplyState(const vsim_link::VehicleState& State);
 	/** Activates the camera for Chase, Cockpit or Nose (the others use a separate camera actor). */
 	void UseCamera(EVsimCamera Camera);
+	bool HasModel() const { return Parts.Num() > 0; }
 
 	UPROPERTY(VisibleAnywhere, Category = "vsim")
 	TObjectPtr<USceneComponent> Root;
 
+	/** Pitch and roll pivot, at the CG height. */
 	UPROPERTY(VisibleAnywhere, Category = "vsim")
 	TObjectPtr<USceneComponent> Body;
 
@@ -49,38 +53,39 @@ public:
 	TObjectPtr<UCameraComponent> NoseCamera;
 
 private:
-	UStaticMeshComponent* AddPart(USceneComponent* Parent, UStaticMesh* Shape, const FVector& CentreM,
-		const FVector& ScaleM, const FLinearColor& Color, const FRotator& Rotation = FRotator::ZeroRotator);
-	USceneComponent* AddPivot(USceneComponent* Parent, const FVector& LocationM);
+	struct FCorner
+	{
+		USceneComponent* Steer = nullptr;  // at the hub, turns with the steering
+		USceneComponent* Spin = nullptr;   // under Steer, rolls
+		FVector Hub = FVector::ZeroVector;  // cm, car frame
+	};
+	struct FLink
+	{
+		UProceduralMeshComponent* Mesh = nullptr;
+		FVector Inboard = FVector::ZeroVector;  // cm, body frame (origin below the CG)
+		FVector Outer = FVector::ZeroVector;    // cm, relative to the hub
+		int32 Corner = 0;
+		bool bSteers = false;
+	};
+	struct FSteeringWheel
+	{
+		USceneComponent* Pivot = nullptr;
+		FVector Axis = FVector::XAxisVector;  // Unreal frame
+	};
+
 	void ClearParts();
-
-	UPROPERTY()
-	TObjectPtr<UStaticMesh> Cube;
-
-	UPROPERTY()
-	TObjectPtr<UStaticMesh> Cylinder;
-
-	UPROPERTY()
-	TObjectPtr<UStaticMesh> Sphere;
-
-	UPROPERTY()
-	TObjectPtr<UMaterialInterface> BaseMaterial;
+	UProceduralMeshComponent* NewMesh(USceneComponent* Parent, const FVector& Location);
+	USceneComponent* NewPivot(USceneComponent* Parent, const FVector& Location);
 
 	UPROPERTY()
 	TArray<TObjectPtr<USceneComponent>> Parts;
 
 	UPROPERTY()
-	TArray<TObjectPtr<USceneComponent>> WheelSteer;
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> Materials;
 
-	UPROPERTY()
-	TArray<TObjectPtr<USceneComponent>> WheelSpin;
-
-	UPROPERTY()
-	TObjectPtr<USceneComponent> SteeringWheel;
-
-	UPROPERTY()
-	TObjectPtr<UStaticMeshComponent> Helmet;
-
-	float Built[7] = {};  // dimensions the parts were built for
-	double CgHeight = 0.28;
+	FCorner Corners[4];
+	TArray<FLink> Links;
+	TArray<FSteeringWheel> SteeringWheels;
+	double CgHeight = 0.28;  // m
+	float ConfiguredFor = -1.0f;
 };
