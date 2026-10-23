@@ -110,6 +110,28 @@ TEST(Scenario, OverridePrecedence) {
   EXPECT_EQ(scenario.project_dir.filename(), "example_fs_ev");
 }
 
+// Values the vehicle builder measured (vehicle/builder.yaml) override
+// vehicle.yaml; a list there replaces the whole list.
+TEST(Scenario, BuilderValuesOverrideVehicleYaml) {
+  TempDir dir;
+  const std::filesystem::path project = dir.path() / "car";
+  std::filesystem::copy(std::string(VSIM_SOURCE_DIR) + "/templates/projects/example_fs_ev", project,
+                        std::filesystem::copy_options::recursive);
+  {
+    std::ofstream out(project / "vehicle" / "builder.yaml");
+    out << "mass_kg: 301.5\n"
+        << "suspension:\n  front:\n    hardpoints:\n      lower_front: [0.14, 0.21]\n"
+        << "sensors:\n  - {name: imu_1, type: imu, position: [0.1, 0, 0.25]}\n";
+  }
+  const ParamTree& params = Scenario::load(project / "scenarios" / "drive.yaml").params;
+  EXPECT_EQ(params.get_double("vehicle.mass_kg"), 301.5);
+  EXPECT_EQ(params.get_double_list("vehicle.suspension.front.hardpoints.lower_front"),
+            (std::vector<double>{0.14, 0.21}));
+  EXPECT_EQ(params.get_double_list("vehicle.suspension.front.hardpoints.upper_front").size(), 3u);
+  EXPECT_EQ(params.get_string("vehicle.sensors.0.name"), "imu_1");
+  EXPECT_EQ(params.get_double("vehicle.wheelbase_m"), 1.53);   // untouched
+}
+
 TEST(Simulation, WritesRunFiles) {
   TempDir dir;
   std::filesystem::path run;

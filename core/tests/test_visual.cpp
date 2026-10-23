@@ -200,6 +200,44 @@ TEST(FormulaCar, GlbCarriesPartRoles) {
   EXPECT_TRUE(clearcoat_named);
 }
 
+// The simulator reads back what it writes (and what the vehicle builder
+// exports in the same format): parts, roles, pivots, geometry, winding.
+TEST(FormulaCar, GlbReadsBack) {
+  const Scenario scenario = test::load_example("drive");
+  const VisualModel car = make_formula_car(scenario.params);
+  const VisualModel back = read_vehicle_glb(to_glb(car));
+  ASSERT_EQ(back.parts.size(), car.parts.size());
+  EXPECT_NEAR(back.cg_height, car.cg_height, 1e-9);
+  for (std::size_t i = 0; i < car.parts.size(); ++i) {
+    const VisualPart& a = car.parts[i];
+    const VisualPart& b = back.parts[i];
+    SCOPED_TRACE(a.name);
+    EXPECT_EQ(b.name, a.name);
+    EXPECT_EQ(b.role, a.role);
+    EXPECT_EQ(b.corner, a.corner);
+    EXPECT_EQ(b.steers, a.steers);
+    EXPECT_NEAR((b.pivot - a.pivot).dot(b.pivot - a.pivot), 0.0, 1e-18);
+    EXPECT_NEAR((b.outer - a.outer).dot(b.outer - a.outer), 0.0, 1e-18);
+    ASSERT_EQ(b.sections.size(), a.sections.size());
+    for (std::size_t s = 0; s < a.sections.size(); ++s) {
+      const MeshSection& x = a.sections[s];
+      const MeshSection& y = b.sections[s];
+      EXPECT_EQ(y.name, x.name);
+      ASSERT_EQ(y.vertex_count(), x.vertex_count());
+      ASSERT_EQ(y.indices, x.indices);
+      for (std::size_t v = 0; v < x.positions.size(); ++v) {
+        ASSERT_NEAR(y.positions[v], x.positions[v], 1e-5) << x.name;   // float32 in the file
+      }
+      for (int c = 0; c < 4; ++c) {
+        EXPECT_NEAR(y.color[c], x.color[c], 2e-3) << x.name;
+      }
+      EXPECT_NEAR(y.roughness, x.roughness, 1e-6);
+      EXPECT_EQ(y.flags, x.flags);
+    }
+  }
+  EXPECT_THROW(read_vehicle_glb("not a glb"), std::invalid_argument);
+}
+
 TEST(TrackScenery, IsDeterministicAndOffTheRoad) {
   const Track track(TrackDefinition::from_file(std::string(VSIM_SOURCE_DIR) + "/templates/tracks/autocross.track.json"));
   const TrackMesh a = make_track_mesh(track);

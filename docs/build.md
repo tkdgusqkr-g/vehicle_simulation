@@ -1,8 +1,13 @@
 # 빌드와 실행
 
-M3 기준 안내입니다. 설계는 [design.md](design.md)를 보세요.
+M4 기준 안내입니다. 설계는 [design.md](design.md)를 보세요.
 
 ## 지금 되는 것
+
+**M4 (우리 차로 구른다)**
+- **차량 빌더** (`ui/builder/index.html`): STEP·IGES·glTF·STL을 브라우저에서 열고, 부품 역할(차체·바퀴·업라이트·링크·드라이버)과 재질을 정하면 질량·무게중심·관성·비현가 질량·축거·윤거·타이어 반경을 계산. 서스펜션 하드포인트와 센서 위치를 3D에서 찍어서 프로젝트에 저장하면 시뮬레이터가 그 차로 다시 시작
+- 예제 차량을 **FSAE 규정 기준**으로 정리 (600 V 이하, 80 kW, 축거 1530 mm, 10" 휠, 세그먼트 120 V·6 MJ 이하). `python -m vsim.rules <프로젝트>`로 규정 점검
+- 그래픽: 하늘·환경광·그림자·앰비언트 오클루전·블룸, 아스팔트·잔디 질감, 카본·클리어코트 도장, 주변 환경(나무, 관중석, 피트 텐트, 출발 게이트). 서스펜션 링크와 드라이버까지 있는 포뮬러 차량 모델. Unreal 뷰어도 같은 모델과 재질을 공유 메모리로 받음
 
 **M3 (보면서 구른다)**
 - **3D 주행 화면**: 브라우저(`ui/view3d/index.html`, 바로 동작)와 Unreal Engine 5 뷰어(`ui/unreal`, 직접 빌드 필요)
@@ -179,7 +184,7 @@ build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/sce
 
 맵이나 에셋 없이 코드만으로 장면을 만듭니다. **이 프로젝트는 Unreal이 없는 환경에서 작성해서 실제 빌드는 아직 해 보지 않았습니다.** 첫 빌드에서 오류가 나면 메시지를 알려 주세요.
 
-vsim-core는 실시간 모드에서 항상 공유 메모리(`vsim_state_v1`)로 상태를 내보냅니다. 끄려면 `--no-link`를 씁니다. 연결 점검에는 `vsim-link`를 씁니다.
+vsim-core는 실시간 모드에서 항상 공유 메모리(`vsim_state_v2`)로 상태를 내보냅니다. 끄려면 `--no-link`를 씁니다. 연결 점검에는 `vsim-link`를 씁니다.
 
 | 명령 | 내용 |
 |---|---|
@@ -213,6 +218,41 @@ open("skidpad.glb", "wb").write(vsim.Track("templates/tracks/skidpad.track.json"
 ```
 
 Blender, Unreal(glTF 가져오기), three.js에서 열 수 있습니다. 좌표는 glTF 규약(y가 위쪽)이고, 단위는 m입니다.
+
+---
+
+## 차량 빌더 (내 차 올리기)
+
+CAD로 만든 차를 시뮬레이터에 넣는 페이지입니다. 설계는 [design.md](design.md) §5를 보세요.
+
+```powershell
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/drive.yaml
+```
+
+`ui\builder\index.html`을 Chrome이나 Edge로 엽니다. 시뮬레이터가 꺼져 있어도 계산과 "파일로 받기"는 됩니다. STEP 읽기 모듈(occt-import-js, 약 8 MB)을 처음 한 번 인터넷에서 받습니다.
+
+| 탭 | 하는 일 |
+|---|---|
+| 1 모델 | STEP(.step .stp), IGES, BREP, glTF(.glb), STL을 끌어다 놓기. 단위(STEP은 보통 mm)와 앞쪽·위쪽 축 지정. "지금 차량의 3D 모델 불러오기"는 하드포인트·센서만 고칠 때 |
+| 2 부품 | 부품마다 역할(차체, 드라이버, 바퀴, 업라이트·허브, 서스펜션 링크, 제외)과 재질(밀도). 이름으로 먼저 추정합니다(`wheel`, `tyre`, `upright`, `wishbone`, `driver`, `휠` 등). 저울로 잰 질량이 있으면 부품별로 넣음 |
+| 3 질량 | 전체 질량, 무게중심 높이와 앞뒤 위치, 축거, 윤거, 요·롤·피치 관성, 코너별 비현가 질량, 타이어 반경·폭, 바퀴 회전 관성. CAD에 드라이버가 없으면 질량과 위치를 넣어서 추가 |
+| 4 서스펜션 | 더블 위시본 + 푸시로드 하드포인트 11개를 앞·뒤 각각 화면에서 클릭(꼭짓점에 붙이기)하거나 숫자로 입력. 오른쪽을 찍어도 왼쪽 기준으로 저장 |
+| 5 센서 | IMU, 휠 속도, 조향각, GNSS 등을 추가하고 장착 위치를 클릭. 방향은 (롤, 피치, 요) 도 |
+| 6 저장 | 저장할 항목 선택, FSAE 형상 점검, `vehicle/builder.yaml` 미리보기. **프로젝트에 저장하고 다시 불러오기**를 누르면 시뮬레이터가 파일을 쓰고 새 차량으로 다시 시작 |
+
+- 바퀴 4개의 역할을 "바퀴"로 정해야 축거와 원점(무게중심 아래 지면)이 정해집니다. 앞뒤·좌우는 위치로 정합니다.
+- 질량은 닫힌 솔리드면 부피 × 밀도, 열린 면(시트 바디)이면 넓이 × 2 mm × 밀도로 계산합니다. 바퀴처럼 CAD가 속이 꽉 찬 원기둥이면 실제보다 무거우니 측정 질량을 넣으세요 (25 kg 넘는 비현가 부품은 경고).
+- 서스펜션 링크 질량은 절반씩 차체와 비현가로 나눕니다.
+- 저장된 `builder.yaml`은 `vehicle.yaml`의 같은 항목만 덮어씁니다. 지우면 `vehicle.yaml` 값으로 돌아갑니다. 목록(센서, 하드포인트 좌표)은 통째로 바뀝니다.
+- 3D 화면(브라우저, Unreal)은 저장한 `car.glb`를 씁니다. 차체는 고정, 바퀴는 회전·조향, 업라이트는 조향만 따라갑니다.
+
+CAD 파일의 질량 특성만 따로 확인하려면:
+
+```powershell
+$env:PYTHONPATH = "python"
+python -m vsim.massprops chassis.stl --density 1600 --units mm   # 닫힌 STL/glb의 질량·무게중심·관성
+python -m vsim.rules templates/projects/example_fs_ev              # FSAE 규정 점검 (builder.yaml 반영)
+```
 
 ---
 
@@ -404,8 +444,9 @@ build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/sce
 | `--no-wheel` | 휠을 찾지 않음 |
 | `--input-profiles <폴더>` | 휠 프로필 폴더 지정 (기본: 소스 트리의 `config/input`). 보정 페이지도 여기에 저장 |
 | `--no-link` | 공유 메모리로 내보내지 않음 (Unreal 뷰어 안 씀) |
-| `--link-name <이름>` | 공유 메모리 이름 (기본 `vsim_state_v1`). 시뮬레이터 두 개를 동시에 띄울 때 |
+| `--link-name <이름>` | 공유 메모리 이름 (기본 `vsim_state_v2`). 시뮬레이터 두 개를 동시에 띄울 때 |
 | `--export-track-glb <파일>` | 시나리오의 트랙을 3D 모델(.glb)로 저장하고 종료 |
+| `--export-car-glb <파일>` | 시나리오의 차량 3D 모델(.glb)을 저장하고 종료 |
 | `--virtual-wheel` | 가상 휠 추가 (`input.virtual` RPC로 조작, UI 시험용) |
 
 ---
@@ -441,6 +482,9 @@ print(sim.get("veh.chassis.vx"), sim.get("veh.wheel.rl.slip_ratio"))
 templates/projects/example_fs_ev/      예제 차량 프로젝트 (대표값, 실차 아님)
 ├─ project.yaml                        이름, 스키마 버전, 하위 파일 경로
 ├─ vehicle/vehicle.yaml                차량 파라미터 (모델, 서스펜션, 타이어, 구동계, 모터, 배터리, 브레이크)
+├─ vehicle/builder.yaml                (차량 빌더가 저장) CAD에서 계산한 값. vehicle.yaml의 같은 항목을 덮어씀
+├─ vehicle/visual/car.glb              (차량 빌더가 저장) 3D 화면의 차량 모델
+├─ vehicle/cad/                        (선택) 원본 CAD 사본
 ├─ vehicle/tires/example_fs_10in.tir   예제 Magic Formula 타이어 파일 (합성 데이터)
 ├─ control/vcu.yaml                    참조 VCU 설정 (토크 분배, 회생, 슬립 제어, 출력 한계)
 ├─ scenarios/                          drive, keyboard, sine_steer, straight_accel,

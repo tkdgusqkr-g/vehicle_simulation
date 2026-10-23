@@ -1,0 +1,1055 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vsim 차량 빌더</title>
+<style>
+  :root {
+    --bg: #12151a; --panel: #181c22; --panel-2: #1f242c; --border: #2c3440;
+    --text: #e6e9ee; --muted: #8a94a3; --accent: #4fb3ff; --good: #3ecf8e; --bad: #ff5c5c; --warn: #ffb347;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
+    font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; font-size: 13px; }
+  header { height: 46px; display: flex; align-items: center; gap: 14px; padding: 0 16px; border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--bad); }
+  .dot.on { background: var(--good); }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); }
+  main { display: grid; grid-template-columns: 430px 1fr; height: calc(100% - 46px); }
+  aside { border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+  nav { display: flex; border-bottom: 1px solid var(--border); }
+  nav button { flex: 1; background: none; border: none; border-bottom: 2px solid transparent; color: var(--muted);
+    padding: 10px 2px; font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; }
+  nav button.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tab { display: none; padding: 14px 16px; overflow: auto; flex: 1; }
+  .tab.active { display: block; }
+  h2 { font-size: 14px; margin: 4px 0 10px; }
+  h3 { font-size: 12px; margin: 14px 0 6px; color: var(--muted); font-weight: 600; text-transform: none; }
+  p { line-height: 1.6; margin: 6px 0; }
+  button.btn { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 12px; font: inherit; cursor: pointer; }
+  button.btn:hover:not(:disabled) { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #041018; border-color: var(--accent); font-weight: 600; }
+  button.btn:disabled { opacity: 0.45; cursor: default; }
+  button.picking { border-color: var(--warn); color: var(--warn); }
+  .row { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+  .grid2 { display: grid; grid-template-columns: 150px 1fr; gap: 6px 10px; align-items: center; }
+  select, input[type=text], input[type=number] { background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 5px; padding: 4px 6px; font: inherit; }
+  input[type=number] { width: 80px; -moz-appearance: textfield; }
+  input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 4px 4px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; }
+  tr.selected td { background: rgba(79, 179, 255, 0.12); }
+  td.num { text-align: right; }
+  .bodies select { max-width: 120px; }
+  .drop { border: 2px dashed var(--border); border-radius: 10px; padding: 26px; text-align: center; color: var(--muted); cursor: pointer; }
+  .drop.over { border-color: var(--accent); color: var(--text); }
+  .result { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+  .good { color: var(--good); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  #viewport { position: relative; min-width: 0; }
+  #viewport canvas { display: block; width: 100%; height: 100%; }
+  #hint { position: absolute; left: 12px; bottom: 12px; background: rgba(18, 21, 26, 0.8); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 12px; color: var(--muted); max-width: 70%; }
+  #pickinfo { position: absolute; right: 12px; top: 12px; background: rgba(18, 21, 26, 0.8); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 12px; font-variant-numeric: tabular-nums; display: none; }
+  #toast { position: fixed; top: 56px; left: 50%; transform: translateX(-50%); display: none; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; z-index: 5; max-width: 80vw; }
+  #toast.error { border-color: var(--bad); }
+  #busy { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,0.45);
+    font-size: 16px; }
+  pre { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-size: 11px; max-height: 260px; overflow: auto; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<header>
+  <h1>차량 빌더</h1>
+  <span><span id="conn-dot" class="dot"></span><span id="conn">연결 중…</span></span>
+  <span class="muted" id="project"></span>
+  <span style="flex:1"></span>
+  <a href="../view3d/index.html">3D 화면</a>
+  <a href="../live/index.html">라이브 뷰</a>
+</header>
+<main>
+  <aside>
+    <nav>
+      <button data-tab="t-model" class="active">1 모델</button>
+      <button data-tab="t-parts">2 부품</button>
+      <button data-tab="t-mass">3 질량</button>
+      <button data-tab="t-hard">4 서스펜션</button>
+      <button data-tab="t-sens">5 센서</button>
+      <button data-tab="t-save">6 저장</button>
+    </nav>
+
+    <section class="tab active" id="t-model">
+      <h2>차량 모델 불러오기</h2>
+      <div class="drop" id="drop">STEP (.step .stp), IGES, BREP, glTF (.glb), STL 파일을 끌어다 놓거나 눌러서 고르세요<input type="file" id="file" accept=".step,.stp,.iges,.igs,.brep,.brp,.glb,.gltf,.stl" hidden></div>
+      <div class="row"><button class="btn" id="load-current">지금 차량의 3D 모델 불러오기</button><span class="muted">하드포인트·센서만 고칠 때</span></div>
+      <h3>단위와 좌표축</h3>
+      <div class="grid2">
+        <label for="units">CAD 단위</label><select id="units"><option value="0.001">mm</option><option value="0.01">cm</option><option value="1">m</option><option value="0.0254">inch</option></select>
+        <label for="forward">차량 앞쪽 축</label><select id="forward"></select>
+        <label for="up">위쪽 축</label><select id="up"></select>
+      </div>
+      <p class="muted">STEP은 보통 mm입니다. 축을 바꾸면 화면의 빨강(앞), 초록(위) 화살표가 차와 맞는지 보세요. 원점은 계산된 무게중심 아래 지면으로 옮겨집니다.</p>
+      <div class="result" id="model-info">모델 없음</div>
+    </section>
+
+    <section class="tab" id="t-parts">
+      <h2>부품 역할과 재질</h2>
+      <p class="muted">이름으로 역할과 재질을 추정했습니다. 화면에서 부품을 누르면 표에서 선택됩니다. 바퀴의 앞뒤·좌우는 위치로 정합니다.</p>
+      <div class="row"><button class="btn" id="guess">이름으로 다시 추정</button><label><input type="checkbox" id="only-selected"> 선택한 것만 보기</label></div>
+      <div class="bodies"><table id="bodies"><thead><tr><th>부품</th><th>역할</th><th>재질</th><th class="num">질량 kg</th></tr></thead><tbody></tbody></table></div>
+      <h3>선택한 부품</h3>
+      <div class="result" id="body-detail">없음</div>
+    </section>
+
+    <section class="tab" id="t-mass">
+      <h2>질량 특성</h2>
+      <div class="grid2">
+        <label><input type="checkbox" id="driver-add" checked> 드라이버 추가</label><span><input type="number" id="driver-mass" value="68" step="1"> kg (CAD에 드라이버가 없을 때)</span>
+        <label>드라이버 위치</label><span>앞차축 뒤 <input type="number" id="driver-x" value="0.95" step="0.01"> m, 높이 <input type="number" id="driver-z" value="0.50" step="0.01"> m</span>
+        <label for="tyre-deflection">타이어 정적 처짐</label><span><input type="number" id="tyre-deflection" value="0.025" step="0.001"> m (부하 반경 = 무부하 반경 − 처짐)</span>
+      </div>
+      <div class="result" id="mass-result">모델을 불러오면 계산합니다</div>
+    </section>
+
+    <section class="tab" id="t-hard">
+      <h2>서스펜션 하드포인트</h2>
+      <p class="muted">항목의 <b>찍기</b>를 누르고 화면에서 그 점을 클릭하세요. 왼쪽 바퀴 기준이며, 오른쪽을 찍으면 대칭으로 옮깁니다. 좌표는 해당 차축 중심 기준(x 앞, y 왼쪽, z 지면에서 위), m입니다.</p>
+      <div class="row"><label><input type="checkbox" id="snap" checked> 꼭짓점에 붙이기 (5 mm)</label><select id="axle"><option value="front">앞</option><option value="rear">뒤</option></select></div>
+      <table id="hardpoints"><thead><tr><th>점</th><th class="num">x</th><th class="num">y</th><th class="num">z</th><th></th></tr></thead><tbody></tbody></table>
+    </section>
+
+    <section class="tab" id="t-sens">
+      <h2>센서 배치</h2>
+      <p class="muted">센서를 추가하고 <b>찍기</b>로 장착 위치를 고르세요. 방향은 차량 축 기준 (롤, 피치, 요) 도입니다. 신호 체인(노이즈, 지연 등)은 M6에서 이 목록을 씁니다.</p>
+      <div class="row">
+        <select id="sensor-type">
+          <option value="imu">IMU (가속도 + 자이로)</option><option value="accelerometer">가속도계</option><option value="gyro">자이로</option>
+          <option value="wheel_speed">휠 속도</option><option value="steering_angle">조향각</option><option value="gnss">GNSS</option>
+          <option value="suspension_travel">서스펜션 변위</option><option value="brake_pressure">브레이크 압력</option>
+          <option value="temperature">온도</option><option value="current">전류</option><option value="voltage">전압</option>
+        </select>
+        <button class="btn" id="sensor-add">추가</button>
+      </div>
+      <table id="sensors"><thead><tr><th>이름</th><th>종류</th><th class="num">위치 x, y, z</th><th>방향°</th><th></th></tr></thead><tbody></tbody></table>
+    </section>
+
+    <section class="tab" id="t-save">
+      <h2>프로젝트에 저장</h2>
+      <div class="grid2">
+        <label><input type="checkbox" id="save-mass" checked> 질량·관성·무게중심</label><span class="muted">mass_kg, *_inertia_kgm2, cg_*</span>
+        <label><input type="checkbox" id="save-geometry" checked> 축거·윤거·타이어</label><span class="muted">바퀴 위치에서</span>
+        <label><input type="checkbox" id="save-hardpoints" checked> 하드포인트</label><span class="muted">suspension.*.hardpoints</span>
+        <label><input type="checkbox" id="save-sensors" checked> 센서</label><span class="muted">sensors</span>
+        <label><input type="checkbox" id="save-model" checked> 3D 모델</label><span class="muted">vehicle/visual/car.glb</span>
+        <label><input type="checkbox" id="save-cad"> 원본 CAD 사본</label><span class="muted">vehicle/cad/</span>
+      </div>
+      <div class="result" id="rules">-</div>
+      <div class="row">
+        <button class="btn primary" id="save-project">프로젝트에 저장하고 다시 불러오기</button>
+        <button class="btn" id="download">파일로 받기</button>
+      </div>
+      <p class="muted">저장하면 <code>vehicle/builder.yaml</code>이 <code>vehicle.yaml</code>의 같은 항목을 덮어씁니다. 손으로 쓴 vehicle.yaml은 그대로 남습니다.</p>
+      <h3>vehicle/builder.yaml 미리보기</h3>
+      <pre id="yaml-preview"></pre>
+    </section>
+  </aside>
+  <section id="viewport">
+    <canvas id="view"></canvas>
+    <div id="hint">마우스 왼쪽: 회전, 오른쪽: 이동, 휠: 확대. 부품을 클릭하면 선택됩니다.</div>
+    <div id="pickinfo"></div>
+    <div id="busy">불러오는 중…</div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { STLLoader } from "three/addons/loaders/STLLoader.js";
+import { GLTFExporter } from "three/addons/exporters/GLTFExporter.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const wsUrl = params.get("ws") || `ws://${location.hostname || "127.0.0.1"}:8765`;
+const OCCT_URL = params.get("occt") || "https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/";
+
+// Frames: the view works in glTF axes (x forward, y up, z right) like the
+// simulator's models; vsim's car frame is (x forward, y left, z up), so
+// vsim = (gl.x, -gl.z, gl.y). Units: metres after the CAD unit scale.
+const toVsim = (v) => [v.x, -v.z, v.y];
+const fromVsim = (a) => new THREE.Vector3(a[0], a[2], -a[1]);
+
+// --- Materials library (density kg/m^3, look) ---------------------------------------
+const MATERIALS = {
+  cfrp: { label: "CFRP", density: 1600, gltf: "carbon", color: 0x22252a, metalness: 0.1, roughness: 0.4 },
+  aluminium: { label: "알루미늄", density: 2700, gltf: "aluminium", color: 0xb8bec6, metalness: 0.9, roughness: 0.35 },
+  steel: { label: "강철", density: 7850, gltf: "steel", color: 0x9aa0a8, metalness: 0.9, roughness: 0.3 },
+  titanium: { label: "티타늄", density: 4500, gltf: "steel", color: 0x8c8f94, metalness: 0.9, roughness: 0.35 },
+  rubber: { label: "타이어 고무", density: 1150, gltf: "tyre", color: 0x141416, metalness: 0.0, roughness: 0.92 },
+  plastic: { label: "플라스틱", density: 1200, gltf: "part", color: 0x5a6068, metalness: 0.0, roughness: 0.6 },
+  foam: { label: "폼/코어", density: 80, gltf: "part", color: 0xd8d0b8, metalness: 0.0, roughness: 0.9 },
+  battery: { label: "배터리 셀 팩", density: 2400, gltf: "part", color: 0x2d4b6e, metalness: 0.3, roughness: 0.5 },
+  copper: { label: "구리", density: 8960, gltf: "steel", color: 0xb87333, metalness: 1.0, roughness: 0.3 },
+  human: { label: "사람", density: 1000, gltf: "driver_suit", color: 0x1f3b73, metalness: 0.0, roughness: 0.85 },
+};
+const ROLES = {
+  body: "차체 (스프렁)", driver: "드라이버", wheel: "바퀴", upright: "업라이트·허브", link: "서스펜션 링크", ignore: "제외",
+};
+const CORNERS = ["FL", "FR", "RL", "RR"];
+// Viewer colours of bodies the CAD file leaves uncoloured.
+const ROLE_TINT = { body: 0xa8b2c0, driver: 0x3b5ea8, wheel: 0x2b2e34, upright: 0xc9a227, link: 0x7fa0b8, ignore: 0x80868f };
+
+// --- Viewer --------------------------------------------------------------------------
+const canvas = $("view");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1b2028);
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 200);
+camera.position.set(3.2, 2.0, 3.4);
+const controls = new OrbitControls(camera, canvas);
+controls.target.set(0, 0.3, 0);
+controls.enableDamping = true;
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(4, 8, 3);
+scene.add(sun, new THREE.HemisphereLight(0xffffff, 0x404850, 0.5));
+const grid = new THREE.GridHelper(8, 32, 0x3a4250, 0x262c36);
+scene.add(grid);
+const axes = new THREE.Group();  // forward (red), up (green)
+axes.add(new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), 0.8, 0xff5555, 0.12, 0.06));
+axes.add(new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(), 0.8, 0x55dd77, 0.12, 0.06));
+scene.add(axes);
+const carRoot = new THREE.Group();      // CAD -> car frame (orientation, units, origin)
+scene.add(carRoot);
+const markers = new THREE.Group();      // hardpoints, sensors, CG (car frame)
+scene.add(markers);
+
+function resize() {
+  const r = $("viewport").getBoundingClientRect();
+  renderer.setSize(r.width, r.height, false);
+  camera.aspect = r.width / r.height;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener("resize", resize);
+(function animate() { controls.update(); renderer.render(scene, camera); requestAnimationFrame(animate); })();
+
+// --- State ---------------------------------------------------------------------------
+const model = {
+  fileName: "", fileBytes: null, kind: "",
+  bodies: [],          // {id, name, mesh, role, corner, material, massOverride, closed, props, cadColor}
+  selected: -1,
+  frame: { origin: new THREE.Vector3() },  // car frame origin in oriented coordinates
+  result: null,        // computed totals
+  hardpoints: { front: {}, rear: {} },
+  sensors: [],
+  current: null,       // simulator's vehicle parameters (vehicle.params)
+  fromSimulator: false,
+};
+const HARDPOINTS = ["lower_front", "lower_rear", "lower_outer", "upper_front", "upper_rear", "upper_outer",
+  "tie_inner", "tie_outer", "push_outer", "push_inner", "wheel_centre"];
+const HARDPOINT_LABELS = {
+  lower_front: "아래 위시본 앞", lower_rear: "아래 위시본 뒤", lower_outer: "아래 볼조인트", upper_front: "위 위시본 앞",
+  upper_rear: "위 위시본 뒤", upper_outer: "위 볼조인트", tie_inner: "타이로드 안", tie_outer: "타이로드 밖",
+  push_outer: "푸시로드 밖", push_inner: "푸시로드 안 (로커)", wheel_centre: "바퀴 중심",
+};
+
+// --- Loading -------------------------------------------------------------------------
+const axisOptions = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"];
+for (const id of ["forward", "up"]) $(id).innerHTML = axisOptions.map((a) => `<option>${a}</option>`).join("");
+$("forward").value = "+X";
+$("up").value = "+Z";
+const axisVector = (a) => new THREE.Vector3(a[1] === "X" ? 1 : 0, a[1] === "Y" ? 1 : 0, a[1] === "Z" ? 1 : 0).multiplyScalar(a[0] === "-" ? -1 : 1);
+
+let occtPromise = null;
+function occt() {
+  if (!occtPromise) {
+    occtPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = OCCT_URL + "occt-import-js.js";
+      script.onload = () => window.occtimportjs({ locateFile: (name) => OCCT_URL + name }).then(resolve, reject);
+      script.onerror = () => reject(new Error("occt-import-js를 받지 못했습니다 (인터넷 연결 확인)"));
+      document.head.appendChild(script);
+    });
+  }
+  return occtPromise;
+}
+
+async function loadFile(file) {
+  busy(true);
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const ext = file.name.toLowerCase().split(".").pop();
+    let bodies;
+    if (["step", "stp", "iges", "igs", "brep", "brp"].includes(ext)) {
+      bodies = await readCad(bytes, ext);
+      $("units").value = "0.001";
+      $("forward").value = "+X"; $("up").value = "+Z";
+    } else if (ext === "glb" || ext === "gltf") {
+      bodies = await readGltf(bytes.buffer);
+      $("units").value = "1";
+      $("forward").value = "+X"; $("up").value = "+Y";
+    } else if (ext === "stl") {
+      const geometry = new STLLoader().parse(bytes.buffer);
+      bodies = [{ name: file.name.replace(/\.stl$/i, ""), geometry, color: null }];
+      $("units").value = "0.001";
+    } else {
+      throw new Error(`지원하지 않는 형식: .${ext}`);
+    }
+    model.fileName = file.name;
+    model.fileBytes = bytes;
+    model.kind = ext;
+    model.fromSimulator = false;
+    setBodies(bodies);
+    toast(`${file.name}: 부품 ${bodies.length}개`);
+  } catch (error) {
+    toast(String(error.message || error), "error");
+  } finally {
+    busy(false);
+  }
+}
+
+async function readCad(bytes, ext) {
+  const lib = await occt();
+  const reader = ext.startsWith("st") ? lib.ReadStepFile : ext.startsWith("ig") ? lib.ReadIgesFile : lib.ReadBrepFile;
+  const result = reader(bytes, { linearUnit: "millimeter", linearDeflectionType: "bounding_box_ratio", linearDeflection: 0.001, angularDeflection: 0.3 });
+  if (!result.success) throw new Error("CAD 파일을 읽지 못했습니다");
+  // Mesh names: the owning node (assembly product) is usually the meaningful one.
+  const names = new Map();
+  const walk = (node, path) => {
+    for (const i of node.meshes) names.set(i, node.name || path);
+    node.children.forEach((c) => walk(c, c.name || path));
+  };
+  walk(result.root, "");
+  return result.meshes.map((m, i) => {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(m.attributes.position.array, 3));
+    if (m.attributes.normal) geometry.setAttribute("normal", new THREE.Float32BufferAttribute(m.attributes.normal.array, 3));
+    geometry.setIndex(m.index.array);
+    if (!m.attributes.normal) geometry.computeVertexNormals();
+    return { name: names.get(i) || m.name || `body ${i + 1}`, geometry, color: m.color || null };
+  });
+}
+
+async function readGltf(buffer) {
+  const gltf = await new GLTFLoader().parseAsync(buffer, "");
+  gltf.scene.updateMatrixWorld(true);
+  const bodies = [];
+  // A top-level node with extras.role (the simulator's own format) gives the role.
+  const roleOf = (o) => { for (let n = o; n; n = n.parent) if (n.userData && n.userData.role) return n; return null; };
+  gltf.scene.traverse((o) => {
+    if (!o.isMesh) return;
+    const tagged = roleOf(o);
+    const geometry = o.geometry.clone().applyMatrix4(o.matrixWorld);
+    bodies.push({ name: tagged ? tagged.name : (o.name || o.parent?.name || "mesh"), geometry, color: o.material?.color ? [o.material.color.r, o.material.color.g, o.material.color.b] : null,
+      material: o.material?.name, extras: tagged ? tagged.userData : null });
+  });
+  return bodies;
+}
+
+function setBodies(list) {
+  carRoot.clear();
+  model.bodies = list.map((b, id) => {
+    const material = new THREE.MeshStandardMaterial({ color: b.color ? new THREE.Color(...b.color) : 0x9aa4b2, metalness: 0.2, roughness: 0.55, side: THREE.DoubleSide });
+    material.userData.cadColor = Boolean(b.color);
+    const mesh = new THREE.Mesh(b.geometry, material);
+    mesh.userData.bodyId = id;
+    carRoot.add(mesh);
+    return { id, name: b.name, mesh, role: "body", corner: -1, material: "cfrp", massOverride: null, closed: false, props: null,
+      cadColor: b.color, gltfMaterial: b.material || null, extras: b.extras || null };
+  });
+  guessRoles();
+  applyFrame();
+}
+
+// --- Role and material guesses ------------------------------------------------------------
+function guessRoles() {
+  for (const b of model.bodies) {
+    const n = b.name.toLowerCase();
+    const x = b.extras;
+    if (x && x.role) {
+      // The simulator's links are unit tubes placed at run time: hide them.
+      b.role = x.role === "steering_wheel" ? "body" : x.role === "link" ? "ignore" : x.role;
+    } else if (/(wheel|rim|tyre|tire|휠|타이어|reifen|felge)/.test(n)) b.role = "wheel";
+    else if (/(upright|knuckle|hub|업라이트|허브|radtr)/.test(n)) b.role = "upright";
+    else if (/(wishbone|a-?arm|control.?arm|tie.?rod|toe|push.?rod|pull.?rod|위시본|타이로드|푸시로드|lenker)/.test(n)) b.role = "link";
+    else if (/(driver|human|dummy|percy|manikin|드라이버|운전자|fahrer)/.test(n)) b.role = "driver";
+    else b.role = "body";
+    if (b.gltfMaterial) {
+      b.material = { carbon: "cfrp", aluminium: "aluminium", steel: "steel", tyre: "rubber", driver_suit: "human", helmet: "plastic" }[b.gltfMaterial] || b.material;
+    }
+    if (/(carbon|cfrp|mono|chassis|tub|wing|윙|카본)/.test(n)) b.material = "cfrp";
+    else if (/(alu|al6061|al7075|알루미)/.test(n)) b.material = "aluminium";
+    else if (/(steel|frame|tube|강|4130)/.test(n)) b.material = "steel";
+    else if (/(tyre|tire|타이어)/.test(n)) b.material = "rubber";
+    else if (/(batter|accu|accumulator|배터리|축전)/.test(n)) b.material = "battery";
+    else if (b.role === "driver") b.material = "human";
+    else if (b.role === "wheel") b.material = "aluminium";
+  }
+}
+
+// --- Frame, mass properties -------------------------------------------------------------
+// Orientation and units: CAD vectors into the car's glTF axes.
+function orientationMatrix() {
+  const f = axisVector($("forward").value), u = axisVector($("up").value);
+  if (Math.abs(f.dot(u)) > 0.5) return null;
+  const r = new THREE.Vector3().crossVectors(f, u);   // right (gl +z) in CAD axes
+  const s = Number($("units").value);
+  const m = new THREE.Matrix4().set(
+    f.x * s, f.y * s, f.z * s, 0,
+    u.x * s, u.y * s, u.z * s, 0,
+    r.x * s, r.y * s, r.z * s, 0,
+    0, 0, 0, 1);
+  return m;
+}
+
+// Welded triangle soup of a geometry under matrix m.
+function weldedTriangles(geometry, m) {
+  const pos = geometry.attributes.position, index = geometry.index;
+  const count = index ? index.count : pos.count;
+  const v = new THREE.Vector3();
+  const key = new Map(), points = [];
+  const lookup = new Array(pos.count);
+  const size = new THREE.Box3().setFromBufferAttribute(pos).getSize(new THREE.Vector3()).length() || 1;
+  const tol = 1e-6 * size;
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const k = `${Math.round(v.x / tol)},${Math.round(v.y / tol)},${Math.round(v.z / tol)}`;
+    if (!key.has(k)) { key.set(k, points.length); points.push(v.clone().applyMatrix4(m)); }
+    lookup[i] = key.get(k);
+  }
+  const tris = [];
+  for (let t = 0; t + 2 < count; t += 3) {
+    const a = lookup[index ? index.getX(t) : t], b = lookup[index ? index.getX(t + 1) : t + 1], c = lookup[index ? index.getX(t + 2) : t + 2];
+    if (a !== b && b !== c && c !== a) tris.push([a, b, c]);
+  }
+  return { points, tris };
+}
+
+function isClosed(tris) {
+  const edges = new Map();
+  for (const [a, b, c] of tris) for (const [p, q] of [[a, b], [b, c], [c, a]]) {
+    const k = p < q ? `${p},${q}` : `${q},${p}`;
+    edges.set(k, (edges.get(k) || 0) + 1);
+  }
+  for (const n of edges.values()) if (n !== 2) return false;
+  return edges.size > 0;
+}
+
+// Same formulas as python/vsim/massprops.py; shells use area x thickness.
+function meshProperties(points, tris, density, closed, thickness) {
+  let volume = 0, area = 0;
+  const first = new THREE.Vector3();
+  const second = Array.from({ length: 3 }, () => [0, 0, 0]);
+  const add = (w, vs, div) => {
+    // w * sum over v in vs of v v' plus s s' / div
+    const s = vs[0].clone().add(vs[1]).add(vs[2]);
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+      let acc = s.getComponent(i) * s.getComponent(j);
+      for (const v of vs) acc += v.getComponent(i) * v.getComponent(j);
+      second[i][j] += w * acc / div;
+    }
+  };
+  for (const [ia, ib, ic] of tris) {
+    const a = points[ia], b = points[ib], c = points[ic];
+    if (closed) {
+      const v = a.dot(new THREE.Vector3().crossVectors(b, c)) / 6;
+      volume += v;
+      first.addScaledVector(a.clone().add(b).add(c), v / 4);
+      add(v, [a, b, c], 20);
+    } else {
+      const A = new THREE.Vector3().crossVectors(b.clone().sub(a), c.clone().sub(a)).length() / 2;
+      area += A;
+      first.addScaledVector(a.clone().add(b).add(c), A / 3);
+      add(A, [a, b, c], 12);
+    }
+  }
+  let measure = closed ? volume : area * thickness;
+  let sign = 1;
+  if (closed && volume < 0) { sign = -1; measure = -volume; }
+  const scale = closed ? sign : thickness;
+  if (!(measure > 0)) return null;
+  const centroid = first.multiplyScalar(scale / measure);
+  const mass = density * measure;
+  const C = second.map((row) => row.map((x) => x * scale));
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) C[i][j] -= measure * centroid.getComponent(i) * centroid.getComponent(j);
+  const tr = C[0][0] + C[1][1] + C[2][2];
+  const inertia = C.map((row, i) => row.map((x, j) => density * ((i === j ? tr : 0) - x)));
+  return { mass, measure, closed, centroid, inertia };
+}
+
+function scaleProps(p, mass) {
+  const k = p.mass > 0 ? mass / p.mass : 0;
+  return { ...p, mass, inertia: p.inertia.map((r) => r.map((x) => x * k)) };
+}
+
+function combine(list) {
+  const mass = list.reduce((s, p) => s + p.mass, 0);
+  if (!(mass > 0)) return null;
+  const centroid = new THREE.Vector3();
+  for (const p of list) centroid.addScaledVector(p.centroid, p.mass / mass);
+  const inertia = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  for (const p of list) {
+    const d = p.centroid.clone().sub(centroid), dd = d.lengthSq();
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+      inertia[i][j] += p.inertia[i][j] + p.mass * ((i === j ? dd : 0) - d.getComponent(i) * d.getComponent(j));
+    }
+  }
+  return { mass, centroid, inertia };
+}
+
+// Orientation, then mass properties in that frame, then the origin: the
+// ground below the CG.
+function applyFrame() {
+  const m = orientationMatrix();
+  if (!m) { toast("앞쪽 축과 위쪽 축이 같은 방향입니다", "error"); return; }
+  const thickness = 0.002;
+  for (const b of model.bodies) {
+    const { points, tris } = weldedTriangles(b.mesh.geometry, m);
+    b.closed = isClosed(tris);
+    b.raw = meshProperties(points, tris, MATERIALS[b.material].density, b.closed, thickness);
+    const box = new THREE.Box3().setFromPoints(points);
+    b.box = box;
+  }
+  computeTotals(m);
+}
+
+// b.raw is computed with the body's material (applyFrame reruns on a
+// material change); a measured mass scales it.
+function bodyProps(b) {
+  if (!b.raw) return null;
+  return b.massOverride !== null && b.massOverride > 0 ? scaleProps(b.raw, b.massOverride) : b.raw;
+}
+
+function computeTotals(m = orientationMatrix()) {
+  if (!model.bodies.length || !m) return;
+  // Wheels: centres and corners from their boxes.
+  const wheels = model.bodies.filter((b) => b.role === "wheel" && b.box);
+  let ground = Infinity;
+  for (const b of model.bodies) if (b.role !== "ignore" && b.box) ground = Math.min(ground, (b.role === "wheel" ? b.box.min.y : Infinity));
+  if (!isFinite(ground)) ground = Math.min(...model.bodies.filter((b) => b.box).map((b) => b.box.min.y));
+  const meanX = wheels.length ? wheels.reduce((s, b) => s + b.box.getCenter(new THREE.Vector3()).x, 0) / wheels.length : 0;
+  for (const b of model.bodies) {
+    const c = b.box ? b.box.getCenter(new THREE.Vector3()) : new THREE.Vector3();
+    b.corner = (c.x >= meanX ? 0 : 2) + (c.z > 0 ? 1 : 0);   // gl +z is right
+  }
+  const hubs = [null, null, null, null];
+  const groups = [[], [], [], []];
+  for (const b of wheels) groups[b.corner].push(b);
+  groups.forEach((list, i) => {
+    if (!list.length) return;
+    const box = new THREE.Box3();
+    list.forEach((b) => box.union(b.box));
+    const size = box.getSize(new THREE.Vector3());
+    hubs[i] = { centre: box.getCenter(new THREE.Vector3()), radius: Math.max(size.x, size.y) / 2, width: size.z };
+  });
+
+  // Mass: sprung (body, driver, links/2) and unsprung per corner.
+  const parts = [], unsprung = [[], [], [], []];
+  for (const b of model.bodies) {
+    if (b.role === "ignore") continue;
+    const p = bodyProps(b);
+    b.props = p;
+    if (!p) continue;
+    if (b.role === "wheel" || b.role === "upright") unsprung[b.corner].push(p);
+    else if (b.role === "link") { unsprung[b.corner].push(scaleProps(p, p.mass / 2)); parts.push(scaleProps(p, p.mass / 2)); }
+    else parts.push(p);
+  }
+  const frontAxleX = hubs[0] && hubs[1] ? (hubs[0].centre.x + hubs[1].centre.x) / 2 : null;
+  if ($("driver-add").checked && !model.bodies.some((b) => b.role === "driver") && frontAxleX !== null) {
+    const pos = new THREE.Vector3(frontAxleX - Number($("driver-x").value), ground + Number($("driver-z").value), 0);
+    const mass = Number($("driver-mass").value);
+    // A 0.5 x 0.45 x 0.9 m block of the driver's mass, roughly.
+    const inertia = [[mass * (0.45 ** 2 + 0.9 ** 2) / 12, 0, 0], [0, mass * (0.5 ** 2 + 0.45 ** 2) / 12, 0], [0, 0, mass * (0.5 ** 2 + 0.9 ** 2) / 12]];
+    parts.push({ mass, centroid: pos, inertia });
+  }
+  const unsprungTotals = unsprung.map((list) => (list.length ? combine(list) : null));
+  const total = combine([...parts, ...unsprungTotals.filter(Boolean)]);
+  if (!total) { model.result = null; renderMass(); return; }
+
+  // Origin: the ground below the CG.
+  const origin = new THREE.Vector3(total.centroid.x, ground, total.centroid.z);
+  model.frame.origin = origin;
+  const shift = new THREE.Matrix4().makeTranslation(-origin.x, -origin.y, -origin.z);
+  carRoot.matrixAutoUpdate = false;
+  carRoot.matrix.copy(shift.clone().multiply(m));
+  carRoot.updateMatrixWorld(true);
+  const local = (v) => v.clone().sub(origin);   // oriented -> car frame (gl axes)
+  // Spin inertia of one front wheel's rotating bodies about its axle (gl z).
+  const spinning = groups[0].map(bodyProps).filter(Boolean);
+  const wheelSpin = spinning.length ? combine(spinning) : null;
+  model.result = {
+    total, parts, unsprung: unsprungTotals,
+    hubs: hubs.map((h) => (h ? { ...h, centre: local(h.centre) } : null)),
+    cg: local(total.centroid), wheelInertia: wheelSpin ? wheelSpin.inertia[2][2] : null,
+    frontAxleX: frontAxleX !== null ? frontAxleX - origin.x : null,
+    rearAxleX: hubs[2] && hubs[3] ? (hubs[2].centre.x + hubs[3].centre.x) / 2 - origin.x : null,
+  };
+  // Hub wheel centres feed the hardpoint table.
+  for (const [axle, i] of [["front", 0], ["rear", 2]]) {
+    const h = model.result.hubs[i];
+    if (h) model.hardpoints[axle].wheel_centre = [0, Math.abs(toVsim(h.centre)[1]), toVsim(h.centre)[2]];
+  }
+  frameView();
+  renderAll();
+}
+
+function frameView() {
+  const box = new THREE.Box3().setFromObject(carRoot);
+  if (box.isEmpty()) return;
+  const size = box.getSize(new THREE.Vector3()).length();
+  controls.target.copy(box.getCenter(new THREE.Vector3()));
+  if (!model.framed) {
+    camera.position.copy(controls.target).add(new THREE.Vector3(size * 0.8, size * 0.5, size * 0.8));
+    model.framed = true;
+  }
+}
+
+// --- Rendering of the panels --------------------------------------------------------------
+const fmt = (v, d = 3) => (v === null || v === undefined || !isFinite(v) ? "-" : Number(v).toFixed(d));
+function renderAll() { renderModelInfo(); renderBodies(); renderMass(); renderHardpoints(); renderSensors(); renderMarkers(); renderSave(); }
+
+function renderModelInfo() {
+  const n = model.bodies.length;
+  const closed = model.bodies.filter((b) => b.closed).length;
+  $("model-info").innerHTML = n ? `<b>${model.fileName || "모델"}</b><br>부품 ${n}개 (닫힌 솔리드 ${closed}, 나머지는 2 mm 판으로 계산)` : "모델 없음";
+}
+
+function renderBodies() {
+  const tbody = $("bodies").tBodies[0];
+  tbody.innerHTML = "";
+  model.bodies.forEach((b) => {
+    const tr = document.createElement("tr");
+    if (b.id === model.selected) tr.className = "selected";
+    const roleSel = `<select data-k="role">${Object.entries(ROLES).map(([k, v]) => `<option value="${k}" ${k === b.role ? "selected" : ""}>${v}</option>`).join("")}</select>`;
+    const matSel = `<select data-k="material">${Object.entries(MATERIALS).map(([k, v]) => `<option value="${k}" ${k === b.material ? "selected" : ""}>${v.label}</option>`).join("")}</select>`;
+    const corner = ["wheel", "upright", "link"].includes(b.role) && b.corner >= 0 ? ` ${CORNERS[b.corner]}` : "";
+    tr.innerHTML = `<td title="${b.name}">${b.name.slice(0, 22)}${corner}</td><td>${roleSel}</td><td>${matSel}</td><td class="num">${fmt(b.props?.mass, 2)}${b.massOverride ? "*" : ""}</td>`;
+    tr.onclick = (e) => { if (e.target.tagName !== "SELECT") select(b.id); };
+    tr.querySelectorAll("select").forEach((s) => s.onchange = () => { b[s.dataset.k] = s.value; if (s.dataset.k === "material") applyFrame(); else computeTotals(); });
+    tbody.appendChild(tr);
+  });
+  const b = model.bodies[model.selected];
+  $("body-detail").innerHTML = b ? `<b>${b.name}</b><br>${b.closed ? "닫힌 솔리드" : "열린 면 (판 2 mm로 계산)"}, ${b.props ? `${fmt(b.props.mass, 3)} kg` : "질량 없음"}
+    <div class="row">측정 질량 <input type="number" id="override" step="0.01" placeholder="kg" value="${b.massOverride ?? ""}"> kg <span class="muted">입력하면 이 값으로 (관성은 비례)</span></div>` : "없음";
+  const o = $("override");
+  if (o) o.onchange = () => { b.massOverride = o.value === "" ? null : Number(o.value); computeTotals(); };
+  for (const x of model.bodies) {
+    x.mesh.visible = !$("only-selected").checked || x.id === model.selected;
+    x.mesh.material.emissive.setHex(x.id === model.selected ? 0x2a5a8a : 0x000000);
+    if (!x.mesh.material.userData.cadColor) x.mesh.material.color.setHex(ROLE_TINT[x.role]);
+    x.mesh.material.transparent = x.role === "ignore";
+    x.mesh.material.opacity = x.role === "ignore" ? 0.2 : 1;
+  }
+}
+
+function select(id) {
+  model.selected = id;
+  renderBodies();
+}
+
+function renderMass() {
+  const r = model.result;
+  if (!r) { $("mass-result").textContent = "바퀴 4개(역할 '바퀴')가 있어야 축거와 무게중심 기준을 정할 수 있습니다"; return; }
+  const I = r.total.inertia;
+  // vsim axes: roll = gl x, pitch = gl z, yaw = gl y; Ixz(vsim) = Ixy(gl)
+  const front = r.frontAxleX, rear = r.rearAxleX;
+  const wheelbase = front !== null && rear !== null ? front - rear : null;
+  const frontShare = wheelbase ? (0 - rear) / wheelbase : null;
+  const unsprung = r.unsprung.map((u) => (u ? u.mass : 0));
+  const tf = r.hubs[0] && r.hubs[1] ? Math.abs(r.hubs[0].centre.z - r.hubs[1].centre.z) : null;
+  const tr = r.hubs[2] && r.hubs[3] ? Math.abs(r.hubs[2].centre.z - r.hubs[3].centre.z) : null;
+  const radius = r.hubs[0]?.radius;
+  model.summary = {
+    mass_kg: r.total.mass, cg_height_m: r.cg.y, cg_to_front_axle_m: front,
+    wheelbase_m: wheelbase, track_front_m: tf, track_rear_m: tr,
+    yaw_inertia_kgm2: I[1][1], roll_inertia_kgm2: I[0][0], pitch_inertia_kgm2: I[2][2], product_xz_kgm2: -I[0][1],
+    unsprung_mass_kg: unsprung, unloaded_radius_m: radius, tyre_width_m: r.hubs[0]?.width, wheel_inertia_kgm2: r.wheelInertia,
+  };
+  const s = model.summary;
+  $("mass-result").innerHTML = `
+    <table>
+      <tr><td>전체 질량</td><td class="num"><b>${fmt(s.mass_kg, 1)}</b> kg</td></tr>
+      <tr><td>무게중심 높이</td><td class="num">${fmt(s.cg_height_m)} m</td></tr>
+      <tr><td>무게중심 → 앞차축</td><td class="num">${fmt(s.cg_to_front_axle_m)} m (앞 ${fmt(frontShare * 100, 1)} %)</td></tr>
+      <tr><td>축거</td><td class="num">${fmt(s.wheelbase_m)} m</td></tr>
+      <tr><td>윤거 앞 / 뒤</td><td class="num">${fmt(tf)} / ${fmt(tr)} m</td></tr>
+      <tr><td>요 / 롤 / 피치 관성</td><td class="num">${fmt(s.yaw_inertia_kgm2, 1)} / ${fmt(s.roll_inertia_kgm2, 1)} / ${fmt(s.pitch_inertia_kgm2, 1)} kg·m²</td></tr>
+      <tr><td>언스프렁 FL FR RL RR</td><td class="num">${unsprung.map((u) => fmt(u, 1)).join(" ")} kg</td></tr>
+      <tr><td>타이어 반경 / 폭</td><td class="num">${fmt(radius)} / ${fmt(s.tyre_width_m)} m</td></tr>
+      <tr><td>바퀴 회전 관성 (앞 왼쪽)</td><td class="num">${fmt(s.wheel_inertia_kgm2, 4)} kg·m²</td></tr>
+    </table>`;
+  // Solid CAD (a wheel modelled as a full cylinder) overestimates: ask for the scale reading.
+  const heavy = model.bodies.filter((b) => ["wheel", "upright", "link"].includes(b.role) && b.props && b.props.mass > 25 && !b.massOverride);
+  if (heavy.length) {
+    $("mass-result").innerHTML += `<p class="warn">${heavy.map((b) => b.name).slice(0, 4).join(", ")}${heavy.length > 4 ? " …" : ""}: 부품 하나가 25 kg 넘습니다.
+      속이 꽉 찬 CAD일 수 있으니 2 부품 탭에서 측정 질량을 넣으세요.</p>`;
+  }
+}
+
+function renderHardpoints() {
+  const axle = $("axle").value;
+  const tbody = $("hardpoints").tBodies[0];
+  tbody.innerHTML = "";
+  for (const name of HARDPOINTS) {
+    const p = model.hardpoints[axle][name];
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${HARDPOINT_LABELS[name]}</td>` + [0, 1, 2].map((i) => `<td class="num"><input type="number" step="0.001" data-i="${i}" value="${p ? p[i].toFixed(3) : ""}" style="width:62px"></td>`).join("")
+      + `<td>${name === "wheel_centre" ? "" : `<button class="btn" data-pick="${name}">찍기</button>`}</td>`;
+    tr.querySelectorAll("input").forEach((input) => input.onchange = () => {
+      const q = model.hardpoints[axle][name] || [0, 0, 0];
+      q[Number(input.dataset.i)] = Number(input.value);
+      model.hardpoints[axle][name] = q;
+      renderMarkers(); renderSave();
+    });
+    const button = tr.querySelector("button");
+    if (button) button.onclick = () => startPick({ kind: "hardpoint", axle, name, button });
+    tbody.appendChild(tr);
+  }
+}
+
+let sensorCount = 0;
+$("sensor-add").onclick = () => {
+  const type = $("sensor-type").value;
+  model.sensors.push({ name: `${type}_${++sensorCount}`, type, position: [0, 0, 0.3], orientation_deg: [0, 0, 0] });
+  renderSensors();
+  startPick({ kind: "sensor", index: model.sensors.length - 1 });
+};
+function renderSensors() {
+  const tbody = $("sensors").tBodies[0];
+  tbody.innerHTML = "";
+  model.sensors.forEach((s, i) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td><input type="text" value="${s.name}" style="width:90px"></td><td>${s.type}</td>
+      <td class="num">${s.position.map((v) => v.toFixed(3)).join(", ")}</td>
+      <td><input type="text" value="${s.orientation_deg.join(", ")}" style="width:70px"></td>
+      <td><button class="btn" data-a="pick">찍기</button> <button class="btn" data-a="del">✕</button></td>`;
+    const [nameInput, orientInput] = tr.querySelectorAll("input");
+    nameInput.onchange = () => { s.name = nameInput.value.replace(/[^A-Za-z0-9_]/g, "_"); renderSave(); };
+    orientInput.onchange = () => { const v = orientInput.value.split(",").map(Number); if (v.length === 3 && v.every(isFinite)) s.orientation_deg = v; renderSave(); };
+    tr.querySelector('[data-a="pick"]').onclick = (e) => startPick({ kind: "sensor", index: i, button: e.target });
+    tr.querySelector('[data-a="del"]').onclick = () => { model.sensors.splice(i, 1); renderSensors(); renderMarkers(); renderSave(); };
+    tbody.appendChild(tr);
+  });
+}
+
+// Markers in the car frame: hardpoints (both sides), sensors, CG.
+function renderMarkers() {
+  markers.clear();
+  const r = model.result;
+  if (!r) return;
+  const ball = (pos, color, size = 0.012) => {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(size, 12, 8), new THREE.MeshBasicMaterial({ color, depthTest: false }));
+    m.position.copy(pos);
+    m.renderOrder = 10;
+    markers.add(m);
+  };
+  ball(new THREE.Vector3(r.cg.x, r.cg.y, r.cg.z), 0xffd23f, 0.03);
+  for (const [axle, axleX] of [["front", r.frontAxleX], ["rear", r.rearAxleX]]) {
+    if (axleX === null) continue;
+    for (const [name, p] of Object.entries(model.hardpoints[axle])) {
+      if (!p) continue;
+      for (const side of [1, -1]) ball(fromVsim([axleX + p[0], side * p[1], p[2]]), name === "wheel_centre" ? 0x3ecf8e : 0x4fb3ff);
+    }
+  }
+  for (const s of model.sensors) {
+    const box = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.025, 0.04), new THREE.MeshBasicMaterial({ color: 0xff8c42, depthTest: false }));
+    box.position.copy(fromVsim(s.position));
+    box.renderOrder = 10;
+    markers.add(box);
+  }
+}
+
+// --- Picking ----------------------------------------------------------------------------
+let picking = null;
+const raycaster = new THREE.Raycaster();
+function startPick(request) {
+  document.querySelectorAll(".picking").forEach((b) => b.classList.remove("picking"));
+  picking = request;
+  if (request.button) request.button.classList.add("picking");
+  $("hint").textContent = "모델에서 점을 클릭하세요 (Esc: 취소)";
+}
+window.addEventListener("keydown", (e) => { if (e.key === "Escape") { picking = null; renderHardpoints(); $("hint").textContent = "선택 취소"; } });
+
+let downAt = null;
+canvas.addEventListener("pointerdown", (e) => { downAt = [e.clientX, e.clientY]; });
+canvas.addEventListener("pointerup", (e) => {
+  if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 4) return;  // a drag, not a click
+  const rect = canvas.getBoundingClientRect();
+  pickAt((e.clientX - rect.left) / rect.width * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+});
+
+// Picks at normalised device coordinates; returns the car-frame point (vsim) or null.
+function pickAt(nx, ny) {
+  raycaster.setFromCamera(new THREE.Vector2(nx, ny), camera);
+  const hits = raycaster.intersectObjects(model.bodies.filter((b) => b.mesh.visible).map((b) => b.mesh), false);
+  if (!hits.length) return null;
+  const hit = hits[0];
+  let point = hit.point.clone();
+  if ($("snap").checked && hit.face) {
+    const pos = hit.object.geometry.attributes.position;
+    let best = null;
+    for (const i of [hit.face.a, hit.face.b, hit.face.c]) {
+      const v = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(hit.object.matrixWorld);
+      if (v.distanceTo(point) < 0.005 && (!best || v.distanceTo(point) < best.distanceTo(point))) best = v;
+    }
+    if (best) point = best;
+  }
+  const v = toVsim(point);
+  $("pickinfo").style.display = "block";
+  $("pickinfo").textContent = `x ${v[0].toFixed(3)}  y ${v[1].toFixed(3)}  z ${v[2].toFixed(3)} m  (${model.bodies[hit.object.userData.bodyId].name})`;
+  if (!picking) { select(hit.object.userData.bodyId); return v; }
+  if (picking.kind === "hardpoint") {
+    const r = model.result;
+    const axleX = picking.axle === "front" ? r?.frontAxleX : r?.rearAxleX;
+    if (axleX === null || axleX === undefined) { toast("바퀴 역할을 먼저 정하세요", "error"); return v; }
+    model.hardpoints[picking.axle][picking.name] = [v[0] - axleX, Math.abs(v[1]), v[2]];
+    renderHardpoints();
+  } else if (picking.kind === "sensor") {
+    model.sensors[picking.index].position = v;
+    renderSensors();
+  }
+  picking = null;
+  $("hint").textContent = "찍었습니다";
+  renderMarkers(); renderSave();
+  return v;
+}
+
+// --- Output: builder.yaml and the glTF model ------------------------------------------------
+const num = (v, d = 4) => Number(Number(v).toFixed(d));
+function builderYaml() {
+  const s = model.summary || {};
+  const lines = [`# Written by the vehicle builder (ui/builder) from ${model.fileName || "the simulator's model"}, ${new Date().toISOString().slice(0, 10)}.`,
+    "# Overrides the same keys of vehicle.yaml; delete a line to fall back to vehicle.yaml."];
+  if ($("save-mass").checked && model.result) {
+    lines.push(`mass_kg: ${num(s.mass_kg, 2)}`, `yaw_inertia_kgm2: ${num(s.yaw_inertia_kgm2, 2)}`, `roll_inertia_kgm2: ${num(s.roll_inertia_kgm2, 2)}`,
+      `pitch_inertia_kgm2: ${num(s.pitch_inertia_kgm2, 2)}`, `cg_height_m: ${num(s.cg_height_m)}`);
+    if (s.cg_to_front_axle_m !== null) lines.push(`cg_to_front_axle_m: ${num(s.cg_to_front_axle_m)}`);
+    lines.push(`unsprung_mass_kg: {fl: ${num(s.unsprung_mass_kg[0], 2)}, fr: ${num(s.unsprung_mass_kg[1], 2)}, rl: ${num(s.unsprung_mass_kg[2], 2)}, rr: ${num(s.unsprung_mass_kg[3], 2)}}`);
+  }
+  if ($("save-geometry").checked && model.result && s.wheelbase_m) {
+    lines.push(`wheelbase_m: ${num(s.wheelbase_m)}`, `track_front_m: ${num(s.track_front_m)}`, `track_rear_m: ${num(s.track_rear_m)}`);
+    if (s.unloaded_radius_m) {
+      lines.push("wheel:", `  unloaded_radius_m: ${num(s.unloaded_radius_m)}`, `  radius_m: ${num(s.unloaded_radius_m - Number($("tyre-deflection").value))}`);
+      if (s.wheel_inertia_kgm2) lines.push(`  inertia_kgm2: ${num(s.wheel_inertia_kgm2)}`);
+      lines.push("tire:", `  width_m: ${num(s.tyre_width_m)}`);
+    }
+  }
+  if ($("save-hardpoints").checked) {
+    const axles = ["front", "rear"].filter((a) => Object.keys(model.hardpoints[a]).length);
+    if (axles.length) {
+      lines.push("suspension:");
+      for (const a of axles) {
+        lines.push(`  ${a}:`, "    hardpoints:");
+        for (const name of HARDPOINTS) {
+          const p = model.hardpoints[a][name];
+          if (p) lines.push(`      ${name}: [${p.map((v) => num(v)).join(", ")}]`);
+        }
+      }
+    }
+  }
+  if ($("save-sensors").checked && model.sensors.length) {
+    lines.push("sensors:");
+    for (const x of model.sensors) {
+      lines.push(`  - {name: ${x.name}, type: ${x.type}, position: [${x.position.map((v) => num(v)).join(", ")}], orientation_deg: [${x.orientation_deg.join(", ")}]}`);
+    }
+  }
+  if ($("save-model").checked && model.bodies.length) lines.push("visual:", "  model: vehicle/visual/car.glb");
+  return lines.join("\n") + "\n";
+}
+
+// The car in the simulator's glTF format: body, wheels and uprights per corner.
+async function carGlb() {
+  const root = new THREE.Scene();
+  const r = model.result;
+  const cgHeight = r ? r.cg.y : 0.3;
+  const body = new THREE.Group();
+  body.name = "body";
+  body.userData = { role: "body", cg_height: cgHeight };
+  root.add(body);
+  const corners = [0, 1, 2, 3].map((i) => {
+    const hub = r?.hubs[i];
+    if (!hub) return null;
+    const make = (role) => {
+      const g = new THREE.Group();
+      g.name = `${role}_${CORNERS[i].toLowerCase()}`;
+      g.position.copy(hub.centre);
+      g.userData = { role, corner: i, pivot: toVsim(hub.centre), cg_height: cgHeight };
+      root.add(g);
+      return g;
+    };
+    return { wheel: make("wheel"), upright: make("upright"), hub: hub.centre };
+  });
+  carRoot.updateMatrixWorld(true);
+  for (const b of model.bodies) {
+    if (b.role === "ignore") continue;
+    const lib = MATERIALS[b.material];
+    const geometry = b.mesh.geometry.clone().applyMatrix4(b.mesh.matrixWorld);
+    const material = new THREE.MeshStandardMaterial({
+      name: b.role === "body" && b.cadColor && lib.gltf === "part" ? "paint" : lib.gltf,
+      color: b.cadColor ? new THREE.Color(...b.cadColor) : new THREE.Color(lib.color),
+      metalness: lib.metalness, roughness: lib.roughness });
+    const corner = corners[b.corner];
+    let parent = body;
+    if (corner && b.role === "wheel") parent = corner.wheel;
+    if (corner && b.role === "upright") parent = corner.upright;
+    if (parent !== body) geometry.translate(-corner.hub.x, -corner.hub.y, -corner.hub.z);
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = b.name;
+    parent.add(mesh);
+  }
+  return await new GLTFExporter().parseAsync(root, { binary: true });
+}
+
+function renderSave() {
+  $("yaml-preview").textContent = builderYaml();
+  const s = model.summary;
+  if (!s) { $("rules").textContent = "-"; return; }
+  const checks = [
+    ["축거 ≥ 1525 mm", s.wheelbase_m >= 1.525, `${fmt(s.wheelbase_m * 1000, 0)} mm`],
+    ["작은 윤거 ≥ 큰 윤거의 75 %", Math.min(s.track_front_m, s.track_rear_m) / Math.max(s.track_front_m, s.track_rear_m) >= 0.75, `${fmt(Math.min(s.track_front_m, s.track_rear_m) / Math.max(s.track_front_m, s.track_rear_m) * 100, 1)} %`],
+  ];
+  $("rules").innerHTML = "<b>FSAE 형상 점검</b><br>" + checks.map(([t, ok, v]) => `<span class="${ok ? "good" : "bad"}">${ok ? "통과" : "위반"}</span> ${t}: ${v}`).join("<br>")
+    + '<br><span class="muted">전기·출력 점검: python -m vsim.rules &lt;프로젝트&gt;</span>';
+}
+
+function bufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+async function filesToSave() {
+  const files = [{ path: "vehicle/builder.yaml", text: builderYaml() }];
+  if ($("save-model").checked && model.bodies.length) files.push({ path: "vehicle/visual/car.glb", base64: bufferToBase64(await carGlb()) });
+  if ($("save-cad").checked && model.fileBytes && ["step", "stp", "stl"].includes(model.kind)) {
+    files.push({ path: `vehicle/cad/${model.fileName.replace(/[^A-Za-z0-9_.-]/g, "_")}`, base64: bufferToBase64(model.fileBytes) });
+  }
+  return files;
+}
+
+$("save-project").onclick = async () => {
+  if (!socket || socket.readyState !== WebSocket.OPEN) { toast("vsim-core에 연결되어 있지 않습니다. '파일로 받기'를 쓰세요", "error"); return; }
+  busy(true);
+  try {
+    send("vehicle.import", { files: await filesToSave(), reload: true });
+    toast("저장했습니다. 시뮬레이터가 새 차량으로 다시 시작합니다");
+  } finally { busy(false); }
+};
+$("download").onclick = async () => {
+  for (const f of await filesToSave()) {
+    const blob = f.base64 ? new Blob([Uint8Array.from(atob(f.base64), (c) => c.charCodeAt(0))]) : new Blob([f.text], { type: "text/yaml" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = f.path.split("/").pop();
+    a.click();
+  }
+};
+
+// --- Simulator link ---------------------------------------------------------------------
+let socket = null;
+function connect() {
+  socket = new WebSocket(wsUrl);
+  socket.onopen = () => { $("conn-dot").classList.add("on"); $("conn").textContent = "연결됨"; send("vehicle.params"); };
+  socket.onclose = () => { $("conn-dot").classList.remove("on"); $("conn").textContent = "연결 끊김 (파일로 받기는 가능)"; setTimeout(connect, 1500); };
+  socket.onerror = () => socket.close();
+  socket.onmessage = (event) => {
+    const m = JSON.parse(event.data);
+    if (m.method === "vehicle.params") onParams(m.params);
+    else if (m.method === "vehicle.model" && model.wantCurrent) onCurrentModel(m.params);
+    else if (m.method === "notice") toast(m.params.text, m.params.level);
+  };
+}
+function send(method, p = {}) { if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ jsonrpc: "2.0", method, params: p })); }
+
+function onParams(p) {
+  model.current = p.vehicle;
+  $("project").textContent = `${p.project_name} · ${p.project}`;
+  const sus = (p.vehicle && p.vehicle.suspension) || {};
+  for (const axle of ["front", "rear"]) {
+    const hp = sus[axle]?.hardpoints || {};
+    for (const name of HARDPOINTS) if (Array.isArray(hp[name]) && !model.hardpoints[axle][name]) model.hardpoints[axle][name] = hp[name].map(Number);
+  }
+  if (Array.isArray(p.vehicle?.sensors)) {
+    model.sensors = p.vehicle.sensors.map((s) => ({ name: s.name, type: s.type, position: (s.position || [0, 0, 0]).map(Number), orientation_deg: (s.orientation_deg || [0, 0, 0]).map(Number) }));
+  }
+  renderAll();
+}
+
+$("load-current").onclick = () => {
+  if (!socket || socket.readyState !== WebSocket.OPEN) { toast("vsim-core에 연결되어 있지 않습니다", "error"); return; }
+  model.wantCurrent = true;
+  send("vehicle.model");
+  busy(true);
+};
+async function onCurrentModel(p) {
+  model.wantCurrent = false;
+  try {
+    const bytes = Uint8Array.from(atob(p.glb), (c) => c.charCodeAt(0));
+    const bodies = await readGltf(bytes.buffer);
+    $("units").value = "1"; $("forward").value = "+X"; $("up").value = "+Y";
+    model.fileName = p.name || "simulator model";
+    model.fileBytes = null; model.kind = "glb"; model.fromSimulator = true;
+    setBodies(bodies);
+    // The procedural car is surfaces, not solids: keep vehicle.yaml's masses.
+    $("save-mass").checked = false;
+    $("save-model").checked = false;
+    toast("지금 차량을 불러왔습니다 (질량은 vehicle.yaml 값을 유지)");
+  } catch (error) { toast(String(error.message || error), "error"); }
+  busy(false);
+}
+
+// --- UI plumbing ------------------------------------------------------------------------
+document.querySelectorAll("nav button").forEach((b) => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach((x) => x.classList.toggle("active", x === b));
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.id === b.dataset.tab));
+});
+const drop = $("drop");
+drop.onclick = () => $("file").click();
+$("file").onchange = () => { if ($("file").files[0]) loadFile($("file").files[0]); };
+drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]); };
+for (const id of ["units", "forward", "up"]) $(id).onchange = () => { model.framed = false; applyFrame(); };
+for (const id of ["driver-add", "driver-mass", "driver-x", "driver-z", "tyre-deflection"]) $(id).onchange = () => computeTotals();
+for (const id of ["save-mass", "save-geometry", "save-hardpoints", "save-sensors", "save-model", "save-cad"]) $(id).onchange = renderSave;
+$("axle").onchange = renderHardpoints;
+$("guess").onclick = () => { guessRoles(); applyFrame(); };
+$("only-selected").onchange = renderBodies;
+
+let toastTimer = null;
+function toast(text, level = "info") {
+  const t = $("toast");
+  t.textContent = text;
+  t.className = level;
+  t.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.style.display = "none"), level === "error" ? 8000 : 4000);
+}
+function busy(on) { $("busy").style.display = on ? "flex" : "none"; }
+
+resize();
+renderAll();
+connect();
+window.vsimBuilder = { model, loadFile, pickAt, carGlb, builderYaml, computeTotals, applyFrame, camera, controls, select, send };
+</script>
+</body>
+</html>

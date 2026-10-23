@@ -31,8 +31,20 @@ def _load(path: pathlib.Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
+def _overlay(base: dict, top: dict) -> dict:
+    """Maps merge key by key; anything else (lists, scalars) in top replaces."""
+    out = dict(base)
+    for key, value in top.items():
+        out[key] = _overlay(out[key], value) if isinstance(value, dict) and isinstance(out.get(key), dict) else value
+    return out
+
+
 def load_project(project: pathlib.Path) -> tuple[dict, dict]:
     vehicle = _load(project / "vehicle" / "vehicle.yaml")
+    # Values measured by the vehicle builder override vehicle.yaml, as in vsim-core.
+    builder = project / "vehicle" / "builder.yaml"
+    if builder.exists():
+        vehicle = _overlay(vehicle, _load(builder))
     control_file = project / "control" / "vcu.yaml"
     control = _load(control_file) if control_file.exists() else {}
     return vehicle, control

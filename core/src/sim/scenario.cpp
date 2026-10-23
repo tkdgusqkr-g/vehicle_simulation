@@ -1,7 +1,9 @@
 #include "vsim/sim/scenario.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 #include "vsim/util/paths.hpp"
 
@@ -49,6 +51,30 @@ Scenario Scenario::load(const std::filesystem::path& file, const Overrides& over
       merged.merge(
           ParamTree::from_yaml_file(project_dir / path_from_utf8(project.get_string(section))),
           section);
+    }
+  }
+  // Values measured by the vehicle builder (ui/builder) override vehicle.yaml.
+  const std::filesystem::path builder =
+      project_dir / path_from_utf8(project.get_string("vehicle_builder", "vehicle/builder.yaml"));
+  if (std::filesystem::exists(builder)) {
+    const ParamTree measured = ParamTree::from_yaml_file(builder);
+    // A list in builder.yaml (sensors, a hardpoint) replaces vehicle.yaml's
+    // whole list: setting the list's key to a scalar drops its items.
+    for (const auto& [key, value] : measured.entries()) {
+      std::size_t start = 0;
+      while (start < key.size()) {
+        const std::size_t end = std::min(key.find('.', start), key.size());
+        const std::string_view segment(key.data() + start, end - start);
+        if (start > 0 && !segment.empty() &&
+            std::all_of(segment.begin(), segment.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+          merged.set("vehicle." + key.substr(0, start - 1), "");
+          break;
+        }
+        start = end + 1;
+      }
+    }
+    for (const auto& [key, value] : measured.entries()) {
+      merged.set("vehicle." + key, value);
     }
   }
   for (const auto& [key, value] : scenario.entries()) {

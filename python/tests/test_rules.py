@@ -28,3 +28,16 @@ def test_cli_exit_codes(capsys):
     assert rules.main([str(PROJECT)]) == 0
     assert "checks passed" in capsys.readouterr().out
     assert rules.main([str(PROJECT / "missing")]) == 2
+
+
+def test_builder_values_override_vehicle_yaml(tmp_path):
+    project = tmp_path / "car"
+    (project / "vehicle").mkdir(parents=True)
+    (project / "vehicle" / "vehicle.yaml").write_text((PROJECT / "vehicle" / "vehicle.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    (project / "vehicle" / "builder.yaml").write_text("wheelbase_m: 1.50\nwheel: {unloaded_radius_m: 0.25}\n", encoding="utf-8")
+    vehicle, _ = rules.load_project(project)
+    assert vehicle["wheelbase_m"] == 1.50
+    assert vehicle["wheel"]["unloaded_radius_m"] == 0.25
+    assert vehicle["wheel"]["rim_diameter_in"] == 10       # the rest of the map stays
+    failed = {c.topic for c in rules.check(vehicle, {}) if not c.ok}
+    assert "wheelbase" in failed

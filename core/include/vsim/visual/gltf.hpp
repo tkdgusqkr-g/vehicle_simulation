@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -27,5 +28,16 @@ std::string write_glb(const std::vector<GltfNode>& nodes, std::string_view gener
 // extras {role, corner, pivot, axis, outer, steers, cg_height} in the vsim
 // car frame (x forward, y left, z up, m) so a viewer can animate the parts.
 std::string to_glb(const VisualModel& model);
+
+// Reads a car model written by to_glb or by the vehicle builder (binary glTF;
+// nodes with extras.role are moving parts, anything else is body). Node
+// transforms are baked into the vertices; parts keep vertices relative to
+// their pivot. Throws on malformed files.
+VisualModel read_vehicle_glb(const std::string& bytes);
+VisualModel read_vehicle_glb_file(const std::filesystem::path& file);
+
+// The car to show: vehicle.visual.model (a .glb relative to the project
+// directory) if set, else the procedural formula student car.
+VisualModel make_vehicle_visual(const ParamTree& params);
 
 }  // namespace vsim

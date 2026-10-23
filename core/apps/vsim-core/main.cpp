@@ -2,7 +2,9 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <functional>
 #include <cctype>
 #include <cstdio>
 #include <filesystem>
@@ -81,7 +83,7 @@ constexpr const char* kUsage = R"(usage: vsim-core --scenario <file.yaml> [optio
   --host <addr>        bind address (default 127.0.0.1; 0.0.0.0 for other machines)
   --no-wheel           do not look for a steering wheel (driver.type dil uses the keyboard)
   --no-link            do not publish to shared memory (the Unreal viewer reads it)
-  --link-name <name>   shared-memory name (default vsim_state_v1)
+  --link-name <name>   shared-memory name (default vsim_state_v2)
   --input-profiles <d> wheel profile directory (default: config/input in the source tree)
   --virtual-wheel      add a virtual steering wheel driven by input.virtual (UI tests)
   --export-track-glb <file>  write the scenario's track as a 3D model (glTF binary) and exit
@@ -391,6 +393,111 @@ std::string car_model_message(const vsim::VisualModel& car, std::uint64_t genera
       .dump();
 }
 
+std::string base64_decode(const std::string& text) {
+  static const auto table = [] {
+    std::array<int, 256> t{};
+    t.fill(-1);
+    const char* digits = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    for (int i = 0; i < 64; ++i) {
+      t[static_cast<unsigned char>(digits[i])] = i;
+    }
+    return t;
+  }();
+  std::string out;
+  out.reserve(text.size() / 4 * 3);
+  std::uint32_t buffer = 0;
+  int bits = 0;
+  for (const unsigned char c : text) {
+    if (c == '=') {
+      break;
+    }
+    const int v = table[c];
+    if (v < 0) {
+      continue;  // whitespace
+    }
+    buffer = (buffer << 6) | static_cast<std::uint32_t>(v);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push_back(static_cast<char>((buffer >> bits) & 0xff));
+    }
+  }
+  return out;
+}
+
+// Parameters under `prefix` as nested JSON (numeric keys become arrays).
+json params_json(const vsim::ParamTree& tree, const std::string& prefix) {
+  json root = json::object();
+  for (const auto& [key, value] : tree.entries()) {
+    if (key.rfind(prefix + ".", 0) != 0) {
+      continue;
+    }
+    json* node = &root;
+    std::size_t start = prefix.size() + 1;
+    while (true) {
+      const std::size_t dot = key.find('.', start);
+      const std::string part = key.substr(start, dot == std::string::npos ? std::string::npos : dot - start);
+      if (dot == std::string::npos) {
+        const json parsed = json::parse(value, nullptr, false);
+        (*node)[part] = !parsed.is_discarded() && (parsed.is_number() || parsed.is_boolean()) ? parsed : json(value);
+        break;
+      }
+      node = &(*node)[part];
+      start = dot + 1;
+    }
+  }
+  // {"0": a, "1": b} -> [a, b]
+  std::function<void(json&)> listify = [&](json& j) {
+    if (!j.is_object()) {
+      return;
+    }
+    for (auto& [k, v] : j.items()) {
+      listify(v);
+    }
+    bool numeric = !j.empty();
+    for (std::size_t i = 0; numeric && i < j.size(); ++i) {
+      numeric = j.contains(std::to_string(i));
+    }
+    if (numeric) {
+      json list = json::array();
+      for (std::size_t i = 0; i < j.size(); ++i) {
+        list.push_back(j[std::to_string(i)]);
+      }
+      j = list;
+    }
+  };
+  listify(root);
+  return root;
+}
+
+// Writes files from the vehicle builder into the project: only below
+// vehicle/, with known extensions. Returns the written paths.
+std::vector<std::string> import_vehicle_files(const std::filesystem::path& project, const json& files) {
+  std::vector<std::string> written;
+  for (const json& f : files) {
+    const std::string rel = f.at("path");
+    const std::filesystem::path path = vsim::path_from_utf8(rel);
+    const std::string ext = vsim::path_to_utf8(path.extension());
+    const bool allowed_ext = ext == ".glb" || ext == ".yaml" || ext == ".step" || ext == ".stp" || ext == ".stl";
+    bool inside = rel.rfind("vehicle/", 0) == 0 && path.is_relative();
+    for (const auto& segment : path) {
+      inside = inside && segment != "..";
+    }
+    if (!inside || !allowed_ext) {
+      throw std::invalid_argument("refusing to write '" + rel + "' (only vehicle/*.glb|yaml|step|stl)");
+    }
+    const std::filesystem::path target = project / path;
+    std::filesystem::create_directories(target.parent_path());
+    std::ofstream out(target, std::ios::binary);
+    out << (f.contains("base64") ? base64_decode(f["base64"].get<std::string>()) : f.value("text", std::string()));
+    if (!out) {
+      throw std::runtime_error("cannot write " + vsim::path_to_utf8(target));
+    }
+    written.push_back(vsim::path_to_utf8(target));
+  }
+  return written;
+}
+
 std::string notice(const std::string& level, const std::string& text) {
   return json{{"jsonrpc", "2.0"}, {"method", "notice"}, {"params", {{"level", level}, {"text", text}}}}.dump();
 }
@@ -475,13 +582,22 @@ int run_fast(vsim::Simulation& sim, const Options& options) {
   return 0;
 }
 
+// run_realtime asks main to load the scenario again (the vehicle changed).
+constexpr int kReload = 100;
+
 int run_realtime(vsim::Simulation& sim, const Options& options) {
   vsim::ApiServer server(options.port, options.host);
   StateStream stream;
   stream.resolve(sim.bus());
   std::uint64_t track_generation = 1;
   const std::uint64_t car_generation = 1;
-  const vsim::VisualModel car_model = vsim::make_formula_car(sim.scenario().params);
+  vsim::VisualModel car_model;
+  try {
+    car_model = vsim::make_vehicle_visual(sim.scenario().params);
+  } catch (const std::exception& error) {
+    std::cerr << "warning: vehicle 3D model: " << error.what() << "; showing the procedural car\n";
+    car_model = vsim::make_formula_car(sim.scenario().params);
+  }
   server.set_hello(hello_message(sim, track_generation, car_generation));
   if (const auto error = server.start()) {
     std::cerr << "error: cannot listen on " << options.host << ":" << options.port << ": "
@@ -590,7 +706,8 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
     lag = 0.0;
   };
 
-  while (!g_stop && sim.time() < end_time) {
+  bool reload = false;
+  while (!g_stop && !reload && sim.time() < end_time) {
     for (const std::string& text : server.take_messages()) {
       json message = json::parse(text, nullptr, false);
       if (message.is_discarded() || !message.contains("method")) {
@@ -691,6 +808,24 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
             wheel_service->set_virtual(axes, buttons);
           }
   #endif
+        } else if (method == "vehicle.params") {
+          server.broadcast(json{{"jsonrpc", "2.0"},
+                                {"method", "vehicle.params"},
+                                {"params",
+                                 {{"project", vsim::path_to_utf8(sim.scenario().project_dir)},
+                                  {"project_name", sim.scenario().params.get_string("project.name", "")},
+                                  {"vehicle", params_json(sim.scenario().params, "vehicle")}}}}
+                               .dump());
+        } else if (method == "vehicle.import") {
+          const auto written = import_vehicle_files(sim.scenario().project_dir, params.at("files"));
+          for (const std::string& file : written) {
+            std::cout << "Vehicle builder wrote " << file << "\n";
+          }
+          server.broadcast(notice("info", "saved " + std::to_string(written.size()) + " file(s) to the project"));
+          if (params.value("reload", false)) {
+            server.broadcast(notice("info", "reloading the simulation with the new vehicle"));
+            reload = true;
+          }
         } else if (method == "vehicle.model") {
           server.broadcast(car_model_message(car_model, car_generation));
         } else if (method == "track.mesh") {
@@ -842,7 +977,7 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
   if (overruns > 0) {
     std::cout << "overruns   " << overruns << " (sim fell behind real time)\n";
   }
-  return 0;
+  return reload ? kReload : 0;
 }
 
 }  // namespace
@@ -863,13 +998,14 @@ int main(int argc, char** argv) {
     vsim::SimulationOptions sim_options;
     sim_options.log_dir = vsim::path_from_utf8(options->log_dir);
     sim_options.record = false;
+    for (;;) {
     vsim::Simulation sim(vsim::Scenario::load(vsim::path_from_utf8(options->scenario),
                                               options->overrides),
                          sim_options);
 
     if (!options->export_car.empty()) {
       std::ofstream out(vsim::path_from_utf8(options->export_car), std::ios::binary);
-      out << vsim::to_glb(vsim::make_formula_car(sim.scenario().params));
+      out << vsim::to_glb(vsim::make_vehicle_visual(sim.scenario().params));
       if (!out) {
         throw std::runtime_error("cannot write " + options->export_car);
       }
@@ -897,10 +1033,15 @@ int main(int argc, char** argv) {
                                  ? sim.scenario().params.get_string("time.mode", "realtime")
                                  : options->mode;
     const int status = mode == "fast" ? run_fast(sim, *options) : run_realtime(sim, *options);
+    if (status == kReload && !g_stop) {
+      std::cout << "\nReloading " << options->scenario << " with the new vehicle\n";
+      continue;
+    }
 #ifdef _WIN32
     timeEndPeriod(1);
 #endif
     return status;
+    }
   } catch (const std::exception& error) {
     std::cerr << "error: " << error.what() << "\n";
     if (argc <= 1) {
