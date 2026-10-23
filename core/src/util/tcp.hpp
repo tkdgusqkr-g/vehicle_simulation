@@ -47,6 +47,27 @@ class TcpListener {
   int port_ = 0;
 };
 
+// A UDP socket bound to host:port (port 0: any), non-blocking receive.
+class UdpSocket {
+ public:
+  UdpSocket(const std::string& host, int port);
+  ~UdpSocket();
+  UdpSocket(const UdpSocket&) = delete;
+  UdpSocket& operator=(const UdpSocket&) = delete;
+
+  int port() const { return port_; }
+  void send_to(const std::string& host, int port, const void* data, std::size_t size);
+  // One datagram if one is waiting (up to `capacity` bytes), else an empty vector.
+  std::vector<std::uint8_t> receive(std::size_t capacity = 2048);
+
+ private:
+  std::intptr_t socket_;
+  int port_ = 0;
+};
+
+// "host:port" split; throws if malformed.
+void split_address(const std::string& address, std::string& host, int& port);
+
 // A started program (argv[0] looked up in PATH), with extra environment
 // variables; killed on destruction if it is still running.
 class ChildProcess {

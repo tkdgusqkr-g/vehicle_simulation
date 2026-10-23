@@ -13,7 +13,9 @@
 #include <stdexcept>
 
 #include "vsim/can/dbc.hpp"
+#include "vsim/can/device.hpp"
 #include "vsim/can/frame.hpp"
+#include "vsim/plugin/external.hpp"
 #include "vsim/plugin/units.hpp"
 #include "vsim/sim/context.hpp"
 #include "vsim/util/paths.hpp"
@@ -42,6 +44,9 @@ struct Node {
   std::optional<SignalId> power_in;
   bool powered = true;
   double epoch = 0.0;  // node-clock time its schedule counts from
+  // Outside the simulation: "real" (a device's bus), or the name of an external
+  // component. Its messages come in from there instead of being sent from signals.
+  std::string outside;
 };
 
 struct SignalMap {
@@ -82,6 +87,7 @@ struct Pending {
   double ready, request;
   CanFrame frame;
   std::uint64_t key, seq;
+  int origin = -1;  // the outside link it came from (not sent back there), -1: a simulated node
 };
 
 struct Delivery {
@@ -141,6 +147,120 @@ struct CanNetwork::Impl {
   std::optional<Rng> fault_rng;
   std::uint64_t seq = 0;
   std::string log_mode = "asc";
+  // Links to outside the simulation: real CAN devices, then external components.
+  std::vector<std::unique_ptr<CanDevice>> devices;
+  std::vector<std::size_t> device_bus;
+  struct External {
+    std::string component;
+    ExternalEndpoint* endpoint = nullptr;  // found once the component has started
+    std::vector<std::optional<std::size_t>> bus_map;  // its bus index -> network bus
+  };
+  std::vector<External> externals;
+  std::int64_t frames_in = 0, frames_out = 0, unknown_frames = 0;
+
+  int external_origin(std::size_t j) const { return static_cast<int>(devices.size() + j); }
+
+  // A frame on `bus` goes to every outside link there but the one it came from.
+  void forward(std::size_t bus, const CanFrame& frame, int origin, double at) {
+    for (std::size_t i = 0; i < devices.size(); ++i) {
+      if (device_bus[i] == bus && static_cast<int>(i) != origin) {
+        devices[i]->send(frame);
+        ++frames_out;
+      }
+    }
+    for (std::size_t j = 0; j < externals.size(); ++j) {
+      External& x = externals[j];
+      if (x.endpoint == nullptr || external_origin(j) == origin) {
+        continue;
+      }
+      for (std::size_t k = 0; k < x.bus_map.size(); ++k) {
+        if (x.bus_map[k] == bus) {
+          ExternalFrame f;
+          f.bus = k;
+          f.id = frame.id;
+          f.extended = frame.extended;
+          f.fd = frame.fd;
+          f.brs = frame.brs;
+          f.data = frame.data;
+          f.time = at;
+          x.endpoint->receive(f);
+          ++frames_out;
+        }
+      }
+    }
+  }
+
+  // A frame from outside: a message of an outside node is received like one sent here,
+  // through the bus (arbitration, timing) when `through_bus`, else as it is (a real bus
+  // carried it already). Unknown frames pass to the other outside links only.
+  void inject(std::size_t bus, CanFrame frame, double at, int origin, bool through_bus) {
+    ++frames_in;
+    const auto it = std::find_if(messages.begin(), messages.end(), [&](const Message& m) {
+      return m.bus == bus && m.def.id == frame.id && m.def.extended == frame.extended && !m.generated;
+    });
+    if (it == messages.end()) {
+      ++unknown_frames;
+      forward(bus, frame, origin, at);
+      return;
+    }
+    const std::size_t mi = static_cast<std::size_t>(it - messages.begin());
+    Message& m = *it;
+    ++m.sent;
+    m.first_request = std::min(m.first_request, at);
+    if (through_bus && timing) {
+      buses[bus].pending.push_back({mi, at, at, std::move(frame), priority_key(m.def.id, m.def.extended), seq++,
+                                    origin});
+      return;
+    }
+    log_frame(buses[bus], bus, m, frame, at);
+    forward(bus, frame, origin, at);
+    deliveries.push_back({mi, at, at, std::move(frame.data)});
+  }
+
+  // Frames that came in from the devices (before the controllers run).
+  void poll_devices(double t) {
+    for (std::size_t i = 0; i < devices.size(); ++i) {
+      for (CanFrame& f : devices[i]->receive()) {
+        inject(device_bus[i], std::move(f), t, static_cast<int>(i), false);
+      }
+    }
+  }
+
+  // Frames the external components sent in their steps (after the controllers ran).
+  void poll_externals() {
+    for (std::size_t j = 0; j < externals.size(); ++j) {
+      External& x = externals[j];
+      if (x.endpoint == nullptr) {
+        x.endpoint = find_external_endpoint(x.component);
+        if (x.endpoint == nullptr) {
+          continue;
+        }
+        for (const std::string& name : x.endpoint->buses()) {
+          std::optional<std::size_t> index;
+          for (std::size_t b = 0; b < buses.size(); ++b) {
+            if (buses[b].name == name) {
+              index = b;
+            }
+          }
+          if (!index) {
+            throw std::invalid_argument("components." + x.component + ".can: no bus '" + name + "'");
+          }
+          x.bus_map.push_back(index);
+        }
+      }
+      for (ExternalFrame& f : x.endpoint->take_sent()) {
+        if (f.bus < x.bus_map.size() && x.bus_map[f.bus]) {
+          CanFrame frame;
+          frame.id = f.id;
+          frame.extended = f.extended;
+          frame.fd = f.fd;
+          frame.brs = f.brs;
+          frame.data = std::move(f.data);
+          inject(*x.bus_map[f.bus], std::move(frame), f.time, external_origin(j), true);
+        }
+      }
+    }
+  }
 
   std::size_t node_index(const std::string& name) {
     for (std::size_t i = 0; i < nodes.size(); ++i) {
@@ -281,7 +401,7 @@ struct CanNetwork::Impl {
   void send(double t, const SignalBus& bus, bool controllers) {
     for (std::size_t mi = 0; mi < messages.size(); ++mi) {
       Message& m = messages[mi];
-      if (m.from_controller != controllers || m.cycle <= 0.0) {
+      if (m.from_controller != controllers || m.cycle <= 0.0 || (m.node && !nodes[*m.node].outside.empty())) {
         continue;
       }
       while (m.next_request < t + dt - kEps) {
@@ -296,6 +416,7 @@ struct CanNetwork::Impl {
         CanFrame frame = build_frame(m, bus);
         ++m.sent;
         if (!timing) {
+          forward(m.bus, frame, -1, request);
           deliveries.push_back({mi, request, request, frame.data});
           continue;
         }
@@ -397,6 +518,7 @@ struct CanNetwork::Impl {
           n.tec = std::max(0, n.tec - 1);
         }
         log_frame(b, bi, m, p.frame, start + duration);
+        forward(bi, p.frame, p.origin, start + duration);
         double delay = 0.0, jitter = 0.0;
         fault_hits("delay", m, start, &delay, &jitter);
         if (fault_hits("drop", m, start)) {
@@ -468,7 +590,10 @@ struct CanNetwork::Impl {
       bus.set(m.lost_out, static_cast<double>(m.lost));
       for (const SignalMap& s : m.map) {
         if (s.bus_signal) {
-          restore.emplace_back(*s.bus_signal, bus.get(*s.bus_signal));
+          // Sent from outside, nothing here produces the signal: it keeps the received value.
+          if (!(m.node && !nodes[*m.node].outside.empty())) {
+            restore.emplace_back(*s.bus_signal, bus.get(*s.bus_signal));
+          }
           bus.set(*s.bus_signal, m.timed_out && m.zero_on_timeout ? 0.0 : s.from_dbc.apply(s.held));
         }
       }
@@ -585,6 +710,7 @@ void CanNetwork::init(const ParamTree& params, Context& ctx) {
     n.offset = params.get_double(p + ".offset_ms", 0.0) * 1e-3;
     n.task = params.get_double(p + ".task_ms", 0.0) * 1e-3;
     n.recovery = params.get_double(p + ".bus_off_recovery_ms", 100.0) * 1e-3;
+    n.outside = params.get_bool(p + ".real", false) ? "real" : params.get_string(p + ".external", "");
     if (std::abs(n.ppm) > 1e5 || n.jitter < 0.0 || n.task < 0.0) {
       throw std::invalid_argument(p + ": clock_ppm, jitter_us or task_ms out of range");
     }
@@ -631,6 +757,27 @@ void CanNetwork::init(const ParamTree& params, Context& ctx) {
   }
   if (s.buses.empty()) {
     throw std::invalid_argument("can.buses: no bus");
+  }
+  // Real CAN devices (rest-bus) and the external components with nodes on the buses.
+  for (std::size_t i = 0;; ++i) {
+    const std::string p = "can.devices." + std::to_string(i);
+    if (!params.has_prefix(p)) {
+      break;
+    }
+    const std::string bus_name = params.get_string(p + ".bus", s.buses.front().name);
+    const auto bi = std::find_if(s.buses.begin(), s.buses.end(), [&](const Bus& b) { return b.name == bus_name; });
+    if (bi == s.buses.end()) {
+      throw std::invalid_argument(p + ".bus: no bus '" + bus_name + "'");
+    }
+    s.devices.push_back(open_can_device(params, p));
+    s.device_bus.push_back(static_cast<std::size_t>(bi - s.buses.begin()));
+  }
+  for (const Node& n : s.nodes) {
+    if (!n.outside.empty() && n.outside != "real" &&
+        std::none_of(s.externals.begin(), s.externals.end(),
+                     [&](const Impl::External& x) { return x.component == n.outside; })) {
+      s.externals.push_back({n.outside, nullptr, {}});
+    }
   }
   for (std::size_t i = 0; i < s.nodes.size(); ++i) {
     Node& n = s.nodes[i];
@@ -706,6 +853,9 @@ void CanNetwork::init(const ParamTree& params, Context& ctx) {
       const std::string dbc_unit = params.get_string(key + ".unit", sig.unit);
       sm.bus_signal = bus.find(name);
       if (!sm.bus_signal) {
+        if (m.node && !s.nodes[*m.node].outside.empty()) {
+          continue;  // sent from outside: nothing here produces it, the frame alone carries it
+        }
         throw std::invalid_argument(key + ": no signal '" + name + "' on the bus");
       }
       try {
@@ -809,6 +959,7 @@ void CanNetwork::init(const ParamTree& params, Context& ctx) {
 void CanNetwork::before_controllers(double t, SignalBus& bus) {
   Impl& s = *impl_;
   s.update_power(t, bus);
+  s.poll_devices(t);
   s.send(t, bus, false);
   s.deliver(t, bus, true);
   s.apply(t, bus, true);
@@ -818,6 +969,7 @@ void CanNetwork::before_controllers(double t, SignalBus& bus) {
 void CanNetwork::after_controllers(double t, SignalBus& bus) {
   Impl& s = *impl_;
   s.update_power(t, bus);
+  s.poll_externals();
   s.send(t, bus, true);
   s.deliver(t, bus, false);
   s.apply(t, bus, false);
@@ -857,6 +1009,18 @@ std::string CanNetwork::summary_json() const {
   const Impl& s = *impl_;
   nlohmann::json out;
   out["fidelity"] = s.fidelity;
+  if (!s.devices.empty() || !s.externals.empty()) {
+    nlohmann::json g = {{"frames_in", s.frames_in}, {"frames_out", s.frames_out}, {"unknown", s.unknown_frames}};
+    g["devices"] = nlohmann::json::array();
+    for (std::size_t i = 0; i < s.devices.size(); ++i) {
+      g["devices"].push_back({{"bus", s.buses[s.device_bus[i]].name}, {"device", s.devices[i]->describe()}});
+    }
+    g["external"] = nlohmann::json::array();
+    for (const Impl::External& x : s.externals) {
+      g["external"].push_back(x.component);
+    }
+    out["outside"] = g;
+  }
   for (const Bus& b : s.buses) {
     out["buses"][b.name] = {{"bitrate", b.bitrate},
                             {"frames", b.frames},

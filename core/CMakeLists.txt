@@ -17,6 +17,7 @@ configure_file(src/version.cpp.in "${CMAKE_CURRENT_BINARY_DIR}/generated/version
 
 add_library(vsim_core STATIC
   src/can/dbc.cpp
+  src/can/devices.cpp
   src/can/frame.cpp
   src/can/network.cpp
   src/control/reference_vcu.cpp

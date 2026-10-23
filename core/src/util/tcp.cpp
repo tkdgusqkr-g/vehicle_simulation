@@ -155,6 +155,68 @@ std::unique_ptr<TcpStream> TcpListener::accept(double timeout_s) {
       new TcpStream(static_cast<std::intptr_t>(c), std::string(text) + ":" + std::to_string(ntohs(addr.sin_port))));
 }
 
+// --- UDP -----------------------------------------------------------------------------------------
+
+void split_address(const std::string& address, std::string& host, int& port) {
+  const auto colon = address.rfind(':');
+  if (colon == std::string::npos) {
+    throw std::invalid_argument("'" + address + "': expected host:port");
+  }
+  host = address.substr(0, colon);
+  port = std::stoi(address.substr(colon + 1));
+}
+
+UdpSocket::UdpSocket(const std::string& host, int port) {
+  ensure_winsock();
+  const Socket s = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (s == kInvalid) {
+    throw std::runtime_error("cannot open a UDP socket (error " + std::to_string(last_error()) + ")");
+  }
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(static_cast<std::uint16_t>(port));
+  if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1 ||
+      ::bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof addr) != 0) {
+    const int error = last_error();
+    close_socket(s);
+    throw std::runtime_error("cannot bind UDP " + host + ":" + std::to_string(port) + " (error " +
+                             std::to_string(error) + ")");
+  }
+#ifdef _WIN32
+  u_long nonblocking = 1;
+  ioctlsocket(s, FIONBIO, &nonblocking);
+#else
+  fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK);
+#endif
+  socklen_t len = sizeof addr;
+  getsockname(s, reinterpret_cast<sockaddr*>(&addr), &len);
+  port_ = ntohs(addr.sin_port);
+  socket_ = static_cast<std::intptr_t>(s);
+}
+
+UdpSocket::~UdpSocket() { close_socket(as_socket(socket_)); }
+
+void UdpSocket::send_to(const std::string& host, int port, const void* data, std::size_t size) {
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(static_cast<std::uint16_t>(port));
+  if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
+    throw std::invalid_argument("not an IPv4 address: " + host);
+  }
+  ::sendto(as_socket(socket_), static_cast<const char*>(data), static_cast<int>(size), 0,
+           reinterpret_cast<sockaddr*>(&addr), sizeof addr);
+}
+
+std::vector<std::uint8_t> UdpSocket::receive(std::size_t capacity) {
+  std::vector<std::uint8_t> buffer(capacity);
+  const auto n = ::recv(as_socket(socket_), reinterpret_cast<char*>(buffer.data()), static_cast<int>(capacity), 0);
+  if (n <= 0) {
+    return {};
+  }
+  buffer.resize(static_cast<std::size_t>(n));
+  return buffer;
+}
+
 // --- Child process -----------------------------------------------------------------------------
 
 #ifdef _WIN32

@@ -5,13 +5,16 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "test_support.hpp"
+#include "../src/util/tcp.hpp"
 #include "vsim/can/dbc.hpp"
+#include "vsim/can/device.hpp"
 #include "vsim/can/frame.hpp"
 #include "vsim/can/network.hpp"
 #include "vsim/sim/context.hpp"
@@ -419,6 +422,79 @@ TEST(Can, IsDeterministic) {
                                signal(sim, "can.INV_FL_Status.latency")};
   };
   EXPECT_EQ(run(), run());
+}
+
+
+TEST(CanDevice, UdpDatagramsRoundTrip) {
+  CanFrame a;
+  a.id = 0x123;
+  a.data = {1, 2, 3};
+  CanFrame b;
+  b.id = 0x18FF50E5;
+  b.extended = true;
+  b.fd = true;
+  b.brs = true;
+  b.data.assign(12, 0xAB);
+  const std::vector<CanFrame> back = decode_udp_frames(encode_udp_frames({a, b}));
+  ASSERT_EQ(back.size(), 2u);
+  EXPECT_EQ(back[0].id, 0x123u);
+  EXPECT_FALSE(back[0].extended);
+  EXPECT_EQ(back[0].data, a.data);
+  EXPECT_EQ(back[1].id, 0x18FF50E5u);
+  EXPECT_TRUE(back[1].extended && back[1].fd && back[1].brs);
+  EXPECT_EQ(back[1].data, b.data);
+  EXPECT_TRUE(decode_udp_frames({0x00, 0x23, 0x01}).empty());  // truncated
+}
+
+// Rest-bus: the BMS is a real ECU on a CAN device (here a UDP gateway); its
+// frames come in and are decoded like the simulated ones, while every frame
+// the simulated nodes send goes out to it.
+TEST(Can, RealNodeOnADevice) {
+  int sim_port = 0;
+  {
+    UdpSocket probe("127.0.0.1", 0);
+    sim_port = probe.port();
+  }
+  UdpSocket ecu("127.0.0.1", 0);  // the "real" BMS side of the gateway
+  const std::string device = "[{bus: can_main, type: udp, local: \"127.0.0.1:" + std::to_string(sim_port) +
+                             "\", remote: \"127.0.0.1:" + std::to_string(ecu.port()) + "\"}]";
+  Simulation sim(load_example("acceleration", with_can({{"can.fidelity", "timing"},
+                                                        {"can.devices", device},
+                                                        {"can.nodes.5.real", "true"}})));  // BMS
+  const Dbc dbc = Dbc::from_file(std::filesystem::path(VSIM_SOURCE_DIR) /
+                                 "templates/projects/example_fs_ev/can/fs_ev.dbc");
+  const auto def = std::find_if(dbc.messages.begin(), dbc.messages.end(),
+                                [](const DbcMessage& m) { return m.name == "BMS_Status"; });
+  ASSERT_NE(def, dbc.messages.end());
+  CanFrame bms;
+  bms.id = def->id;
+  bms.data.assign(static_cast<std::size_t>(def->length), 0);
+  def->signal("PackVoltage")->write(bms.data, 512.3);
+  def->signal("Soc")->write(bms.data, 77.5);
+
+  std::set<std::uint32_t> seen;
+  for (int k = 0; k < 100; ++k) {
+    if (k % 20 == 0) {
+      const std::vector<std::uint8_t> d = encode_udp_frames({bms});
+      ecu.send_to("127.0.0.1", sim_port, d.data(), d.size());
+    }
+    sim.step();
+    for (std::vector<std::uint8_t> d = ecu.receive(); !d.empty(); d = ecu.receive()) {
+      for (const CanFrame& f : decode_udp_frames(d)) {
+        seen.insert(f.id);
+      }
+    }
+  }
+  // The real BMS's values, not the simulated pack's.
+  EXPECT_NEAR(signal(sim, "can.BMS_Status.PackVoltage"), 512.3, 0.05);
+  EXPECT_NEAR(signal(sim, "can.BMS_Status.Soc"), 77.5, 0.25);
+  EXPECT_GT(std::abs(signal(sim, "bat.voltage") - 512.3), 5.0);
+  // Out on the device: the simulated nodes' frames, never the BMS's own.
+  EXPECT_TRUE(seen.count(256) == 1 && seen.count(512) == 1) << "VCU_TorqueCmd and INV_FL_Status";
+  EXPECT_EQ(seen.count(768), 0u);
+  const nlohmann::json summary = nlohmann::json::parse(sim.can_summary())["outside"];
+  EXPECT_EQ(summary["frames_in"], 5);
+  EXPECT_GT(summary["frames_out"].get<int>(), 50);  // 100 ms of the other nodes' cyclic frames
 }
 
 }  // namespace

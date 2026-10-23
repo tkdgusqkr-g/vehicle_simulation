@@ -491,6 +491,34 @@ build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/sce
 - "빈 연결 자동 제안": 메시지·신호 이름과 시뮬레이터 신호 이름이 겹치는 단어와 단위로 후보를 채움
 - DBC 올리기(프로젝트 `can/`에 저장), 새 DBC, 내보내기(.dbc 다운로드). 저장하면 시뮬레이터가 다시 시작하고, 불러오지 못하면 이전 파일로 되돌립니다. 편집기로 저장한 `network.yaml`에는 주석이 남지 않습니다
 
+### 실제 CAN 장치와 외부 노드 (rest-bus, HIL 첫 단계)
+
+책상 위의 실제 ECU를 가상 차에 연결합니다. 노드를 `real: true`로 두면 그 노드의 메시지는 시뮬레이터가 보내지 않고 장치에서 들어오며(수신 쪽은 같은 DBC로 디코드·신호 매핑), 가상 노드가 보내는 모든 프레임은 장치로 나갑니다. 외부 컴포넌트(가상 ECU)는 `external: <컴포넌트 이름>`으로 같은 방식으로 버스에 올라갑니다(그 프레임은 가상 버스의 중재·타이밍을 거침).
+
+```yaml
+can:
+  enabled: true
+  devices:
+    - {bus: can_main, type: pcan, channel: PCAN_USBBUS1, bitrate: 1000000}    # Windows: PEAK (PCANBasic.dll)
+    # - {bus: can_main, type: kvaser, channel: 0, bitrate: 1000000}         # Kvaser (canlib32.dll)
+    # - {bus: can_main, type: socketcan, channel: can0}                      # Linux (vcan0도 가능)
+    # - {bus: can_main, type: udp, local: 127.0.0.1:47900, remote: 127.0.0.1:47901}   # 소프트웨어 게이트웨이
+  nodes:
+    - {name: VCU, role: controller, real: true}       # 실제 VCU 보드가 장치에
+    # - {name: VCU, role: controller, external: vcu}   # 또는 외부 컴포넌트 vcu (components.vcu.can: [can_main])
+```
+
+```powershell
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/drive.yaml --mode realtime --set can.enabled=true ...
+```
+
+- 실제 장치는 실시간 모드에서만 의미가 있습니다(벽시계와 함께 진행). 장치에서 온 프레임은 그 틱에 바로 받은 것으로 처리합니다(실제 버스를 이미 지나옴).
+- 장치 라이브러리는 실행할 때 불러옵니다: PEAK PCAN-Basic(`PCANBasic.dll`, Linux `libpcanbasic.so`, classic CAN), Kvaser CANlib(`canlib32.dll`, Linux `libcanlib.so.1`, CAN FD 포함), SocketCAN(Linux, CAN FD 포함). `library:`로 파일 이름을 바꿀 수 있습니다. Vector XL은 아직 없습니다(Vector 장치는 Linux SocketCAN 드라이버로 쓸 수 있음).
+- udp 형식: 데이터그램에 프레임 여러 개, 프레임마다 `u8 flags(1 확장 ID, 2 FD, 4 BRS), u32 id(리틀 엔디언), u8 길이, 데이터`. 다른 게이트웨이(cannelloni 등)와 잇거나 시험에 씁니다.
+- 실제 노드가 보내는 메시지에 매핑된 신호가 시뮬레이터에 없으면(예: 실제 VCU라 `vcu.vx_est`가 없음) 그 매핑은 건너뛰고, 받은 값은 다음 프레임까지 신호에 남습니다.
+- 요약(`summary.json`의 `can.outside`): 장치, 들어온·나간 프레임 수, DBC에 없는 ID 수.
+- 이 개발 환경에는 CAN 장치가 없어 PCAN·Kvaser·SocketCAN 경로는 직접 시험하지 못했고(공개 C API대로 작성), 같은 경로를 udp 장치로 시험합니다.
+
 ## 전기 네트워크
 
 예제 프로젝트의 `electrical/netlist.yaml`은 FSAE EV 구조(140S 축전지, AIR 두 개, 프리차지 600 Ω × DC 링크 600 µF, 인버터 두 개(앞·뒤), DC-DC, 4S LiFePO4 LV 배터리, 셧다운 회로 직렬 스위치 7개, VCU·BMS·IMU·인버터 제어보드, 펌프·팬, APPS 배선)이고 기본으로 꺼져 있습니다.
