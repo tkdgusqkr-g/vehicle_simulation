@@ -10,6 +10,7 @@
 #include "vsim/models/driveline/driveline.hpp"
 #include "vsim/models/powertrain/battery.hpp"
 #include "vsim/models/powertrain/motor.hpp"
+#include "vsim/models/powertrain/pmsm.hpp"
 #include "vsim/models/tire/tire.hpp"
 #include "vsim/models/vehicle/aero.hpp"
 #include "vsim/models/vehicle/corners.hpp"
@@ -139,6 +140,7 @@ class TwoTrackModel final : public PlantModel {
   std::size_t state_size() const override { return size_; }
   void initial_state(std::span<double> x) const override;
   void read_inputs(const SignalBus& bus) override;
+  void begin_step(double t, std::span<const double> x, double dt) override;
   void derivatives(double t, std::span<const double> x, std::span<double> dx) const override;
   void write_outputs(double t, std::span<const double> x, SignalBus& bus) const override;
 
@@ -151,6 +153,8 @@ class TwoTrackModel final : public PlantModel {
   const TireThermalParams& tire_thermal() const { return tire_thermal_; }
   const BrakeThermalParams& brake_thermal() const { return brake_thermal_; }
   const AeroMap& aero_map() const { return aero_map_; }
+  // Level B motor drives (empty with Level A).
+  const std::vector<PmsmDrive>& drives() const { return drives_; }
 
   // State offsets, for tests and tools.
   std::size_t wheel_dof_offset() const { return wheel_offset_; }
@@ -202,6 +206,12 @@ class TwoTrackModel final : public PlantModel {
   TireThermalParams tire_thermal_;
   BrakeThermalParams brake_thermal_;
   AeroMap aero_map_;
+  // Level B: one drive per motor, stepped at its control rate in begin_step; the
+  // plant uses their step averages.
+  std::vector<PmsmDrive> drives_;
+  std::vector<PmsmDrive::Output> drive_out_;
+  std::vector<double> drive_speed_;  // rotor speed the drives held over the step
+  double pack_voltage_ = 0.0;        // terminal voltage at the start of the step
   double road_temp_ = 25.0;
 
   // Full model.

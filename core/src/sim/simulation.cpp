@@ -345,6 +345,7 @@ void Simulation::Impl::step_once() {
   for (auto& scheduled : blocks) {
     scheduled.block->after_plant_inputs(bus);
   }
+  plant->begin_step(t, state, dt);
   integrator.step(*plant, t, dt, state);
   ++tick;
   plant->write_outputs(static_cast<double>(tick) * dt, state, bus);

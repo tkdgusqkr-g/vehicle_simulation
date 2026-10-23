@@ -777,6 +777,25 @@ powertrain:
 - 신호: `pt.shaft.<바퀴>.torque`(바퀴로 전하는 토크), `pt.shaft.<바퀴>.twist`.
 - 예제: `scenarios/driveline_shuffle.yaml`(출발 → 토크 끊기 → 다시 밟기)과 `driveline_shuffle.test.yaml`: 출발 때 축 토크 −90 ~ +190 N·m(정상 82), 끊은 뒤 유격 안 덜컹거림, 슬립 제어가 진동을 슬립(1.2)으로 오인해 토크 차단, 다시 밟을 때 40 % 오버슈트.
 
+## 모터 Level B (dq축 PMSM + FOC)
+
+```yaml
+powertrain:
+  motor:
+    level: B                   # 기본 A
+    pmsm: {pole_pairs: 5, resistance_ohm: 0.1, ld_mh: 0.12, lq_mh: 0.15, flux_linkage_wb: 0.03,
+           current_max_a: 100, control_rate_hz: 16000, current_bandwidth_hz: 1000,
+           dead_time_us: 1.0, dead_time_compensation: 0.8, resolver: {error_deg: 0.05, order: 2},
+           inverter: {conduction_w_per_a: 2.0, switching_w_per_a: 1.5}}
+```
+
+- 1 ms 물리 스텝마다, 시작 시점의 로터 속도를 고정하고 인버터 전류 제어를 제어 주기(16 kHz)로 돌립니다(다중 속도). 차체는 그 스텝의 평균 토크를 받고, 배터리는 축 출력 + 동손·인버터 손실 + 권선 자기 에너지 변화만큼 냅니다(에너지 수지 정확).
+- 전류 기준: MTPA(같은 전류로 최대 토크, Ld < Lq면 id < 0), DC 전압이 모자라면 약계자(id를 더 음으로), 전류 한계. 제어기: 축별 PI + 디커플링, 한 주기 계산 지연, 지연 보상 변조(1.5 주기 앞선 각도), 전압 한계(|v| ≤ V_dc/√3)에서 적분 정지.
+- 데드타임은 상마다 전류 반대 방향의 전압 오차(전기 6차 토크 리플, 저속 전압 오차), 리졸버 오차는 제어기 좌표계를 돌려 d축 전류 리플을 만듭니다. 10 kHz 이상 리플은 1 ms 평균에 묻히므로 보려면 `PmsmDrive::trace`(C++)로 주기마다 봅니다.
+- 토크 명령은 Level A 포락선(최대 토크, 공칭 전압에서의 출력 한계, 열 디레이팅)으로 자르고, DC 전압에 따른 고속 토크 감소는 전류 제어가 직접 만듭니다. 최고속(전기 10 kHz 근처, 제어 주기당 전기각 36°)에서는 샘플 사이 전류가 출렁여 평균 토크가 약 2 % 모자랍니다.
+- 신호: `pt.motor.<m>.id`, `iq`(제어기 좌표, 스텝 끝), `id_ref`, `iq_ref`, `modulation`(DC 전압이 주는 전압 중 쓴 비율).
+- 계산량: 오토크로스 실시간 배율 약 18배 → 8.5배. 예제 시험 `motor_level_b.test.yaml`(가속 75 m 3.76 s, 최고속 근처 약계자).
+
 ## 바람
 
 ```yaml

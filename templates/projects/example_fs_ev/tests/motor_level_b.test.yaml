@@ -1,0 +1,16 @@
+test: motor_level_b
+description: 모터 Level B (dq축 PMSM + FOC, 16 kHz 전류 제어를 1 ms 스텝 안에서). 가속 75 m가 Level A(3.76 s)와 거의 같고, 최고속 근처에서 DC 전압이 모자라 약계자(id < 0)로 들어가며 변조율은 1을 넘지 않습니다. 권선에 저장된 자기 에너지까지 에너지 수지에 들어갑니다.
+scenario: ../scenarios/acceleration.yaml
+overrides:
+  vehicle.powertrain.motor.level: B
+checks:
+  - name: 75 m 3.80 s 이내 (Level A 3.76 s)
+    expr: "time_to(veh.chassis.x, 75.3) < 3.80"
+  - name: 최대 토크 21 N·m 근처까지 (전류 93 A)
+    expr: "max(pt.motor.rl.torque) > 20.5 and max(pt.motor.rl.iq) > 85"
+  - name: 고속에서 약계자 (id 20 A 이상 음수)
+    expr: "min(pt.motor.rl.id_ref) < -20"
+  - name: 변조율이 DC 전압 한계를 넘지 않음
+    expr: "max(pt.motor.rl.modulation) <= 1.0"
+  - name: 에너지 수지 오차 1 J 미만
+    expr: "abs(final(energy.residual)) < 1"

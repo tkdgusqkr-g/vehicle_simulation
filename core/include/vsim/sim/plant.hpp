@@ -24,6 +24,9 @@ class PlantModel {
 
   // Latches inputs from the bus; they stay constant over the next step.
   virtual void read_inputs(const SignalBus& bus) = 0;
+  // After read_inputs, with the state at the start of the step [t, t + dt]: a
+  // faster discrete subsystem (an inverter's current loop) advances here.
+  virtual void begin_step(double /*t*/, std::span<const double> /*x*/, double /*dt*/) {}
   virtual void derivatives(double t, std::span<const double> x, std::span<double> dx) const = 0;
   virtual void write_outputs(double t, std::span<const double> x, SignalBus& bus) const = 0;
 };

@@ -1,11 +1,15 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <numbers>
+#include <vector>
+#include <algorithm>
 #include <stdexcept>
 
 #include "test_support.hpp"
 #include "vsim/models/powertrain/battery.hpp"
 #include "vsim/models/powertrain/motor.hpp"
+#include "vsim/models/powertrain/pmsm.hpp"
 
 namespace vsim {
 namespace {
@@ -171,6 +175,150 @@ TEST(Motor, TorqueRippleAndItsFade) {
   EXPECT_THROW(MotorParams::from_params(test::load_example(
                    "straight_accel", {{"vehicle.powertrain.motor.ripple.0.order", "0"}}).params),
                std::invalid_argument);
+}
+
+
+// --- Level B: PMSM under field oriented control --------------------------------------------
+
+PmsmParams example_pmsm() {
+  PmsmParams p;  // the example car's motor (5 pole pairs, 0.225 N m/A)
+  p.dead_time = 0.0;
+  return p;
+}
+
+// Amplitude of the f [Hz] component of samples taken every dt.
+double amplitude(const std::vector<double>& v, double dt, double f) {
+  double c = 0.0, s = 0.0, mean = 0.0;
+  for (const double x : v) {
+    mean += x / static_cast<double>(v.size());
+  }
+  for (std::size_t i = 0; i < v.size(); ++i) {
+    const double w = 2.0 * std::numbers::pi * f * dt * static_cast<double>(i);
+    c += (v[i] - mean) * std::cos(w);
+    s += (v[i] - mean) * std::sin(w);
+  }
+  return 2.0 * std::hypot(c, s) / static_cast<double>(v.size());
+}
+
+std::vector<double> torque_trace(PmsmDrive& drive, const PmsmDrive::Input& start, double seconds,
+                                 std::vector<double>* d_current = nullptr) {
+  std::vector<double> torque;
+  drive.trace = [&](const PmsmDrive::Sample& s) {
+    torque.push_back(s.torque);
+    if (d_current) {
+      d_current->push_back(s.id);
+    }
+  };
+  PmsmDrive::Input in = start;
+  for (int k = 0; k < static_cast<int>(std::lround(seconds / 1e-3)); ++k) {
+    drive.step(in, 1e-3);
+    in.angle += in.speed * 1e-3;
+  }
+  drive.trace = nullptr;
+  return torque;
+}
+
+TEST(Pmsm, CurrentLoopFollowsTheTorqueAtItsBandwidth) {
+  PmsmDrive drive(example_pmsm());
+  const std::vector<double> t = torque_trace(drive, {10.0, 20.0, 0.0, 520.0}, 5e-3);
+  // 16 kHz control: one sample is 62.5 us. 63 % within the loop's time
+  // constant (159 us) plus the computation and PWM delay (about 94 us).
+  const auto first_above = [&](double level) {
+    return static_cast<int>(std::find_if(t.begin(), t.end(), [&](double v) { return v >= level; }) - t.begin());
+  };
+  EXPECT_GE(first_above(6.3), 2);
+  EXPECT_LE(first_above(6.3), 6);
+  EXPECT_NEAR(t.back(), 10.0, 0.02);
+  double peak = 0.0;
+  for (const double v : t) {
+    peak = std::max(peak, v);
+  }
+  EXPECT_LT(peak, 10.0 * 1.15);  // well damped
+}
+
+TEST(Pmsm, MtpaAndFieldWeakening) {
+  const PmsmParams p = example_pmsm();
+  PmsmDrive drive(p);
+  double id = 0.0, iq = 0.0;
+  // Low speed: MTPA uses the reluctance torque (Ld < Lq: id < 0) for less current.
+  drive.references(18.0, 50.0, 520.0, id, iq);
+  EXPECT_LT(id, 0.0);
+  EXPECT_NEAR(p.torque(id, iq), 18.0, 1e-6);
+  EXPECT_LT(std::hypot(id, iq), 18.0 / (1.5 * p.pole_pairs * p.flux));
+  // Regenerating: the same current angle, negative q.
+  double id_r = 0.0, iq_r = 0.0;
+  drive.references(-18.0, 50.0, 520.0, id_r, iq_r);
+  EXPECT_DOUBLE_EQ(id_r, id);
+  EXPECT_DOUBLE_EQ(iq_r, -iq);
+
+  // Near top speed the back-EMF (5 x 2000 rad/s x 0.03 Wb = 300 V) needs the
+  // field weakened; at 400 V less torque is left than at 520 V.
+  double id_hi = 0.0, iq_hi = 0.0, id_lo = 0.0, iq_lo = 0.0;
+  drive.references(15.0, 2000.0, 520.0, id_hi, iq_hi);
+  drive.references(15.0, 2000.0, 400.0, id_lo, iq_lo);
+  EXPECT_LT(id_hi, -20.0);
+  EXPECT_LT(id_lo, id_hi);
+  EXPECT_LT(p.torque(id_lo, iq_lo), p.torque(id_hi, iq_hi) - 1.0);
+  EXPECT_LE(std::hypot(id_lo, iq_lo), p.current_max + 1e-9);
+
+  // The drive reaches the reference within the voltage it has.
+  PmsmDrive::Input in{15.0, 2000.0, 0.0, 520.0};
+  PmsmDrive::Output out;
+  for (int k = 0; k < 20; ++k) {
+    out = drive.step(in, 1e-3);
+    in.angle += in.speed * 1e-3;
+  }
+  // 10 control samples per electrical turn at this speed: the currents swing
+  // between samples and the average torque comes out about 2 % short.
+  EXPECT_NEAR(out.torque, p.torque(id_hi, iq_hi), 0.035 * 15.0);
+  EXPECT_NEAR(out.id, id_hi, 0.1);  // at the sample instants the loop holds the reference
+  EXPECT_LE(out.modulation, 1.0);
+  EXPECT_GT(out.modulation, 0.8);
+  // Power into the inverter: shaft power plus its losses.
+  EXPECT_NEAR(out.dc_power, out.torque * in.speed + out.loss, 0.02 * out.dc_power);
+  EXPECT_GT(out.loss, 1.5 * p.resistance * (out.id * out.id + out.iq * out.iq) * 0.95);
+}
+
+// Dead time ripples the torque at 6x the electrical frequency; the
+// resolver's angle error turns the controller's frame at its order of the
+// rotor speed, so the d current (and a little torque) ripples there.
+TEST(Pmsm, DeadTimeAndResolverRipple) {
+  const double speed = 500.0;  // rotor: 79.6 rev/s, electrical 398 Hz
+  const double rev = speed / (2.0 * std::numbers::pi), electrical = 5.0 * rev;
+  const auto ripple = [&](double dead_us, double compensation, double resolver_deg) {
+    PmsmParams p = example_pmsm();
+    p.dead_time = dead_us * 1e-6;
+    p.dead_time_compensation = compensation;
+    p.resolver_error = resolver_deg * std::numbers::pi / 180.0;
+    PmsmDrive drive(p);
+    std::vector<double> d;
+    std::vector<double> t = torque_trace(drive, {5.0, speed, 0.0, 520.0}, 0.25, &d);
+    t.erase(t.begin(), t.begin() + static_cast<std::ptrdiff_t>(t.size() / 5));
+    d.erase(d.begin(), d.begin() + static_cast<std::ptrdiff_t>(d.size() / 5));
+    return std::pair{amplitude(t, 1.0 / p.control_rate, 6.0 * electrical), amplitude(d, 1.0 / p.control_rate, 2.0 * rev)};
+  };
+  const auto clean = ripple(0.0, 0.0, 0.0);
+  const auto dead = ripple(1.0, 0.0, 0.0);
+  const auto compensated = ripple(1.0, 0.8, 0.0);
+  const auto resolver = ripple(0.0, 0.0, 0.2);
+  EXPECT_LT(clean.first, 0.01);
+  EXPECT_LT(clean.second, 0.01);
+  EXPECT_GT(dead.first, 0.1);
+  EXPECT_LT(compensated.first, 0.6 * dead.first);
+  EXPECT_GT(resolver.second, 1.0);  // [A], 0.2 deg x 5 pole pairs
+  EXPECT_LT(resolver.first, 0.02);
+}
+
+TEST(Pmsm, ParametersAreChecked) {
+  const ParamTree params = test::load_example("acceleration").params;
+  const MotorParams motor = MotorParams::from_params(params);
+  ParamTree bad = params;
+  bad.set("vehicle.powertrain.motor.pmsm.current_bandwidth_hz", "5000");  // above control_rate / 8
+  EXPECT_THROW(PmsmParams::from_params(bad, motor), std::invalid_argument);
+  bad = params;
+  bad.set("vehicle.powertrain.motor.pmsm.ld_mh", "0");
+  EXPECT_THROW(PmsmParams::from_params(bad, motor), std::invalid_argument);
+  EXPECT_NO_THROW(PmsmParams::from_params(params, motor));
 }
 
 }  // namespace

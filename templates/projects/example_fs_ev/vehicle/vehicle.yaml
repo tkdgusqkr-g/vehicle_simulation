@@ -203,6 +203,20 @@ powertrain:
       coolant_temp_c: 35
       derate_start_c: 100
       derate_end_c: 140
+    level: A                   # A: 토크 1차 지연 (기본, 빠름) | B: dq축 PMSM + FOC 전류 제어 (약 2배 느림)
+    pmsm:                      # Level B: 극쌍 5, kt = 1.5 x 5 x 0.03 = 0.225 N m/A (21 N m @ 93 A)
+      pole_pairs: 5
+      resistance_ohm: 0.1      # 상당 (copper_w_per_nm2와 같은 동손)
+      ld_mh: 0.12
+      lq_mh: 0.15              # Ld < Lq: 릴럭턴스 토크 (MTPA에서 id < 0)
+      flux_linkage_wb: 0.03    # 영구자석 쇄교자속: 최고속에서 역기전력 약 314 V → 약계자
+      current_max_a: 100       # 상전류 최대 (peak)
+      control_rate_hz: 16000   # 전류 제어·PWM 주기
+      current_bandwidth_hz: 1000
+      dead_time_us: 1.0        # 데드타임: 6차 토크 리플, 저속 전압 오차
+      dead_time_compensation: 0.8
+      resolver: {error_deg: 0.05, order: 2}   # 리졸버 각도 오차 (기계각), 1회전당 차수
+      inverter: {conduction_w_per_a: 2.0, switching_w_per_a: 1.5}   # x 상전류 peak (스위칭은 공칭 전압 기준)
 
 battery:                       # 셀 등가회로 (OCV-R0-RC) × 직렬·병렬
   cells_series: 140            # 최대 588 V (FSAE: 600 V 이하)

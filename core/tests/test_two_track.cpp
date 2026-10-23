@@ -311,5 +311,39 @@ TEST(TwoTrack, StaysFiniteUnderAbusiveInputs) {
   EXPECT_LT(signal(sim, "veh.chassis.speed"), 40.0);
 }
 
+
+// Level B motors (dq PMSM under FOC) drive the car like Level A, keep the
+// energy books exact through regen, and the inverters run out of voltage
+// near top speed (field weakening).
+TEST(TwoTrack, MotorLevelBDrivesLikeLevelA) {
+  const Scenario::Overrides drive = {{"control.use_sensors", "false"},
+                                     {"driver.throttle.type", "step"},
+                                     {"driver.throttle.before", "1"},
+                                     {"driver.throttle.at_s", "4"},
+                                     {"driver.throttle.value", "0"},
+                                     {"driver.brake.type", "step"},
+                                     {"driver.brake.at_s", "5"},
+                                     {"driver.brake.value", "0.6"}};
+  Scenario::Overrides b = drive;
+  b["vehicle.powertrain.motor.level"] = "B";
+  Simulation level_a(load_example("straight_accel", drive));
+  Simulation level_b(load_example("straight_accel", b));
+  level_a.run_for(4.0);
+  level_b.run_for(4.0);
+  EXPECT_NEAR(signal(level_b, "veh.chassis.speed"), signal(level_a, "veh.chassis.speed"),
+              0.01 * signal(level_a, "veh.chassis.speed"));
+  EXPECT_LT(min_of(column(level_b, "pt.motor.rl.id_ref")), -10.0);
+  EXPECT_LE(max_of(column(level_b, "pt.motor.rl.modulation")), 1.0);
+  level_b.run_for(4.0);
+  const double released = max_of(column(level_b, "energy.battery_chemical"));
+  const std::vector<double> residual = column(level_b, "energy.residual");
+  EXPECT_LT(std::max(max_of(residual), -min_of(residual)), 1e-6 * released);
+  EXPECT_GT(min_of(column(level_b, "pt.motor.rl.power_elec")), -1e6);
+  EXPECT_LT(min_of(column(level_b, "pt.motor.rl.iq")), -5.0);  // regenerating
+  EXPECT_GE(min_of(column(level_b, "pt.motor.rl.loss")), 0.0);
+  EXPECT_THROW(Simulation(load_example("straight_accel", {{"vehicle.powertrain.motor.level", "C"}})),
+               std::invalid_argument);
+}
+
 }  // namespace
 }  // namespace vsim

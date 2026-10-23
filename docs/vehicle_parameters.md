@@ -165,7 +165,9 @@ L3 모델이 하드포인트에서 K&C를 직접 풉니다 (`vsim-core --export-
 | 토크 정확도, 토크 리플 | %, N·m | ★ | 액추에이터 비이상성(PH-04)용: `powertrain.motor.ripple: [{order, amplitude_pct, cogging_nm}]` (order = 기계 1회전당 주기 = 전기 차수 × 극쌍수) | |
 | 토크 응답 시간상수 | ms | ★ | | |
 | 열: 열저항 / 열용량, 디레이팅 시작·차단 온도 | K/W, J/K, °C | ★★ | | |
-| 전기 상수: Ld, Lq, Rs, 쇄교자속, 극쌍수 | — | ★ | Level B(dq 모델)용 | |
+| 전기 상수: Ld, Lq, Rs, 쇄교자속, 극쌍수, 최대 상전류 | mH, Ω, Wb, —, A | ★ | Level B(`powertrain.motor.level: B`): `pmsm.ld_mh`, `lq_mh`, `resistance_ohm`(상당), `flux_linkage_wb`, `pole_pairs`, `current_max_a`(peak). 데이터시트의 Kt(N·m/A, peak)가 있으면 쇄교자속 = Kt / (1.5 × 극쌍수) | |
+| 인버터 전류 제어: 제어 주기, 대역폭, 데드타임, 보상 비율, 리졸버 오차 | Hz, Hz, µs, —, ° | ★ | Level B: `pmsm.control_rate_hz`(16000), `current_bandwidth_hz`(1000, 주기의 1/8 이하), `dead_time_us`, `dead_time_compensation`, `resolver: {error_deg, order}` | |
+| 인버터 손실 | W/A | ★ | Level B: `pmsm.inverter: {conduction_w_per_a, switching_w_per_a}` (상전류 peak 기준) | |
 
 ## 10. 인버터
 

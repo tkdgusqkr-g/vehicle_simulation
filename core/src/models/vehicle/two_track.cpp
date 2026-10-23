@@ -129,6 +129,7 @@ struct TwoTrackModel::Eval {
 
   std::array<double, kCorners> motor_torque{}, motor_speed{}, motor_avail{};
   std::array<double, kCorners> motor_loss{}, motor_power{};
+  std::array<double, kCorners> motor_stored{};  // Level B: power into the windings' magnetic energy
   double power_mech = 0.0;
   double power_elec = 0.0;  // at the battery terminals, including aux
   double motor_power_sum = 0.0;  // DC power of the motors
@@ -158,6 +159,7 @@ struct TwoTrackModel::Signals {
   };
   struct Motor {
     SignalId torque_cmd, torque, speed, avail, temp, loss, power;
+    SignalId id{}, iq{}, id_ref{}, iq_ref{}, modulation{};  // Level B
   };
 
   struct Corner3 {
@@ -291,6 +293,15 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   tire_thermal_ = TireThermalParams::from_params(params);
   brake_thermal_ = BrakeThermalParams::from_params(params);
   aero_map_ = AeroMap::from_params(params);
+  drives_.clear();
+  const std::string level = params.get_string("vehicle.powertrain.motor.level", "A");
+  if (level == "B") {
+    drives_.assign(driveline_.motor_count(), PmsmDrive(PmsmParams::from_params(params, motor_)));
+  } else if (level != "A") {
+    throw std::invalid_argument("vehicle.powertrain.motor.level: A or B, not '" + level + "'");
+  }
+  drive_out_.assign(drives_.size(), PmsmDrive::Output{});
+  drive_speed_.assign(drives_.size(), 0.0);
   if (!(p_.radius_per_kpa >= 0.0) || !(p_.radius_deflection_share >= 0.0 && p_.radius_deflection_share <= 1.0)) {
     throw std::invalid_argument(
         "vehicle.tire.rolling_radius: pressure_mm_per_kpa >= 0, deflection_share in [0, 1]");
@@ -430,6 +441,14 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
                        bus.declare(base + "temp", "degC", "winding temperature"),
                        bus.declare(base + "loss", "W", "motor and inverter losses"),
                        bus.declare(base + "power_elec", "W", "DC power drawn")});
+    if (!drives_.empty()) {
+      Signals::Motor& m = s.motor.back();
+      m.id = bus.declare(base + "id", "A", "d-axis current (controller frame)");
+      m.iq = bus.declare(base + "iq", "A", "q-axis current (controller frame)");
+      m.id_ref = bus.declare(base + "id_ref", "A", "d-axis current reference (MTPA, field weakening)");
+      m.iq_ref = bus.declare(base + "iq_ref", "A", "q-axis current reference");
+      m.modulation = bus.declare(base + "modulation", "-", "voltage used of what the DC link gives");
+    }
   }
   s.shaft_torque.clear();
   s.shaft_twist.clear();
@@ -663,6 +682,7 @@ void TwoTrackModel::read_inputs(const SignalBus& bus) {
   wind_x_ = bus.get(sig_->wind_x);
   wind_y_ = bus.get(sig_->wind_y);
   brake_ = std::clamp(bus.get(sig_->brake), 0.0, 1.0);
+  pack_voltage_ = bus.get(sig_->voltage);
   for (std::size_t m = 0; m < torque_cmd_.size(); ++m) {
     torque_cmd_[m] = bus.get(sig_->motor[m].torque_cmd);
   }
@@ -678,6 +698,27 @@ void TwoTrackModel::read_inputs(const SignalBus& bus) {
       rig_z_[c] = bus.get(sig_->corner3[c].rig_z);
       rig_vz_[c] = bus.get(sig_->corner3[c].rig_vz);
     }
+  }
+}
+
+void TwoTrackModel::begin_step(double /*t*/, std::span<const double> x, double dt) {
+  if (drives_.empty()) {
+    return;
+  }
+  const std::span<const double> q = x.subspan(wheel_offset_, driveline_.dof_count());
+  for (std::size_t i = 0; i < drives_.size(); ++i) {
+    const double speed = driveline_.motor_speed(i, q);
+    const bool on = !network_ || inverter_on_[i] >= 0.5;
+    // The torque and power the inverter allows (its power limit at the nominal voltage,
+    // thermal derating); what the DC voltage allows comes out of the current loop.
+    const double avail = motor_.envelope(speed, motor_.nominal_voltage, x[motor_offset_ + 2 * i + 1]);
+    PmsmDrive::Input in;
+    in.torque = std::clamp(torque_cmd_[i], -avail, avail);
+    in.speed = speed;
+    in.angle = x[mech_offset_ + i];
+    in.dc_voltage = on ? (network_ ? dc_voltage_[i] : pack_voltage_) : 0.0;
+    drive_out_[i] = drives_[i].step(in, dt);
+    drive_speed_[i] = speed;
   }
 }
 
@@ -887,13 +928,24 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
         continue;
       }
       e.motor_avail[i] = motor_.envelope(e.motor_speed[i], network_ ? dc_voltage_[i] : dc_voltage, temp);
-      e.motor_torque[i] = std::clamp(x[motor_offset_ + 2 * i], -e.motor_avail[i], e.motor_avail[i]);
+      if (!drives_.empty()) {
+        // Level B: the drive's averages over this step; its electrical losses (and what its
+        // windings stored) plus the motor's iron, windage and fixed losses.
+        const PmsmDrive::Output& d = drive_out_[i];
+        e.motor_torque[i] = d.torque;
+        e.motor_loss[i] = d.loss + motor_.losses(0.0, e.motor_speed[i]);
+        e.motor_stored[i] = d.dc_power - d.torque * drive_speed_[i] - d.loss;
+      } else {
+        e.motor_torque[i] = std::clamp(x[motor_offset_ + 2 * i], -e.motor_avail[i], e.motor_avail[i]);
+      }
       if (!motor_.ripple.empty()) {
         e.motor_torque[i] += motor_.ripple_torque(e.motor_torque[i], x[mech_offset_ + i], e.motor_speed[i],
                                                   ripple_max_frequency_);
       }
-      e.motor_loss[i] = motor_.losses(e.motor_torque[i], e.motor_speed[i]);
-      e.motor_power[i] = e.motor_torque[i] * e.motor_speed[i] + e.motor_loss[i];
+      if (drives_.empty()) {
+        e.motor_loss[i] = motor_.losses(e.motor_torque[i], e.motor_speed[i]);
+      }
+      e.motor_power[i] = e.motor_torque[i] * e.motor_speed[i] + e.motor_loss[i] + e.motor_stored[i];
       total += e.motor_power[i];
     }
     return total;
@@ -1154,7 +1206,9 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
   for (std::size_t i = 0; i < motors; ++i) {
     const double torque = x[motor_offset_ + 2 * i];
     const double temp = x[motor_offset_ + 2 * i + 1];
-    const double target = std::clamp(torque_cmd_[i], -e.motor_avail[i], e.motor_avail[i]);
+    // Level A's torque lag; with Level B it just follows the drive (for the signal history).
+    const double target = drives_.empty() ? std::clamp(torque_cmd_[i], -e.motor_avail[i], e.motor_avail[i])
+                                          : e.motor_torque[i];
     dx[motor_offset_ + 2 * i] = (target - torque) / motor_.torque_time_constant;
     dx[motor_offset_ + 2 * i + 1] =
         (e.motor_loss[i] - (temp - motor_.coolant_temp) / motor_.thermal_resistance) / motor_.heat_capacity;
@@ -1180,7 +1234,7 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
 
   double motor_loss = 0.0;
   for (std::size_t i = 0; i < motors; ++i) {
-    motor_loss += e.motor_loss[i];
+    motor_loss += e.motor_loss[i] + e.motor_stored[i];  // the windings' energy is back within a step or two
   }
   const std::span<double> energy = dx.subspan(energy_offset_, kEnergyCount);
   energy[kBatteryChemical] = e.ocv * current;
@@ -1341,6 +1395,14 @@ void TwoTrackModel::write_outputs(double /*t*/, std::span<const double> x, Signa
     bus.set(motor.temp, x[motor_offset_ + 2 * i + 1]);
     bus.set(motor.loss, e.motor_loss[i]);
     bus.set(motor.power, e.motor_power[i]);
+    if (!drives_.empty()) {
+      const PmsmDrive::Output& d = drive_out_[i];
+      bus.set(motor.id, d.id);
+      bus.set(motor.iq, d.iq);
+      bus.set(motor.id_ref, d.id_ref);
+      bus.set(motor.iq_ref, d.iq_ref);
+      bus.set(motor.modulation, d.modulation);
+    }
   }
   bus.set(s.power_mech, e.power_mech);
   for (std::size_t i = 0; i < s.shaft_torque.size(); ++i) {
