@@ -1,0 +1,28 @@
+test: board_apps_clamp
+description: >
+  VCU 기판의 APPS 입력 회로(직렬 저항, RC 필터, 5 V·접지 클램프 다이오드, boards/apps_conditioning.cir)를
+  ngspice로 함께 풀고 VCU가 기판의 ADC 핀 전압을 읽습니다. 1초에 1번 트랙이 12 V에 단락되면 클램프가
+  ADC 핀을 약 5.3 V로 묶어 MCU를 보호하지만, 범위(4.8 V)를 넘으므로 VCU는 100 ms 뒤 토크를 끊습니다.
+scenario: ../scenarios/acceleration.yaml
+requires: [ngspice]
+duration_s: 2
+overrides:
+  board: "{netlist: boards/apps_conditioning.cir, rate_hz: 1000, max_step_us: 10,
+           inputs: {V_APPS1: sens.apps.ch1, V_APPS2: sens.apps.ch2, V_5V: {value: 5.0}},
+           outputs: {adc1: board.apps.adc1, adc2: board.apps.adc2, i(V_5V): board.apps.supply_current}}"
+  control.apps.signals: "[board.apps.adc1, board.apps.adc2]"
+  vehicle.sensors.5.faults.0.channel: ch1
+  vehicle.sensors.5.faults.0.type: value
+  vehicle.sensors.5.faults.0.value: 12
+  vehicle.sensors.5.faults.0.at_s: 1.0
+checks:
+  - name: 단락 전에는 ADC 핀이 센서 전압을 따라가고 정상 구동
+    expr: "abs(at(board.apps.adc1, 0.9) - at(sens.apps.ch1, 0.9)) < 0.01 and at(pt.motor.fl.torque_cmd, 0.99) > 5"
+  - name: 센서선은 12 V
+    expr: "max(sens.apps.ch1) > 11.9"
+  - name: 클램프가 ADC 핀을 5.6 V 아래로 묶음
+    expr: "max(board.apps.adc1) < 5.6 and max(board.apps.adc1) > 5.0"
+  - name: 클램프 전류가 5 V 레일로 (1 mA 이상)
+    expr: "max(abs(board.apps.supply_current)) > 0.001"
+  - name: VCU는 범위 이탈로 110 ms 안에 토크 차단
+    expr: "at(vcu.apps_implausible, 1.12) == 1 and max(abs(window(pt.motor.fl.torque_cmd, 1.13, 2.0))) == 0"

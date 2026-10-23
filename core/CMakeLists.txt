@@ -23,6 +23,7 @@ add_library(vsim_core STATIC
   src/elec/circuit.cpp
   src/elec/elements.cpp
   src/elec/network.cpp
+  src/elec/spice_board.cpp
   src/driver/drivers.cpp
   src/driver/mpc_driver.cpp
   src/driver/qp.cpp

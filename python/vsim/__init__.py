@@ -7,10 +7,10 @@
 
 import json as _json
 
-from ._vsim import Simulation, Track, __version__, _electrical_operating_point, can_frame_bits, git_commit
+from ._vsim import Simulation, Track, __version__, _electrical_operating_point, can_frame_bits, git_commit, ngspice_available, spice_netlist
 
-__all__ = ["Simulation", "Track", "can_frame_bits", "electrical_operating_point", "run_scenario", "__version__",
-           "git_commit"]
+__all__ = ["Simulation", "Track", "can_frame_bits", "electrical_operating_point", "ngspice_available", "run_scenario", "spice_netlist",
+           "__version__", "git_commit"]
 
 
 def run_scenario(scenario, *, duration=None, overrides=None, log_dir=None):

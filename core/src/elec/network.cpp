@@ -12,6 +12,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -2216,4 +2217,146 @@ std::string ElectricalNetwork::operating_point_json(const ParamTree& params) {
   return out.dump();
 }
 
+namespace {
+
+// SPICE wants plain names; the mapping is written as comments.
+std::string spice_name(const std::string& name) {
+  std::string out;
+  for (const char c : name) {
+    if (std::isalnum(static_cast<unsigned char>(c))) {
+      out += c;
+    } else {
+      out += c == '+' ? "_P" : c == '-' ? "_N" : "_";
+    }
+  }
+  return out.empty() ? std::string("n") : out;
+}
+
+std::string spice_number(double v) {
+  char buf[32];
+  std::snprintf(buf, sizeof buf, "%.9g", v);
+  return buf;
+}
+
+}  // namespace
+
+std::string ElectricalNetwork::spice_netlist(const ParamTree& params, const std::string& title) {
+  SignalBus bus;
+  InputHub inputs;
+  ParamTree p = params;
+  if (!p.has("electrical.level") || p.get_string("electrical.level") == "E0") {
+    p.set("electrical.level", "E2");
+  }
+  p.set("electrical.initial", "active");
+  Context ctx(bus, inputs, RealismConfig::from_params(p), 0, p.get_double("time.dt", 0.001));
+  ElectricalNetwork network;
+  network.impl_->standalone = true;
+  network.init(p, ctx);
+  network.step(0.0, bus);
+  const elec::Circuit& c = network.impl_->circuit;
+  // Net names, unique after the clean-up.
+  std::vector<std::string> nets;
+  std::set<std::string> taken;
+  for (const std::string& name : c.node_names()) {
+    std::string net = "n_" + spice_name(name);
+    for (int k = 2; !taken.insert(net).second; ++k) {
+      net = "n_" + spice_name(name) + "_" + std::to_string(k);
+    }
+    nets.push_back(net);
+  }
+  const auto node = [&](elec::NodeId n) { return n < 0 ? std::string("0") : nets[static_cast<std::size_t>(n)]; };
+  constexpr double kOpen = 1e12;
+  std::ostringstream o;
+  o << "* " << title << "\n";
+  o << "* Exported by vsim (design doc §12.4): the operating point the simulator solves at rest.\n";
+  o << "* Nets:";
+  for (std::size_t i = 0; i < c.size(); ++i) {
+    o << (i % 4 == 0 ? "\n*  " : "  ") << node(static_cast<elec::NodeId>(i)) << " = " << c.node_names()[i];
+  }
+  o << "\n";
+  int k = 0;
+  for (const auto& element : c.elements()) {
+    const std::string id = spice_name(element->id()) + "_" + std::to_string(k++);
+    if (const auto* r = dynamic_cast<const elec::Resistor*>(element.get())) {
+      o << "R" << id << " " << node(r->a) << " " << node(r->b) << " " << spice_number(r->open ? kOpen : r->resistance())
+        << "\n";
+    } else if (const auto* sw = dynamic_cast<const elec::Switch*>(element.get())) {
+      o << "R" << id << " " << node(sw->a) << " " << node(sw->b) << " " << spice_number(sw->closed ? sw->r_on : kOpen)
+        << (sw->closed ? " ; contact closed" : " ; contact open") << "\n";
+    } else if (const auto* cap = dynamic_cast<const elec::Capacitor*>(element.get())) {
+      const std::string mid = cap->esr > 0.0 ? "x_" + id : node(cap->b);
+      o << "C" << id << " " << node(cap->a) << " " << mid << " " << spice_number(cap->c) << "\n";
+      if (cap->esr > 0.0) {
+        o << "R" << id << "_esr " << mid << " " << node(cap->b) << " " << spice_number(cap->esr) << "\n";
+      }
+    } else if (const auto* l = dynamic_cast<const elec::Inductor*>(element.get())) {
+      const std::string mid = "x_" + id;
+      o << "L" << id << " " << node(l->a) << " " << mid << " " << spice_number(l->l) << "\n";
+      o << "R" << id << "_r " << mid << " " << node(l->b) << " " << spice_number(std::max(l->r, 1e-6)) << "\n";
+    } else if (const auto* v = dynamic_cast<const elec::VoltageSource*>(element.get())) {
+      const std::string mid = "x_" + id;
+      o << "V" << id << " " << mid << " " << node(v->neg) << " DC " << spice_number(v->e) << "\n";
+      o << "R" << id << "_r " << node(v->pos) << " " << mid << " " << spice_number(v->open ? kOpen : v->r) << "\n";
+    } else if (const auto* i = dynamic_cast<const elec::CurrentSource*>(element.get())) {
+      o << "I" << id << " " << node(i->neg) << " " << node(i->pos) << " DC " << spice_number(i->i) << "\n";
+    } else if (const auto* load = dynamic_cast<const elec::Load*>(element.get())) {
+      const std::string a = node(load->a), b = node(load->b);
+      if (!load->on) {
+        o << "* " << element->id() << ": load off\n";
+      } else if (load->law == elec::Load::Law::Resistance) {
+        o << "R" << id << " " << a << " " << b << " " << spice_number(load->value) << "\n";
+      } else {
+        // Power or current, fading into a resistance below the knee voltage as in the simulator.
+        const std::string amount = spice_number(load->value), knee = spice_number(load->v_knee);
+        const std::string law = load->law == elec::Load::Law::Power
+                                    ? amount + "/max(V(" + a + "," + b + ")," + knee + ")"
+                                    : amount;
+        o << "B" << id << " " << a << " " << b << " I=(" << law << ")*min(max(V(" << a << "," << b << "),0)/" << knee
+          << ",1)\n";
+      }
+    } else if (const auto* d = dynamic_cast<const elec::Diode*>(element.get())) {
+      // Exponential diode through v_f at 1 A, r_on in series.
+      o << "D" << id << " " << node(d->a) << " " << node(d->b) << " D_" << id << "\n";
+      o << ".model D_" << id << " D(IS=" << spice_number(std::exp(-d->v_f / 0.025852)) << " N=1 RS="
+        << spice_number(d->r_on) << ")\n";
+    } else if (const auto* reg = dynamic_cast<const elec::Regulator*>(element.get())) {
+      const std::string in = node(reg->in), out = node(reg->out), gnd = node(reg->gnd);
+      o << "B" << id << "_e x_" << id << " " << gnd << " V=max(min(" << spice_number(reg->v_set) << ",V(" << in << ","
+        << gnd << ")-" << spice_number(reg->dropout) << "),0)\n";
+      o << "V" << id << "_sense x_" << id << " y_" << id << " DC 0\n";
+      o << "R" << id << "_out y_" << id << " " << out << " " << spice_number(reg->r_out) << "\n";
+      o << "B" << id << "_in " << in << " " << gnd << " I=max(I(V" << id << "_sense),0)+" << spice_number(reg->i_q)
+        << "\n";
+    } else if (const auto* dc = dynamic_cast<const elec::DcDc*>(element.get())) {
+      const std::string ip = node(dc->in_p), in_n = node(dc->in_n), op = node(dc->out_p), on = node(dc->out_n);
+      if (!dc->on) {
+        o << "* " << element->id() << ": converter off\n";
+        continue;
+      }
+      // The internal voltage where the converter has settled (it holds the output at v_set).
+      o << "V" << id << "_e x_" << id << " " << on << " DC " << spice_number(dc->e > 0.0 ? dc->e : dc->v_set) << "\n";
+      o << "V" << id << "_sense x_" << id << " y_" << id << " DC 0\n";
+      o << "R" << id << "_out y_" << id << " " << op << " " << spice_number(dc->r_out) << "\n";
+      o << "B" << id << "_in " << ip << " " << in_n << " I=(V(" << op << "," << on << ")*max(I(V" << id
+        << "_sense),0)/" << spice_number(dc->efficiency) << "+" << spice_number(dc->p_idle) << ")/max(V(" << ip
+        << "," << in_n << ")," << spice_number(dc->v_knee) << ")\n";
+    } else if (const auto* pot = dynamic_cast<const elec::Potentiometer*>(element.get())) {
+      // Track a-b split at the wiper (r x from the wiper to b).
+      o << "R" << id << "_a " << node(pot->a) << " " << node(pot->w) << " "
+        << spice_number(std::max(pot->r * (1.0 - pot->x), 1e-3)) << "\n";
+      o << "R" << id << "_b " << node(pot->w) << " " << node(pot->b) << " " << spice_number(std::max(pot->r * pot->x, 1e-3))
+        << "\n";
+    } else {
+      o << "* " << element->id() << ": not exported\n";
+    }
+  }
+  // Every net gets a path to ground so floating parts (an open contactor's far side) stay defined.
+  for (std::size_t i = 0; i < c.size(); ++i) {
+    o << "Rleak_" << i << " " << node(static_cast<elec::NodeId>(i)) << " 0 1e12\n";
+  }
+  o << ".options gmin=1e-12\n.op\n.end\n";
+  return o.str();
+}
+
 }  // namespace vsim
+

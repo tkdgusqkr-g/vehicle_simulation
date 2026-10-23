@@ -322,10 +322,24 @@ class TestResult:
     description: str
     runs: list = field(default_factory=list)
     error: str = ""
+    skipped: str = ""  # why it did not run (a requirement missing); not a failure
 
     @property
     def passed(self):
-        return not self.error and bool(self.runs) and all(r.passed for r in self.runs)
+        return bool(self.skipped) or (not self.error and bool(self.runs) and all(r.passed for r in self.runs))
+
+    @property
+    def status(self):
+        return "SKIP" if self.skipped else ("PASS" if self.passed else "FAIL")
+
+
+# What a test can require (`requires: [ngspice]`): name -> check returning "" or why not.
+def _ngspice_missing():
+    from . import ngspice_available
+    return "" if ngspice_available() else "ngspice shared library not found"
+
+
+REQUIREMENTS = {"ngspice": _ngspice_missing}
 
 
 def load_test(path):
@@ -348,6 +362,12 @@ def run_test(path, *, log_dir=None):
         return TestResult(path.stem, str(path), "", error=str(e))
     result = TestResult(spec.get("test", path.name.removesuffix(".test.yaml")), str(path),
                         spec.get("description", ""))
+    for need in spec.get("requires") or []:
+        check = REQUIREMENTS.get(str(need))
+        why = check() if check else f"unknown requirement '{need}'"
+        if why:
+            result.skipped = why
+            return result
     scenario = (path.parent / spec["scenario"]).resolve()
     seeds = spec.get("seeds") or [None]
     for seed in seeds:
@@ -398,12 +418,15 @@ def markdown_report(results):
     for r in results:
         sim_time = sum(run.sim_time for run in r.runs)
         wall = sum(run.wall_time for run in r.runs)
-        lines.append(f"| {r.name} | {'PASS' if r.passed else 'FAIL'} | {len(r.runs)} | {sim_time:.1f} s | {wall:.2f} s |")
+        lines.append(f"| {r.name} | {r.status} | {len(r.runs)} | {sim_time:.1f} s | {wall:.2f} s |")
     for r in results:
-        lines += ["", f"## {r.name} — {'PASS' if r.passed else 'FAIL'}", ""]
+        lines += ["", f"## {r.name} — {r.status}", ""]
         if r.description:
             lines += [r.description, ""]
         lines.append(f"`{r.file}`")
+        if r.skipped:
+            lines += ["", f"Skipped: {r.skipped}"]
+            continue
         if r.error:
             lines += ["", f"Error: {r.error}"]
             continue
@@ -420,7 +443,7 @@ def markdown_report(results):
 
 def json_report(results):
     return json.dumps([{
-        "test": r.name, "file": r.file, "passed": r.passed, "error": r.error,
+        "test": r.name, "file": r.file, "passed": r.passed, "skipped": r.skipped, "error": r.error,
         "runs": [{"seed": run.seed, "passed": run.passed, "error": run.error, "sim_time_s": run.sim_time,
                   "wall_time_s": run.wall_time,
                   "checks": [{"name": c.name, "expr": c.expr, "passed": c.passed, "detail": c.detail}
@@ -455,7 +478,7 @@ def main(argv=None):
     for f in files:
         result = run_test(f, log_dir=args.log_dir)
         results.append(result)
-        print(f"{'PASS' if result.passed else 'FAIL'}  {result.name}")
+        print(f"{result.status}  {result.name}" + (f" ({result.skipped})" if result.skipped else ""))
         if result.error:
             print(f"      {result.error}")
         for run in result.runs:

@@ -70,6 +70,7 @@ struct Options {
   std::string export_track;
   std::string export_car;
   std::string export_kc;
+  std::string export_spice;
   std::string list_signals;
   std::string link_name = vsim_link::kStateName;
   bool no_wheel = false;
@@ -96,6 +97,7 @@ constexpr const char* kUsage = R"(usage: vsim-core --scenario <file.yaml> [optio
   --export-track-glb <file>  write the scenario's track as a 3D model (glTF binary) and exit
   --export-car-glb <file>    write the car's 3D model (glTF binary) and exit
   --export-kc <file.csv>     write the suspension K&C curves solved from the hardpoints and exit
+  --export-spice <file.cir>  write the electrical network as a SPICE netlist (ngspice) and exit
   --list-signals <file.json> write the scenario's signals (name, unit, description) and exit;
                              the Simulink tools (sdk/simulink) map model ports with it
   --version            print the version and exit
@@ -237,6 +239,8 @@ std::optional<Options> parse_args(const std::vector<std::string>& args) {
       options.export_track = value();
     } else if (arg == "--export-kc") {
       options.export_kc = value();
+    } else if (arg == "--export-spice") {
+      options.export_spice = value();
     } else if (arg == "--list-signals") {
       options.list_signals = value();
     } else if (arg == "--export-car-glb") {
@@ -1625,6 +1629,15 @@ int main(int argc, char** argv) {
         throw std::runtime_error("cannot write " + options->list_signals);
       }
       std::cout << list.size() << " signals written to " << options->list_signals << "\n";
+      return 0;
+    }
+    if (!options->export_spice.empty()) {
+      std::ofstream out(vsim::path_from_utf8(options->export_spice), std::ios::binary);
+      out << vsim::ElectricalNetwork::spice_netlist(sim.scenario().params, sim.scenario().name);
+      if (!out) {
+        throw std::runtime_error("cannot write " + options->export_spice);
+      }
+      std::cout << "SPICE netlist written to " << options->export_spice << "\n";
       return 0;
     }
     if (!options->export_kc.empty()) {

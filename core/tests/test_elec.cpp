@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <string>
@@ -12,6 +14,7 @@
 #include "vsim/elec/circuit.hpp"
 #include "vsim/elec/elements.hpp"
 #include "vsim/elec/network.hpp"
+#include "vsim/elec/spice_board.hpp"
 #include "vsim/sim/context.hpp"
 #include "vsim/sim/input_hub.hpp"
 #include "vsim/sim/params.hpp"
@@ -611,6 +614,65 @@ TEST(ElecVehicle, NeedsAnInverterForEveryMotor) {
   } catch (const std::invalid_argument& e) {
     EXPECT_NE(std::string(e.what()).find("motor rr has no inverter"), std::string::npos) << e.what();
   }
+}
+
+
+// --- Board co-simulation (ngspice, design doc §12.4) ------------------------------------------
+
+TEST(SpiceBoard, NetlistIsPreparedForCoSimulation) {
+  const std::string text =
+      "* demo board\n"
+      "V_IN in 0 dc 1.5\n"
+      "+ ac 1\n"
+      "R1 in out 1k\n"
+      "C1 out 0 1u\n"
+      ".include models/parts.lib\n"
+      ".tran 1u 1m\n"
+      ".control\nrun\nplot v(out)\n.endc\n"
+      ".end\n"
+      "R_after_end x y 1\n";
+  const std::string out =
+      prepare_board_netlist(text, "/proj/boards", {"v_in"}, {"v(out)", "i(v_in)"}, 1e-5, 10.0);
+  EXPECT_EQ(out.rfind("* demo board\n", 0), 0u);
+  EXPECT_NE(out.find("V_IN in 0 dc 0 external\n"), std::string::npos);
+  EXPECT_EQ(out.find("+ ac 1"), std::string::npos);  // the old source's continuation went with it
+  EXPECT_NE(out.find("R1 in out 1k\n"), std::string::npos);
+  EXPECT_NE(out.find(".include \"/proj/boards/models/parts.lib\""), std::string::npos);
+  EXPECT_EQ(out.find("plot"), std::string::npos);
+  EXPECT_EQ(out.find("R_after_end"), std::string::npos);
+  EXPECT_NE(out.find("* (co-simulation) .tran 1u 1m"), std::string::npos);
+  EXPECT_NE(out.find(".tran 1e-05 10 0 1e-05\n.save v(out) i(v_in)\n.end\n"), std::string::npos);
+  EXPECT_THROW(prepare_board_netlist(text, "/", {"V_MISSING"}, {}, 1e-5, 1.0), std::invalid_argument);
+  EXPECT_THROW(prepare_board_netlist(text, "/", {"R1"}, {}, 1e-5, 1.0), std::invalid_argument);  // not a source
+}
+
+TEST(SpiceBoard, RcFollowsTheThrottle) {
+  if (!SpiceBoard::available()) {
+    GTEST_SKIP() << "ngspice shared library not installed";
+  }
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "vsim_board_test";
+  std::filesystem::create_directories(dir);
+  std::ofstream(dir / "rc.cir") << "* rc\nV_U u 0 dc 0\nR1 u out 10k\nC1 out 0 1u\n.end\n";  // tau 10 ms
+  const std::string board = "{netlist: " + (dir / "rc.cir").generic_string() +
+                            ", rate_hz: 1000, max_step_us: 20, inputs: {V_U: drv.cmd.throttle},"
+                            " outputs: {out: board.rc.out, i(V_U): board.rc.i}}";
+  // The board starts settled with the inputs at t = 0 (throttle 0); full throttle from 10 ms.
+  Simulation sim(test::load_example("straight_accel", {{"board", board},
+                                                       {"driver.throttle", "{type: step, at_s: 0.01, value: 1}"}}));
+  sim.run_for(0.005);
+  EXPECT_NEAR(test::signal(sim, "board.rc.out"), 0.0, 1e-9);
+  sim.run_for(0.025);
+  // What the bus holds now was written in the last step, from the circuit at its start (one
+  // step before sim.time()); the input step is taken at the 10 ms sample and held from there.
+  const double circuit_time = sim.time() - 0.001;
+  const double expected = 1.0 - std::exp(-(circuit_time - 0.01) / 0.01);
+  EXPECT_NEAR(test::signal(sim, "board.rc.out"), expected, 2e-3);
+  // Charging current into the capacitor through R: (1 - v) / R, out of the source's + terminal.
+  EXPECT_NEAR(std::abs(test::signal(sim, "board.rc.i")), (1.0 - expected) / 1e4, 2e-6);
+  EXPECT_GT(test::signal(sim, "board.time_points"), 30.0);
+  // Only one board per process at a time; the next simulation can have one again.
+  EXPECT_THROW(Simulation(test::load_example("straight_accel", {{"board", board}})), std::runtime_error);
+  std::filesystem::remove_all(dir);
 }
 
 }  // namespace

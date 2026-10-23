@@ -21,6 +21,7 @@
 #include "python_plugin.hpp"
 #include "vsim/can/frame.hpp"
 #include "vsim/elec/network.hpp"
+#include "vsim/elec/spice_board.hpp"
 #include "vsim/sim/scenario.hpp"
 
 namespace py = pybind11;
@@ -102,6 +103,18 @@ PYBIND11_MODULE(_vsim, m) {
       },
       py::arg("scenario"), py::arg("overrides") = std::map<std::string, std::string>{},
       "DC operating point of the scenario's electrical network as JSON (node voltages, component signals).");
+  m.def(
+      "spice_netlist",
+      [](const std::filesystem::path& scenario, const py::dict& overrides) {
+        const vsim::Scenario sc = vsim::Scenario::load(scenario, to_overrides(overrides));
+        return vsim::ElectricalNetwork::spice_netlist(sc.params, sc.name);
+      },
+      py::arg("scenario"), py::arg("overrides") = py::dict(),
+      "The scenario's electrical network as a SPICE netlist (ngspice dialect, .op analysis).");
+  m.def(
+      "ngspice_available", [](const std::string& library) { return vsim::SpiceBoard::available(library); },
+      py::arg("library") = std::string(),
+      "True if ngspice's shared library loads (board co-simulation, design doc §12.4).");
   vsim::register_python_plugins(false);  // components of type python run in this interpreter
   m.attr("__version__") = vsim::version();
   m.attr("git_commit") = vsim::git_commit();

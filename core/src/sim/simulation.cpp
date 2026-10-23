@@ -17,6 +17,7 @@
 #include "vsim/control/reference_vcu.hpp"
 #include "vsim/driver/drivers.hpp"
 #include "vsim/elec/network.hpp"
+#include "vsim/elec/spice_board.hpp"
 #include "vsim/env/wind.hpp"
 #include "vsim/log/mcap_logger.hpp"
 #include "vsim/models/vehicle/single_track.hpp"
@@ -229,6 +230,10 @@ void Simulation::Impl::build(const Scenario& scenario, const SimulationOptions& 
   if (SensorSystem::configured(effective)) {
     ordered.push_back(std::make_unique<SensorSystem>());
   }
+  const bool board = SpiceBoard::configured(effective);
+  if (board && SpiceBoard::after(effective) == "sensors") {
+    ordered.push_back(std::make_unique<SpiceBoard>());  // between the sensors and the ECUs reading them
+  }
   if (CanNetwork::configured(effective)) {
     can = std::make_unique<CanNetwork>();
     ordered.push_back(can->make_block(false));  // devices send, controllers receive
@@ -240,6 +245,9 @@ void Simulation::Impl::build(const Scenario& scenario, const SimulationOptions& 
     ordered.push_back(std::make_unique<ReferenceVcu>());
   }
   extras_after("vcu");
+  if (board && SpiceBoard::after(effective) == "vcu") {
+    ordered.push_back(std::make_unique<SpiceBoard>());  // between the ECUs and the actuators
+  }
   if (elec) {
     ordered.push_back(elec->make_block(true));  // ECUs without power drive nothing
   }

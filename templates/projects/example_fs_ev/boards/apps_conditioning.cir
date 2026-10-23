@@ -1,0 +1,25 @@
+* APPS input conditioning on the VCU board: per track a 1 k series resistor into a 100 nF
+* filter cap, 4.7 k into the ADC pin with 10 nF, and clamp diodes to the 5 V rail and ground.
+* Sources V_APPS1/V_APPS2 (sensor wiper voltages) and V_5V are driven by the simulator
+* (board.inputs); standalone they sit at rest values so the file runs in ngspice on its own.
+V_5V v5 0 dc 5
+V_APPS1 s1 0 dc 0.5
+V_APPS2 s2 0 dc 4.5
+* Track 1
+R1A s1 f1 1k
+C1A f1 0 100n
+R1B f1 adc1 4.7k
+C1B adc1 0 10n
+D1H adc1 v5 DCLAMP
+D1L 0 adc1 DCLAMP
+* Track 2
+R2A s2 f2 1k
+C2A f2 0 100n
+R2B f2 adc2 4.7k
+C2B adc2 0 10n
+D2H adc2 v5 DCLAMP
+D2L 0 adc2 DCLAMP
+* Small-signal Schottky (BAT54-like)
+.model DCLAMP D(IS=2e-7 N=1.05 RS=2 CJO=10p BV=30)
+.tran 1u 20m
+.end

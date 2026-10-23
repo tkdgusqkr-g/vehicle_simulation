@@ -819,6 +819,45 @@ environment:
 - 시나리오에서 `realism.environment: ideal`을 명시하면 바람이 멈춥니다.
 - 예제: `scenarios/crosswind.yaml`(100 km/h 직진 중 옆 돌풍 → 코가 바람 쪽으로 돌아 2.5 m 벗어남), MPC 외란 시험에 5 m/s 바람 + 난류.
 
+## 기판 회로 (ngspice)
+
+회로도에서 내보낸 SPICE 넷리스트(KiCad, Altium)를 ngspice로 시뮬레이션과 함께 풉니다 (설계 §12.4). ngspice 공유 라이브러리가 필요합니다: Windows는 ngspice 배포판의 `ngspice.dll`(또는 KiCad에 들어 있는 `libngspice-0.dll`)을 PATH에 두거나 `board.library`/`VSIM_NGSPICE`로 지정, Linux는 `sudo apt install libngspice0`.
+
+```yaml
+board:
+  netlist: boards/apps_conditioning.cir    # 프로젝트 기준
+  rate_hz: 1000                             # 시뮬레이션과 주고받는 주기
+  max_step_us: 10                           # ngspice 최대 시간 간격
+  after: sensors                            # sensors(기본: 센서 다음, ECU 앞) | vcu(ECU 다음, 액추에이터 앞)
+  inputs:                                   # 넷리스트의 전원 이름: 신호 또는 값
+    V_APPS1: sens.apps.ch1
+    V_APPS2: sens.apps.ch2
+    V_5V: {value: 5.0}
+  outputs:                                  # 노드(접지 기준 전압) 또는 i(<전원>): 신호
+    adc1: board.apps.adc1
+    adc2: board.apps.adc2
+    i(V_5V): board.apps.supply_current
+control:
+  apps.signals: [board.apps.adc1, board.apps.adc2]   # VCU가 센서 대신 기판의 ADC 핀을 읽음
+```
+
+- 이름을 준 전원은 `external` 전원으로 바뀌어(넷리스트의 그 줄을 다시 씀) 시뮬레이션 값을 받고, 파일의 해석(`.tran`, `.op` …)·`.control` 블록은 빼고 과도 해석을 붙입니다. `.include`/`.lib` 경로는 넷리스트 폴더 기준 절대 경로로 바꿉니다. 그래서 회로도 툴에서 단독으로 돌리던 파일을 그대로 씁니다.
+- 시간: 시작할 때 그 순간의 입력으로 동작점을 풀고(정착된 기판), 매 주기 t에 직전 주기 동안 유지한 입력으로 t까지 풀어 출력을 쓰고 다음 입력을 받습니다(`stop when` / `resume`로 lockstep).
+- ngspice는 프로세스당 회로 하나: 시뮬레이션 하나에 기판 하나(여러 기판은 상위 넷리스트 하나로 묶기). µs 간격으로 풀므로 느립니다(예제 APPS 기판으로 가속 시나리오 약 10배 느림, 실시간보다는 빠름). 스위칭 회로는 평균 모델을 권장합니다.
+- 신호: 출력 신호, `board.time_points`(ngspice 시간점 수, 비용).
+- 예제: `boards/apps_conditioning.cir`(트랙마다 직렬 저항, RC 필터, 5 V·접지 클램프 다이오드)와 `board_apps.test.yaml`: 1번 트랙이 12 V에 단락되면 ADC 핀은 클램프로 약 5.3 V, VCU는 범위 이탈로 토크 차단. ngspice가 없으면 시험은 SKIP (`requires: [ngspice]`).
+
+### SPICE로 내보내기
+
+전기 네트워크(M9)를 SPICE 넷리스트로 씁니다: 같은 동작점 조건(정지, 계통이 켜진 상태)에서 소자마다, 비선형 소자(정전력 부하, 레귤레이터, DC-DC 평균 모델)는 B 전원, 접점은 지금 상태의 저항.
+
+```powershell
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/acceleration.yaml --set electrical.enabled=true --export-spice car.cir
+ngspice car.cir          # .op: 시뮬레이터의 동작점과 LV 0.02 V, HV(ACC- 기준) 0.07 V 이내
+```
+
+Python: `vsim.spice_netlist(scenario, overrides)`.
+
 ## 실측 상관성 (correlate)
 
 실차 기록이 생기면 기록된 운전 입력을 그대로 넣고 차의 반응을 비교하고, 맞지 않는 파라미터를 찾고, 정지 기록으로 센서 잡음을 정합니다 (설계 §13.4).

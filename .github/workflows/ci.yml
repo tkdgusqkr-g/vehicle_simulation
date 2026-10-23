@@ -24,6 +24,10 @@ jobs:
       - name: Install Python packages
         run: python -m pip install pybind11 numpy pytest mcap pyyaml
 
+      - name: Install ngspice (board co-simulation tests)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ngspice libngspice0
+
       - name: Configure
         run: >
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release

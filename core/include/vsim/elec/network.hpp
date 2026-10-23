@@ -62,6 +62,11 @@ class ElectricalNetwork {
   // DC operating point of a netlist for editors: node voltages and component
   // currents as JSON, inputs at rest (no motor power, pedals released).
   static std::string operating_point_json(const ParamTree& params);
+  // The circuit as a SPICE netlist (ngspice dialect) at the same operating
+  // conditions: element by element, behavioural sources for the nonlinear
+  // ones (constant power loads, regulators, DC-DC average models), switches
+  // and contacts as their present resistance, an .op analysis.
+  static std::string spice_netlist(const ParamTree& params, const std::string& title = "vsim electrical network");
 
   struct Impl;
 

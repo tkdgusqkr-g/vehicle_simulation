@@ -76,9 +76,15 @@ void ReferenceVcu::init(const ParamTree& params, Context& ctx) {
       const std::string out = "sens." + e.name + ".";
       if (e.type == "pedal" && !apps_ && params.get_string(prefix + ".pedal", "throttle") == "throttle") {
         Apps apps;
+        // The two tracks as the VCU's ADC sees them: the sensor outputs, or other signals
+        // (control.apps.signals: a conditioning circuit, a board simulated in ngspice).
+        const std::vector<std::string> through = params.get_string_list("control.apps.signals");
+        if (!through.empty() && through.size() != 2) {
+          throw std::invalid_argument("control.apps.signals: two signals (track 1, track 2)");
+        }
         for (std::size_t k = 0; k < 2; ++k) {
           const std::string key = k == 0 ? "ch1" : "ch2";
-          apps.track[k] = bus.require(out + key);
+          apps.track[k] = bus.require(through.empty() ? out + key : through[k]);
           const std::vector<double> volts = params.get_double_list(prefix + "." + key + "_v");
           apps.volts[k] = volts.size() == 2 ? std::array<double, 2>{volts[0], volts[1]}
                                             : (k == 0 ? std::array<double, 2>{0.5, 4.5} : std::array<double, 2>{4.5, 0.5});
