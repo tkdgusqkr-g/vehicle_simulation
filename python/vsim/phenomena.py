@@ -6,7 +6,8 @@
 
 Runs a scenario with every realism category real and lists what happened:
 safety cuts (APPS, brake plausibility), traction control, wheel speed
-dropouts, GNSS outages, battery limits, and the dominant frequencies of the
+dropouts, GNSS outages, battery limits, CAN timeouts, bus-off and bus
+overload, and the dominant frequencies of the
 sensor channels (vibration, aliasing). With --isolate it also runs the
 scenario all-ideal and once per realism category (only that one real, or with
 --isolate without: all but that one), and shows how far each run moves the
@@ -111,6 +112,12 @@ def events(rec, *, min_duration=0.0):
             add(name, "wheel_speed_dropout", f"{sensor} reads 0 while moving", (rec[name] == 0.0) & (speed > 0.5))
     for name in _match(rec, "sens.*.valid"):
         add(name, "gnss_outage", f"{name.split('.')[1]} has no fix", rec[name] < 0.5)
+    for name in _match(rec, "can.*.timeout"):
+        add(name, "can_timeout", f"{name[4:-8]}: no frame within its timeout", rec[name] > 0.5)
+    for name in _match(rec, "can.*.bus_off"):
+        add(name, "can_bus_off", f"node {name[4:-8]} is bus-off", rec[name] > 0.5)
+    for name in _match(rec, "can.*.load"):
+        add(name, "can_bus_load", f"bus {name[4:-5]} above 80 % load", rec[name] > 0.8)
     if "bat.overloaded" in rec:
         add("bat.overloaded", "battery_limit", "battery at its current or voltage limit", rec["bat.overloaded"] > 0.5)
     out.sort(key=lambda e: e.t)

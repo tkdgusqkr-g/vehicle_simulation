@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vsim CAN 네트워크</title>
+<script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+<style>
+  :root {
+    --bg: #12151a; --panel: #181c22; --panel-2: #1f242c; --border: #2c3440; --text: #e6e9ee;
+    --muted: #8a94a3; --accent: #4fb3ff; --good: #3ecf8e; --bad: #ff5c5c; --warn: #ffb347;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; font-size: 14px; }
+  header { display: flex; align-items: center; gap: 14px; padding: 10px 20px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--bad); }
+  .dot.on { background: var(--good); }
+  .muted { color: var(--muted); }
+  main { display: grid; grid-template-columns: minmax(420px, 1fr) minmax(520px, 1.5fr); gap: 16px; padding: 14px 20px;
+    max-width: 1700px; margin: 0 auto; }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px;
+    overflow-x: auto; }
+  h2 { font-size: 14px; margin: 0 0 8px; color: var(--muted); font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  h2 .grow { flex: 1; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 3px 5px; border-bottom: 1px solid var(--border); vertical-align: middle; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.sel { background: #22303f; }
+  tr.click { cursor: pointer; }
+  tr.click:hover { background: #1c2733; }
+  input, select { background: #101317; color: var(--text); border: 1px solid var(--border); border-radius: 5px;
+    padding: 3px 5px; font: inherit; font-size: 12.5px; }
+  input.n { width: 70px; text-align: right; }
+  input.s { width: 110px; }
+  input.w { width: 100%; min-width: 180px; }
+  input.bad, select.bad { border-color: var(--bad); }
+  input.ok { border-color: #2f6f4f; }
+  button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 11px; font: inherit; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #041018; border-color: var(--accent); font-weight: 600; }
+  button.small { padding: 2px 7px; font-size: 12px; }
+  .bar { height: 8px; background: #101317; border-radius: 4px; overflow: hidden; width: 120px; display: inline-block; vertical-align: middle; }
+  .bar div { height: 100%; background: var(--good); }
+  .bar.hot div { background: var(--warn); } .bar.over div { background: var(--bad); }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .tabs button.on { border-color: var(--accent); color: var(--accent); }
+  .scroll { overflow: auto; max-height: 460px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+  .warn { color: var(--warn); } .bad { color: var(--bad); } .good { color: var(--good); }
+  #notices { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 6px; max-width: 520px; z-index: 5; }
+  .notice { background: var(--panel-2); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 6px;
+    padding: 8px 12px; font-size: 13px; white-space: pre-wrap; }
+  .notice.error { border-left-color: var(--bad); }
+  .error-box { border: 1px solid var(--bad); background: #2a1416; border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; white-space: pre-wrap; font-size: 13px; }
+  .pill { font-size: 11px; padding: 1px 6px; border-radius: 9px; background: #2a3442; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>CAN 네트워크</h1>
+  <span><span class="dot" id="conn-dot"></span><span id="conn">연결 안 됨</span></span>
+  <span class="muted" id="project"></span>
+  <label><input type="checkbox" id="enabled"> 사용</label>
+  <label class="muted">충실도 <select id="fidelity">
+    <option value="">realism.comms 따름</option><option value="ideal">ideal (주기만)</option>
+    <option value="timing">timing (프레임 시간·중재·클록)</option><option value="faults">faults (+ 고장)</option></select></label>
+  <label class="muted">로그 <select id="log"><option>asc</option><option>candump</option><option>both</option><option>none</option></select></label>
+  <span style="flex:1"></span>
+  <span class="muted" id="dirty"></span>
+  <button class="primary" id="save">저장하고 다시 불러오기</button>
+</header>
+<main>
+  <div>
+    <div id="load-error"></div>
+    <section>
+      <h2>버스 <span class="grow"></span><button class="small" id="bus-add">+ 버스</button></h2>
+      <table id="buses"></table>
+    </section>
+    <section>
+      <h2>노드</h2>
+      <div class="muted" style="font-size:12px; margin:-4px 0 6px">controller: 시뮬레이터의 VCU·플러그인이 계산한 값을 보냄 · device: 인버터·BMS·센서 (플랜트 값을 보내고 받음)</div>
+      <table id="nodes"></table>
+    </section>
+    <section>
+      <h2>추가 트래픽 · 고장 <span class="grow"></span><button class="small" id="load-add">+ 트래픽</button><button class="small" id="fault-add">+ 고장</button></h2>
+      <table id="extras"></table>
+    </section>
+    <section>
+      <h2>실행 중 통계 <span class="muted" id="stats-note" style="font-weight:400"></span></h2>
+      <div id="stats" class="scroll" style="max-height:320px"></div>
+    </section>
+  </div>
+  <div>
+    <section>
+      <h2>DBC <span class="grow"></span>
+        <button class="small" id="dbc-new">새 DBC</button>
+        <button class="small" id="dbc-pick">DBC 올리기</button><input type="file" id="dbc-file" accept=".dbc" multiple style="display:none">
+        <button class="small" id="dbc-export">내보내기</button></h2>
+      <div class="tabs" id="dbc-tabs"></div>
+      <div class="row muted" id="dbc-summary"></div>
+      <div class="scroll"><table id="messages"></table></div>
+      <div class="row"><button class="small" id="msg-add">+ 메시지</button></div>
+    </section>
+    <section>
+      <h2 id="sig-title">신호</h2>
+      <div class="scroll"><table id="signals"></table></div>
+      <div class="row"><button class="small" id="sig-add">+ 신호</button>
+        <button class="small" id="suggest">빈 연결 자동 제안</button>
+        <span class="muted">연결: DBC 신호 ↔ 시뮬레이터 신호 (단위는 자동 변환, 보내는 쪽 값을 받는 쪽 신호로)</span></div>
+    </section>
+  </div>
+</main>
+<datalist id="signal-list"></datalist>
+<div id="notices"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const wsUrl = new URLSearchParams(location.search).get("ws") || "ws://127.0.0.1:8765";
+let ws = null, state = null, net = {}, dbcs = [], cur = 0, curMsg = 0, dirty = false, pendingExport = false, fingerprint = "";
+const HEADER = "# 가상 CAN (설계 문서 §12.2). ui/can에서 저장함.\n";
+
+// Unit kinds, as the simulator converts them (core/src/plugin/units.cpp).
+const KINDS = { "-": "ratio", "1": "ratio", "%": "ratio", "m": "length", "mm": "length", "s": "time", "ms": "time",
+  "m/s": "speed", "km/h": "speed", "kph": "speed", "m/s^2": "acceleration", "g": "acceleration", "rad": "angle",
+  "deg": "angle", "rad/s": "angular_speed", "deg/s": "angular_speed", "rpm": "angular_speed", "N": "force",
+  "N*m": "torque", "Nm": "torque", "N.m": "torque", "Pa": "pressure", "kPa": "pressure", "bar": "pressure",
+  "W": "power", "kW": "power", "J": "energy", "kWh": "energy", "A": "current", "mA": "current", "V": "voltage",
+  "mV": "voltage", "K": "temperature", "degC": "temperature", "C": "temperature", "kg": "mass", "Hz": "frequency" };
+function unitsMatch(a, b) {
+  if (!a || !b || a === b) return true;
+  return KINDS[a] !== undefined && KINDS[a] === KINDS[b];
+}
+
+function send(method, params) { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ jsonrpc: "2.0", method, params: params || {} })); }
+function notice(text, level) {
+  const d = document.createElement("div"); d.className = "notice " + (level || ""); d.textContent = text;
+  $("notices").appendChild(d); setTimeout(() => d.remove(), level === "error" ? 12000 : 5000);
+}
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function setDirty(v) { dirty = v; $("dirty").textContent = v ? "저장 안 됨" : ""; }
+const hex = (id, ext) => "0x" + id.toString(16).toUpperCase().padStart(ext ? 8 : 3, "0");
+
+function connect() {
+  ws = new WebSocket(wsUrl);
+  ws.onopen = () => { $("conn-dot").classList.add("on"); $("conn").textContent = "연결됨"; send("can.get"); };
+  ws.onclose = () => { $("conn-dot").classList.remove("on"); $("conn").textContent = "연결 안 됨 (재시도 중)"; setTimeout(connect, 1000); };
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.method === "can.state") onState(m.params);
+    else if (m.method === "can.dbc.text") onDbcText(m.params);
+    else if (m.method === "notice") notice(m.params.text, m.params.level);
+  };
+}
+
+function onState(p) {
+  const first = state === null;
+  state = p;
+  $("project").textContent = p.project + " · " + p.network_file;
+  $("load-error").innerHTML = p.load_error ? `<div class="error-box">마지막 저장을 불러오지 못해서 이전 파일로 되돌렸습니다:\n${esc(p.load_error)}</div>` : "";
+  $("signal-list").innerHTML = p.signals.map((s) => `<option value="${esc(s.name)}">${esc(s.unit)}</option>`).join("");
+  const fp = p.network_yaml + JSON.stringify(p.dbcs);
+  if ((!dirty && fp !== fingerprint) || first) {
+    fingerprint = fp;
+    try { net = jsyaml.load(p.network_yaml) || {}; } catch (err) { net = {}; notice("network.yaml을 읽지 못했습니다: " + err.message, "error"); }
+    dbcs = p.dbcs.map((d) => ({ path: d.path, dbc: d.dbc || null, error: d.error || "", changed: false }));
+    if (cur >= dbcs.length) cur = 0;
+    renderAll();
+  }
+  renderStats();
+}
+
+function onDbcText(p) {
+  if (!pendingExport) return;
+  pendingExport = false;
+  const blob = new Blob([p.text], { type: "text/plain" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = (p.path || "network.dbc").split("/").pop();
+  a.click();
+}
+
+// --- Model helpers ----------------------------------------------------------------------
+const buses = () => (net.buses ??= []);
+const nodeConf = (name) => (net.nodes ??= []).find((n) => n.name === name);
+function allNodes() {
+  const names = new Set((net.nodes || []).map((n) => n.name));
+  for (const d of dbcs) if (d.dbc) { d.dbc.nodes.forEach((n) => names.add(n)); d.dbc.messages.forEach((m) => m.transmitter && names.add(m.transmitter)); }
+  return [...names];
+}
+function busOf(path) { return buses().find((b) => (b.dbc || []).includes(path)); }
+function frameBits(m) {     // range: no stuffing .. worst case (classic); FD approximate
+  const n = m.length, ext = m.extended;
+  const base = (ext ? 67 : 47) + 8 * n;
+  return [base, base + Math.floor(((ext ? 54 : 34) + 8 * n - 1) / 4)];
+}
+function estimateLoad(bus) {
+  let lo = 0, hi = 0;
+  for (const d of dbcs) {
+    if (!d.dbc || !(bus.dbc || []).includes(d.path)) continue;
+    for (const m of d.dbc.messages) if (m.cycle_ms > 0) {
+      const [a, b] = frameBits(m);
+      lo += a / (m.cycle_ms / 1000); hi += b / (m.cycle_ms / 1000);
+    }
+  }
+  for (const l of net.load || []) {
+    if ((l.bus || buses()[0]?.name) !== bus.name) continue;
+    const per = (l.count || 1) / ((l.period_ms || 10) / 1000), n = l.length || 8;
+    lo += per * (47 + 8 * n); hi += per * (47 + 8 * n + Math.floor((33 + 8 * n) / 4));
+  }
+  const rate = Number(bus.bitrate || 500000);
+  return [lo / rate, hi / rate];
+}
+function mapOf(msg, sig) {
+  const m = net.map?.[msg]?.[sig];
+  return typeof m === "string" ? { signal: m, unit: "" } : m ? { signal: m.signal || "", unit: m.unit || "" } : { signal: "", unit: "" };
+}
+function setMap(msg, sig, signal, unit) {
+  net.map ??= {};
+  net.map[msg] ??= {};
+  if (!signal) delete net.map[msg][sig];
+  else net.map[msg][sig] = unit ? { signal, unit } : signal;
+  if (!Object.keys(net.map[msg]).length) delete net.map[msg];
+  setDirty(true);
+}
+function signalUnit(name) { return state?.signals.find((s) => s.name === name)?.unit; }
+
+// --- Rendering -------------------------------------------------------------------------
+function renderAll() {
+  $("enabled").checked = net.enabled !== false && !!net.buses;
+  $("fidelity").value = net.fidelity || "";
+  $("log").value = net.log || "asc";
+  renderBuses(); renderNodes(); renderExtras(); renderDbcTabs(); renderMessages(); renderSignals();
+}
+
+function renderBuses() {
+  const files = dbcs.map((d) => d.path);
+  $("buses").innerHTML = `<tr><th>이름</th><th class="num">비트레이트</th><th class="num">데이터(FD)</th><th>DBC</th><th>예상 부하</th><th>실제</th><th></th></tr>` +
+    buses().map((b, i) => {
+      const [lo, hi] = estimateLoad(b);
+      const live = state?.loads?.[b.name];
+      const cls = hi > 0.8 ? "over" : hi > 0.5 ? "hot" : "";
+      return `<tr data-i="${i}"><td><input class="s" data-k="name" value="${esc(b.name)}"></td>
+        <td class="num"><input class="n" data-k="bitrate" value="${esc(b.bitrate ?? 500000)}" style="width:90px"></td>
+        <td class="num"><input class="n" data-k="data_bitrate" value="${esc(b.data_bitrate ?? "")}" placeholder="2000000" style="width:90px"></td>
+        <td>${files.map((f) => `<label style="margin-right:6px"><input type="checkbox" data-f="${esc(f)}" ${(b.dbc || []).includes(f) ? "checked" : ""}>${esc(f.split("/").pop())}</label>`).join("")}</td>
+        <td><span class="bar ${cls}" style="width:70px"><div style="width:${Math.min(100, hi * 100).toFixed(0)}%"></div></span> ${(lo * 100).toFixed(1)}~${(hi * 100).toFixed(1)}%</td>
+        <td class="num" data-live="${esc(b.name)}">${live !== undefined ? (live * 100).toFixed(1) + "%" : ""}</td>
+        <td><button class="small" data-a="del">✕</button></td></tr>`;
+    }).join("");
+  $("buses").querySelectorAll("tr[data-i]").forEach((tr) => {
+    const b = buses()[+tr.dataset.i];
+    tr.querySelectorAll("input[data-k]").forEach((inp) => inp.onchange = () => {
+      const k = inp.dataset.k;
+      b[k] = k === "name" ? inp.value.trim() : inp.value.trim() === "" ? undefined : Number(inp.value);
+      if (b[k] === undefined) delete b[k];
+      setDirty(true); renderBuses();
+    });
+    tr.querySelectorAll("input[data-f]").forEach((inp) => inp.onchange = () => {
+      b.dbc = (b.dbc || []).filter((f) => f !== inp.dataset.f);
+      if (inp.checked) b.dbc.push(inp.dataset.f);
+      setDirty(true); renderBuses();
+    });
+    tr.querySelector('[data-a="del"]').onclick = () => { buses().splice(+tr.dataset.i, 1); setDirty(true); renderBuses(); };
+  });
+}
+
+function renderNodes() {
+  const rows = allNodes().map((name) => {
+    const c = nodeConf(name) || {};
+    const tx = dbcs.reduce((n, d) => n + (d.dbc ? d.dbc.messages.filter((m) => m.transmitter === name).length : 0), 0);
+    return `<tr data-n="${esc(name)}"><td>${esc(name)}</td><td class="num muted">${tx}</td>
+      <td><select data-k="role"><option ${c.role !== "controller" ? "selected" : ""}>device</option><option ${c.role === "controller" ? "selected" : ""}>controller</option></select></td>
+      ${["clock_ppm", "jitter_us", "task_ms", "offset_ms"].map((k) => `<td class="num"><input class="n" data-k="${k}" value="${esc(c[k] ?? "")}" placeholder="0"></td>`).join("")}</tr>`;
+  });
+  $("nodes").innerHTML = `<tr><th>노드</th><th class="num">송신</th><th>역할</th><th class="num">클록 ppm</th><th class="num">지터 µs</th><th class="num">수신 태스크 ms</th><th class="num">위상 ms</th></tr>` + rows.join("");
+  $("nodes").querySelectorAll("tr[data-n]").forEach((tr) => tr.onchange = (e) => {
+    const name = tr.dataset.n;
+    let c = nodeConf(name);
+    if (!c) { c = { name }; net.nodes.push(c); }
+    const k = e.target.dataset.k;
+    if (k === "role") c.role = e.target.value;
+    else if (e.target.value.trim() === "") delete c[k];
+    else c[k] = Number(e.target.value);
+    setDirty(true);
+  });
+}
+
+function renderExtras() {
+  const loads = (net.load ??= []), faults = (net.faults ??= []);
+  const msgs = dbcs.flatMap((d) => d.dbc ? d.dbc.messages.map((m) => m.name) : []);
+  const opt = (list, v) => `<option value=""></option>` + list.map((x) => `<option ${x === v ? "selected" : ""}>${esc(x)}</option>`).join("");
+  $("extras").innerHTML = `<tr><th>종류</th><th>대상</th><th class="num">값</th><th class="num">시간 s</th><th></th></tr>` +
+    loads.map((l, i) => `<tr data-l="${i}"><td>트래픽</td><td>${esc(l.bus || buses()[0]?.name || "")} ID <input class="n" data-k="id" value="${esc(typeof l.id === "number" ? hex(l.id) : l.id ?? "0x7F0")}"> ×<input class="n" data-k="count" value="${esc(l.count ?? 1)}" style="width:40px"></td>
+      <td class="num"><input class="n" data-k="period_ms" value="${esc(l.period_ms ?? 10)}"> ms, <input class="n" data-k="length" value="${esc(l.length ?? 8)}" style="width:40px"> B</td><td></td>
+      <td><button class="small" data-a="del">✕</button></td></tr>`).join("") +
+    faults.map((f, i) => `<tr data-f="${i}"><td><select data-k="type">${["drop", "delay", "error_rate", "bus_off", "skip"].map((t) => `<option ${t === f.type ? "selected" : ""}>${t}</option>`).join("")}</select></td>
+      <td>${f.type === "bus_off" || f.type === "skip" ? `노드 <select data-k="node">${opt(allNodes(), f.node)}</select>` : ""}
+          ${f.type !== "bus_off" ? `메시지 <select data-k="message">${opt(msgs, f.message)}</select>` : ""}
+          ${f.type === "error_rate" ? `버스 <select data-k="bus">${opt(buses().map((b) => b.name), f.bus)}</select>` : ""}</td>
+      <td class="num">${f.type === "delay" ? `<input class="n" data-k="value_ms" value="${esc(f.value_ms ?? 0)}"> ms ± <input class="n" data-k="jitter_ms" value="${esc(f.jitter_ms ?? 0)}">` : f.type === "bus_off" ? "" : `p <input class="n" data-k="probability" value="${esc(f.probability ?? 1)}">`}</td>
+      <td class="num"><input class="n" data-k="at_s" value="${esc(f.at_s ?? 0)}" style="width:50px">~<input class="n" data-k="until_s" value="${esc(f.until_s ?? "")}" style="width:50px"></td>
+      <td><button class="small" data-a="del">✕</button></td></tr>`).join("");
+  const num = (v) => (v.trim() === "" ? undefined : /^0x/i.test(v.trim()) ? v.trim() : Number(v));
+  $("extras").querySelectorAll("tr[data-l]").forEach((tr) => {
+    const l = loads[+tr.dataset.l];
+    tr.onchange = (e) => { const v = num(e.target.value); if (v === undefined) delete l[e.target.dataset.k]; else l[e.target.dataset.k] = v; setDirty(true); renderBuses(); };
+    tr.querySelector('[data-a="del"]').onclick = () => { loads.splice(+tr.dataset.l, 1); setDirty(true); renderExtras(); renderBuses(); };
+  });
+  $("extras").querySelectorAll("tr[data-f]").forEach((tr) => {
+    const f = faults[+tr.dataset.f];
+    tr.onchange = (e) => {
+      const k = e.target.dataset.k, raw = e.target.value;
+      if (["type", "node", "message", "bus"].includes(k)) { if (raw) f[k] = raw; else delete f[k]; }
+      else { const v = num(raw); if (v === undefined) delete f[k]; else f[k] = v; }
+      setDirty(true); if (k === "type") renderExtras();
+    };
+    tr.querySelector('[data-a="del"]').onclick = () => { faults.splice(+tr.dataset.f, 1); setDirty(true); renderExtras(); };
+  });
+}
+
+function renderDbcTabs() {
+  $("dbc-tabs").innerHTML = dbcs.map((d, i) => `<button data-i="${i}" class="${i === cur ? "on" : ""}">${esc(d.path.split("/").pop())}${d.changed ? " *" : ""}${d.error ? " ⚠" : ""}</button>`).join("") ||
+    `<span class="muted">can/ 폴더에 DBC가 없습니다. 올리거나 새로 만드세요.</span>`;
+  $("dbc-tabs").querySelectorAll("button").forEach((b) => b.onclick = () => { cur = +b.dataset.i; curMsg = 0; renderDbcTabs(); renderMessages(); renderSignals(); });
+}
+
+function current() { return dbcs[cur]; }
+function changed() { current().changed = true; setDirty(true); renderDbcTabs(); renderBuses(); }
+
+function renderMessages() {
+  const d = current();
+  if (!d) { $("messages").innerHTML = ""; $("dbc-summary").textContent = ""; return; }
+  if (d.error) { $("messages").innerHTML = `<tr><td class="bad">${esc(d.error)}</td></tr>`; $("dbc-summary").textContent = ""; return; }
+  const bus = busOf(d.path);
+  $("dbc-summary").innerHTML = `${d.dbc.messages.length}개 메시지, 노드 ${esc(d.dbc.nodes.join(" "))}` + (bus ? ` · 버스 ${esc(bus.name)}` : ` · <span class="warn">어느 버스에도 연결 안 됨</span>`);
+  const stats = state?.stats?.messages || {};
+  const timeouts = net.timeouts || {};
+  $("messages").innerHTML = `<tr><th>ID</th><th>이름</th><th class="num">바이트</th><th class="num">주기 ms</th><th>송신</th><th class="num">신호</th><th class="num">연결</th><th class="num">타임아웃 ms</th><th>그때</th><th class="num">지연 평균/최대 ms</th><th></th></tr>` +
+    d.dbc.messages.map((m, i) => {
+      const mapped = m.signals.filter((s) => mapOf(m.name, s.name).signal).length;
+      const st = stats[m.name];
+      const to = timeouts[m.name];
+      const after = typeof to === "object" ? to?.after_s : to;
+      const then = typeof to === "object" ? to?.then || "hold" : "hold";
+      return `<tr class="click ${i === curMsg ? "sel" : ""}" data-i="${i}">
+        <td><input class="n" data-k="id" value="${hex(m.id, m.extended)}" style="width:${m.extended ? 100 : 64}px"></td>
+        <td><input class="s" data-k="name" value="${esc(m.name)}" style="width:150px"></td>
+        <td class="num"><input class="n" data-k="length" value="${m.length}" style="width:44px"></td>
+        <td class="num"><input class="n" data-k="cycle_ms" value="${m.cycle_ms || ""}" style="width:54px"></td>
+        <td><select data-k="transmitter">${["", ...allNodes()].map((n) => `<option ${n === m.transmitter ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></td>
+        <td class="num">${m.signals.length}</td><td class="num ${mapped ? "good" : "muted"}">${mapped}</td>
+        <td class="num"><input class="n" data-t="after" value="${after !== undefined ? after * 1000 : ""}" placeholder="${m.cycle_ms ? 3 * m.cycle_ms : ""}" style="width:54px"></td>
+        <td><select data-t="then"><option ${then === "hold" ? "selected" : ""}>hold</option><option ${then === "zero" ? "selected" : ""}>zero</option></select></td>
+        <td class="num">${st?.latency_ms ? st.latency_ms.mean.toFixed(2) + " / " + st.latency_ms.max.toFixed(2) : ""}${st?.timeouts ? ` <span class="bad">타임아웃 ${st.timeouts}</span>` : ""}</td>
+        <td><button class="small" data-a="del">✕</button></td></tr>`;
+    }).join("");
+  $("messages").querySelectorAll("tr[data-i]").forEach((tr) => {
+    const i = +tr.dataset.i, m = d.dbc.messages[i];
+    tr.onclick = (e) => { if (e.target.tagName === "TR" || e.target.tagName === "TD") { curMsg = i; renderMessages(); renderSignals(); } };
+    tr.querySelectorAll("[data-k]").forEach((el) => el.onchange = () => {
+      const k = el.dataset.k, v = el.value.trim();
+      if (k === "id") { const n = parseInt(v, v.toLowerCase().startsWith("0x") ? 16 : 10); if (isNaN(n)) { el.classList.add("bad"); return; } m.id = n; m.extended = n > 0x7FF; }
+      else if (k === "name") { const old = m.name; m.name = v; if (net.map?.[old]) { net.map[v] = net.map[old]; delete net.map[old]; } }
+      else if (k === "length") { m.length = Number(v); m.fd = m.length > 8; }
+      else if (k === "cycle_ms") m.cycle_ms = Number(v) || 0;
+      else m[k] = v;
+      changed(); renderMessages();
+    });
+    tr.querySelectorAll("[data-t]").forEach((el) => el.onchange = () => {
+      const a = tr.querySelector('[data-t="after"]').value.trim(), then = tr.querySelector('[data-t="then"]').value;
+      net.timeouts ??= {};
+      if (!a && then === "hold") delete net.timeouts[m.name];
+      else net.timeouts[m.name] = then === "zero" ? { after_s: (Number(a) || 3 * m.cycle_ms) / 1000, then } : Number(a) / 1000;
+      setDirty(true);
+    });
+    tr.querySelector('[data-a="del"]').onclick = (e) => { e.stopPropagation(); d.dbc.messages.splice(i, 1); curMsg = 0; changed(); renderMessages(); renderSignals(); };
+  });
+}
+
+function renderSignals() {
+  const d = current(), m = d?.dbc?.messages[curMsg];
+  if (!m) { $("signals").innerHTML = ""; $("sig-title").textContent = "신호"; return; }
+  $("sig-title").innerHTML = `신호 · ${esc(m.name)} <span class="pill">${hex(m.id, m.extended)}</span> <span class="pill">${m.length} B</span>`;
+  const used = new Array(m.length * 8).fill(0);
+  $("signals").innerHTML = `<tr><th>이름</th><th class="num">시작</th><th class="num">길이</th><th>순서</th><th>부호</th><th class="num">배율</th><th class="num">오프셋</th><th class="num">최소</th><th class="num">최대</th><th>단위</th><th>받는 노드</th><th>시뮬레이터 신호</th><th></th></tr>` +
+    m.signals.map((s, i) => {
+      const map = mapOf(m.name, s.name);
+      const unit = map.unit || s.unit, su = signalUnit(map.signal);
+      const known = !map.signal || su !== undefined;
+      const fits = unitsMatch(unit, su);
+      return `<tr data-i="${i}"><td><input class="s" data-k="name" value="${esc(s.name)}"></td>
+        <td class="num"><input class="n" data-k="start_bit" value="${s.start_bit}" style="width:44px"></td>
+        <td class="num"><input class="n" data-k="length" value="${s.length}" style="width:44px"></td>
+        <td><select data-k="little_endian"><option value="1" ${s.little_endian ? "selected" : ""}>Intel</option><option value="0" ${!s.little_endian ? "selected" : ""}>Motorola</option></select></td>
+        <td><select data-k="signed"><option value="0" ${!s.signed ? "selected" : ""}>+</option><option value="1" ${s.signed ? "selected" : ""}>−</option></select></td>
+        ${["factor", "offset", "min", "max"].map((k) => `<td class="num"><input class="n" data-k="${k}" value="${s[k]}" style="width:62px"></td>`).join("")}
+        <td><input data-k="unit" value="${esc(s.unit)}" style="width:56px"></td>
+        <td><input data-k="receivers" value="${esc(s.receivers.join(","))}" style="width:90px"></td>
+        <td><input class="w ${map.signal ? (known && fits ? "ok" : "bad") : ""}" list="signal-list" data-m="signal" value="${esc(map.signal)}"
+          title="${map.signal ? (known ? (fits ? `${unit || "-"} → ${su || "-"}` : `단위가 맞지 않음: ${unit} ↔ ${su}`) : "없는 신호") : ""}"></td>
+        <td><button class="small" data-a="del">✕</button></td></tr>`;
+    }).join("");
+  $("signals").querySelectorAll("tr[data-i]").forEach((tr) => {
+    const s = m.signals[+tr.dataset.i];
+    tr.querySelectorAll("[data-k]").forEach((el) => el.onchange = () => {
+      const k = el.dataset.k, v = el.value.trim();
+      if (k === "name") { const map = mapOf(m.name, s.name); setMap(m.name, s.name, ""); s.name = v; if (map.signal) setMap(m.name, v, map.signal, map.unit); }
+      else if (k === "little_endian" || k === "signed") s[k] = v === "1";
+      else if (k === "unit") s.unit = v;
+      else if (k === "receivers") s.receivers = v.split(",").map((x) => x.trim()).filter(Boolean);
+      else s[k] = Number(v);
+      changed(); renderSignals();
+    });
+    tr.querySelector('[data-m="signal"]').onchange = (e) => { setMap(m.name, s.name, e.target.value.trim(), mapOf(m.name, s.name).unit); renderSignals(); renderMessages(); };
+    tr.querySelector('[data-a="del"]').onclick = () => { setMap(m.name, s.name, ""); m.signals.splice(+tr.dataset.i, 1); changed(); renderSignals(); };
+  });
+}
+
+// Name similarity for suggestions: shared word tokens (fl, motor, speed ...).
+function tokens(s) { return s.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter((t) => t && !["status", "cmd", "msg", "can", "veh", "pt"].includes(t)); }
+function suggest(msgName, sigName, unit) {
+  const want = new Set([...tokens(msgName), ...tokens(sigName)]);
+  let best = null, score = 0;
+  for (const s of state?.signals || []) {
+    if (unit && s.unit && !unitsMatch(unit, s.unit)) continue;
+    const have = tokens(s.name);
+    const shared = have.filter((t) => want.has(t)).length;
+    const sc = shared / Math.max(have.length, 1) + 0.1 * shared;
+    if (sc > score) { score = sc; best = s.name; }
+  }
+  return score >= 0.6 ? best : null;
+}
+$("suggest").onclick = () => {
+  let n = 0;
+  for (const d of dbcs) if (d.dbc) for (const m of d.dbc.messages) for (const s of m.signals) {
+    if (mapOf(m.name, s.name).signal) continue;
+    const pick = suggest(m.name, s.name, s.unit);
+    if (pick) { setMap(m.name, s.name, pick, ""); n++; }
+  }
+  notice(n ? `${n}개 연결을 제안했습니다. 확인하고 저장하세요.` : "제안할 연결이 없습니다.");
+  renderSignals(); renderMessages();
+};
+
+function renderStats() {
+  const st = state?.stats;
+  $("stats-note").textContent = st ? `fidelity ${st.fidelity}` : state?.running === false ? "이 시나리오에서 CAN이 꺼져 있습니다" : "";
+  if (!st) { $("stats").innerHTML = ""; return; }
+  const rows = Object.entries(st.messages || {}).map(([name, m]) => `<tr><td>${esc(name)}</td><td class="num">${m.sent}</td><td class="num">${m.delivered}</td>
+    <td class="num ${m.lost ? "bad" : ""}">${m.lost}</td><td class="num">${m.latency_ms ? m.latency_ms.mean.toFixed(2) : ""}</td><td class="num">${m.latency_ms ? m.latency_ms.max.toFixed(2) : ""}</td>
+    <td class="num ${m.timeouts ? "bad" : ""}">${m.timeouts}</td><td class="num">${m.missed ?? ""}</td><td class="num">${m.doubled ?? ""}</td></tr>`).join("");
+  const busRows = Object.entries(st.buses || {}).map(([name, b]) => `${esc(name)}: 평균 ${(b.load_mean * 100).toFixed(1)}%, 최대 ${(b.load_max * 100).toFixed(1)}%, 프레임 ${b.frames}, 에러 프레임 ${b.error_frames}`).join("<br>");
+  $("stats").innerHTML = `<div class="muted" style="margin-bottom:6px">${busRows}</div><table><tr><th>메시지</th><th class="num">보냄</th><th class="num">받음</th><th class="num">잃음</th><th class="num">지연 평균</th><th class="num">최대 ms</th><th class="num">타임아웃</th><th class="num">놓침</th><th class="num">중복</th></tr>${rows}</table>`;
+  for (const td of document.querySelectorAll("td[data-live]")) {
+    const live = state.loads?.[td.dataset.live];
+    td.textContent = live !== undefined ? (live * 100).toFixed(1) + "%" : "";
+  }
+}
+
+// --- Actions ----------------------------------------------------------------------------
+$("enabled").onchange = () => { net.enabled = $("enabled").checked; setDirty(true); };
+$("fidelity").onchange = () => { if ($("fidelity").value) net.fidelity = $("fidelity").value; else delete net.fidelity; setDirty(true); };
+$("log").onchange = () => { net.log = $("log").value; setDirty(true); };
+$("bus-add").onclick = () => { buses().push({ name: "can" + buses().length, bitrate: 500000, dbc: [] }); setDirty(true); renderBuses(); };
+$("load-add").onclick = () => { (net.load ??= []).push({ bus: buses()[0]?.name, id: "0x7F0", count: 1, period_ms: 10, length: 8 }); setDirty(true); renderExtras(); renderBuses(); };
+$("fault-add").onclick = () => { (net.faults ??= []).push({ type: "drop", probability: 0.05 }); setDirty(true); renderExtras(); };
+$("msg-add").onclick = () => {
+  const d = current(); if (!d?.dbc) return;
+  const id = Math.max(0x100, ...d.dbc.messages.map((m) => m.id + 1));
+  d.dbc.messages.push({ id, extended: false, fd: false, name: "New_" + id.toString(16).toUpperCase(), length: 8, transmitter: "", cycle_ms: 10, comment: "", signals: [] });
+  curMsg = d.dbc.messages.length - 1; changed(); renderMessages(); renderSignals();
+};
+$("sig-add").onclick = () => {
+  const m = current()?.dbc?.messages[curMsg]; if (!m) return;
+  const end = Math.max(0, ...m.signals.filter((s) => s.little_endian).map((s) => s.start_bit + s.length));
+  m.signals.push({ name: "Signal" + (m.signals.length + 1), start_bit: Math.min(end, m.length * 8 - 8), length: 8, little_endian: true, signed: false, kind: "int",
+    factor: 1, offset: 0, min: 0, max: 255, unit: "", receivers: [], multiplexer: false, mux_value: null, comment: "" });
+  changed(); renderSignals();
+};
+$("dbc-new").onclick = () => {
+  const name = prompt("파일 이름 (can/ 안)", "new.dbc");
+  if (!name) return;
+  const path = "can/" + name.replace(/[^A-Za-z0-9_.-]/g, "_").replace(/(\.dbc)?$/i, ".dbc");
+  dbcs.push({ path, dbc: { version: "", nodes: [], messages: [] }, error: "", changed: true });
+  cur = dbcs.length - 1; setDirty(true); renderAll();
+};
+$("dbc-pick").onclick = () => $("dbc-file").click();
+$("dbc-file").onchange = async () => {
+  const files = [];
+  for (const f of $("dbc-file").files) files.push({ path: "can/" + f.name, text: await f.text() });
+  send("can.import", { files });
+  setDirty(false);
+};
+$("dbc-export").onclick = () => { const d = current(); if (d?.dbc) { pendingExport = true; send("can.dbc.format", { path: d.path, dbc: d.dbc }); } };
+$("save").onclick = () => {
+  if (!net.buses?.length) { notice("버스가 없습니다.", "error"); return; }
+  const text = HEADER + jsyaml.dump(net, { noRefs: true, lineWidth: 140, flowLevel: 3 });
+  send("can.save", { network: text, dbcs: dbcs.filter((d) => d.changed && d.dbc).map((d) => ({ path: d.path, dbc: d.dbc })), reload: true });
+  setDirty(false);
+  fingerprint = "";  // take the files as the simulator reloaded them (or rolled them back)
+};
+
+setInterval(() => { if (!dirty) send("can.get"); }, 2000);
+connect();
+window.vsimCan = { get net() { return net; }, get dbcs() { return dbcs; }, get state() { return state; } };
+</script>
+</body>
+</html>

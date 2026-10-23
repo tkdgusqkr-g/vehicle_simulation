@@ -62,6 +62,8 @@ class Simulation {
   const Recorder& recorder() const;
   // The project's plugin components in execution order (design doc §11).
   std::vector<const PluginBlock*> plugins() const;
+  // Virtual CAN statistics so far as JSON (CanNetwork::summary_json), "" without CAN.
+  std::string can_summary() const;
   // Directory of the current run's files; empty when not writing.
   const std::filesystem::path& run_path() const;
 

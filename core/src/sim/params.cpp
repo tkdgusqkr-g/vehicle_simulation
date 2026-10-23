@@ -115,8 +115,13 @@ std::int64_t parse_int(std::string_view key, std::string_view raw_text) {
   if (!text.empty() && text.front() == '+') {
     text.remove_prefix(1);
   }
+  int base = 10;
+  if (text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+    text.remove_prefix(2);  // hexadecimal (CAN IDs)
+    base = 16;
+  }
   std::int64_t value = 0;
-  const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+  const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value, base);
   if (text.empty() || error != std::errc() || end != text.data() + text.size()) {
     bad_value(key, raw_text, "an integer");
   }

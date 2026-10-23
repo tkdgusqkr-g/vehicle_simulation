@@ -6,8 +6,9 @@
 - 빌드와 실행: [docs/build.md](docs/build.md)
 - 차량 데이터 요청 목록: [docs/vehicle_parameters.md](docs/vehicle_parameters.md)
 
-## 현재 상태: M7 (실차 코드로 달린다)
+## 현재 상태: M8 (CAN으로 말한다)
 
+- **M8**: 가상 CAN. DBC로 정한 버스로 토크 명령·인버터 피드백·BMS·IMU가 오가고, 프레임 길이(비트 스터핑)·ID 중재·노드 클록 오차·지터·프레임 손실·bus-off·타임아웃이 제어에 그대로 영향을 줌. ASC·candump 버스 로그, CAN 네트워크 편집기(`ui/can/index.html`)
 - **M7**: 플러그인. 팀 코드(C/C++ 공유 라이브러리, FMU, Python, Simulink → `vsim_export`)를 VCU·드라이버 자리나 VCU 다음에 넣고 포트를 신호에 연결(단위 자동 변환). 플러그인 페이지(`ui/plugins/index.html`), SDK와 예제(`sdk/`)
 - **M6**: 센서 신호 체인(IMU 레버암·중력·장착 오차·진동 aliasing, 휠속 펄스, APPS 2채널, 브레이크 압력, GNSS 등)과 고장 주입. VCU가 센서 값으로 동작(FSAE APPS·BSPC 타당성 검사, 휠속 + IMU 차속 추정). 현상 탐지와 원인 분리(`python -m vsim.phenomena`)
 - **M5**: L3 14자유도 차량 모델(차체 상하·롤·피치, 바퀴 상하, 스프링·댐퍼·스톱·안티롤바), 하드포인트에서 푼 K&C(`--export-kc`), 노면이 핸들로 느껴지는 FFB, 3D 노면(고도·뱅크·연석·ISO 8608 거칠기·젖은 구간·잔디)과 3D 트랙·지형, 새 템플릿 `hill_circuit`
@@ -28,6 +29,7 @@ build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/sce
 build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/drive.yaml --set track.template=autocross
 # 내 차 올리기: ui\builder\index.html (시뮬레이터가 켜져 있으면 저장 후 바로 그 차로 재시작)
 # 플러그인(팀 VCU·토크 벡터링 코드) 연결: ui\plugins\index.html, 또는 --set components.tv_native.enabled=true
+# 가상 CAN: --set can.enabled=true (편집기 ui\can\index.html)
 # 시나리오 테스트, 현상 탐지
 $env:PYTHONPATH = "python"; python -m vsim.testing templates/projects/example_fs_ev/tests
 python -m vsim.phenomena templates/projects/example_fs_ev/scenarios/acceleration.yaml --isolate

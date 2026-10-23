@@ -23,6 +23,9 @@ class Block {
   // Reads inputs from the bus and writes outputs to it. Outputs are held
   // until the block runs again (zero-order hold).
   virtual void step(double t, SignalBus& bus) = 0;
+  // Every tick, right after the plant has read its inputs (a block that
+  // stood in for a signal for the plant puts the original value back).
+  virtual void after_plant_inputs(SignalBus& /*bus*/) {}
 };
 
 }  // namespace vsim

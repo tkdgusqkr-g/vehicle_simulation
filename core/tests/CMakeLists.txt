@@ -1,4 +1,5 @@
 add_executable(vsim_tests
+  test_can.cpp
   test_driveline.cpp
   test_full_vehicle.cpp
   test_input.cpp

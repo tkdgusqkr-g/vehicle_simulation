@@ -1,0 +1,59 @@
+# 가상 CAN (설계 문서 §12.2, 사용법은 docs/build.md "가상 CAN").
+# 켜면 VCU의 토크 명령이 이 버스를 거쳐 인버터(플랜트)로, 인버터·BMS·IMU 값이
+# 이 버스를 거쳐 VCU로 갑니다. 시나리오에서 켜기: --set can.enabled=true
+enabled: false
+# ideal: 메시지 주기로만 갱신 | timing: 프레임 길이·중재·대기·클록 | faults: + 아래 고장
+# 정하지 않으면 realism.comms(ideal → ideal, real → faults)를 따릅니다.
+fidelity: timing
+log: asc                      # 실행 폴더에 버스 로그: asc | candump | both | none
+
+buses:
+  - {name: can_main, bitrate: 1000000, dbc: [can/fs_ev.dbc]}
+
+# DBC의 노드. controller: 제어기(VCU 등, 시뮬레이터의 VCU·플러그인이 계산한 값을 보냄),
+# device: 장치(인버터·BMS·센서, 플랜트·센서 값을 보내고 플랜트가 받음).
+# clock_ppm: 수정 발진기 오차, jitter_us: 송신 태스크 지터, task_ms: 수신 태스크 주기(놓침·중복 집계)
+nodes:
+  - {name: VCU, role: controller, clock_ppm: 30, jitter_us: 100, task_ms: 10}
+  - {name: INV_FL, role: device, clock_ppm: -45, jitter_us: 20}
+  - {name: INV_FR, role: device, clock_ppm: 12, jitter_us: 20}
+  - {name: INV_RL, role: device, clock_ppm: -8, jitter_us: 20}
+  - {name: INV_RR, role: device, clock_ppm: 40, jitter_us: 20}
+  - {name: BMS, role: device, clock_ppm: 60, jitter_us: 200}
+  - {name: IMU, role: device, clock_ppm: -20, jitter_us: 10}
+
+# DBC 신호 ↔ 시뮬레이터 신호 (단위는 DBC와 신호 단위로 자동 변환: rpm ↔ rad/s, kW ↔ W ...)
+map:
+  VCU_TorqueCmd:
+    TorqueFL: pt.motor.fl.torque_cmd
+    TorqueFR: pt.motor.fr.torque_cmd
+    TorqueRL: pt.motor.rl.torque_cmd
+    TorqueRR: pt.motor.rr.torque_cmd
+  VCU_Status: {VxEst: vcu.vx_est, PowerLimit: vcu.power_limit, AppsImplausible: vcu.apps_implausible, Bspc: vcu.bspc}
+  INV_FL_Status: {MotorSpeed: pt.motor.fl.speed, TorqueAct: pt.motor.fl.torque, MotorTemp: pt.motor.fl.temp}
+  INV_FR_Status: {MotorSpeed: pt.motor.fr.speed, TorqueAct: pt.motor.fr.torque, MotorTemp: pt.motor.fr.temp}
+  INV_RL_Status: {MotorSpeed: pt.motor.rl.speed, TorqueAct: pt.motor.rl.torque, MotorTemp: pt.motor.rl.temp}
+  INV_RR_Status: {MotorSpeed: pt.motor.rr.speed, TorqueAct: pt.motor.rr.torque, MotorTemp: pt.motor.rr.temp}
+  BMS_Status: {PackVoltage: bat.voltage, PackCurrent: bat.current, Soc: bat.soc, CellTempMax: bat.temp}
+  BMS_Limits: {DischargePowerLimit: bat.limit.discharge_power, ChargePowerLimit: bat.limit.charge_power}
+  IMU_Accel: {AccelX: sens.imu.ax, AccelY: sens.imu.ay, AccelZ: sens.imu.az}
+  IMU_Gyro: {GyroX: sens.imu.gx, GyroY: sens.imu.gy, GyroZ: sens.imu.gz}
+
+# 수신 타임아웃 [s] (기본: 주기의 3배). then: hold(마지막 값 유지, 기본) | zero(0으로: 명령이 끊긴 인버터)
+timeouts:
+  VCU_TorqueCmd: {after_s: 0.05, then: zero}
+  INV_FL_Status: 0.03
+  INV_FR_Status: 0.03
+  INV_RL_Status: 0.03
+  INV_RR_Status: 0.03
+
+# 부하를 더하는 트래픽 (데이터로거·게이트웨이 등). PH-08 시험에 씀.
+# load: [{bus: can_main, id: 0x050, count: 6, period_ms: 1, length: 8}]
+
+# 고장 (fidelity: faults일 때). type: drop | delay | error_rate | bus_off | skip
+# faults:
+#   - {type: drop, message: VCU_TorqueCmd, probability: 0.05}
+#   - {type: delay, message: INV_FL_Status, value_ms: 3, jitter_ms: 2}
+#   - {type: error_rate, bus: can_main, probability: 0.001}
+#   - {type: bus_off, node: INV_FL, at_s: 5, until_s: 5.5}
+#   - {type: skip, node: BMS, probability: 0.02}

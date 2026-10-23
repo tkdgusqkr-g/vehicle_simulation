@@ -18,6 +18,7 @@
 #include "vsim/version.hpp"
 
 #include "python_plugin.hpp"
+#include "vsim/can/frame.hpp"
 
 namespace py = pybind11;
 
@@ -71,6 +72,26 @@ py::dict curve_arrays(const vsim::SampledCurve& curve) {
 
 PYBIND11_MODULE(_vsim, m) {
   m.doc() = "C++ simulation core of vsim";
+  m.def(
+      "can_frame_bits",
+      [](std::uint32_t id, const std::vector<int>& data, bool extended, bool fd, bool brs) {
+        vsim::CanFrame frame;
+        frame.id = id;
+        frame.extended = extended;
+        frame.fd = fd;
+        frame.brs = brs;
+        for (const int b : data) {
+          frame.data.push_back(static_cast<std::uint8_t>(b));
+        }
+        const vsim::FrameBits bits = vsim::frame_bits(frame);
+        py::dict out;
+        out["nominal"] = bits.nominal;
+        out["data"] = bits.data;
+        out["stuff"] = bits.stuff;
+        return out;
+      },
+      py::arg("id"), py::arg("data"), py::arg("extended") = false, py::arg("fd") = false, py::arg("brs") = true,
+      "Bits a CAN data frame takes on the bus (stuff bits, CRC, EOF and interframe space included).");
   vsim::register_python_plugins(false);  // components of type python run in this interpreter
   m.attr("__version__") = vsim::version();
   m.attr("git_commit") = vsim::git_commit();

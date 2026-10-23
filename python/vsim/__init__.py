@@ -5,9 +5,9 @@
     rec["veh.chassis.vx"]   # numpy array at the logging rate, rec["t"] holds the times
 """
 
-from ._vsim import Simulation, Track, __version__, git_commit
+from ._vsim import Simulation, Track, __version__, can_frame_bits, git_commit
 
-__all__ = ["Simulation", "Track", "run_scenario", "__version__", "git_commit"]
+__all__ = ["Simulation", "Track", "can_frame_bits", "run_scenario", "__version__", "git_commit"]
 
 
 def run_scenario(scenario, *, duration=None, overrides=None, log_dir=None):

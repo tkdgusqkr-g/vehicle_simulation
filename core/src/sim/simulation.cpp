@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "vsim/can/network.hpp"
 #include "vsim/control/reference_vcu.hpp"
 #include "vsim/driver/drivers.hpp"
 #include "vsim/log/mcap_logger.hpp"
@@ -86,6 +87,7 @@ struct Simulation::Impl {
   std::unique_ptr<PlantModel> plant;
   std::vector<double> state;
   Rk4Integrator integrator;
+  std::unique_ptr<CanNetwork> can;  // outlives its blocks (declared before them)
   std::vector<ScheduledBlock> blocks;
   std::vector<const PluginBlock*> plugins;  // among blocks
 
@@ -213,6 +215,10 @@ void Simulation::Impl::build(const Scenario& scenario, const SimulationOptions& 
   if (SensorSystem::configured(effective)) {
     ordered.push_back(std::make_unique<SensorSystem>());
   }
+  if (CanNetwork::configured(effective)) {
+    can = std::make_unique<CanNetwork>();
+    ordered.push_back(can->make_block(false));  // devices send, controllers receive
+  }
   extras_after("sensors");
   if (const ComponentSpec* c = slot("vcu")) {
     ordered.push_back(component_block(*c));
@@ -220,6 +226,9 @@ void Simulation::Impl::build(const Scenario& scenario, const SimulationOptions& 
     ordered.push_back(std::make_unique<ReferenceVcu>());
   }
   extras_after("vcu");
+  if (can) {
+    ordered.push_back(can->make_block(true));  // controllers send, the plant receives
+  }
   if (track) {
     ordered.push_back(std::make_unique<LapTimer>());
   }
@@ -301,6 +310,9 @@ void Simulation::Impl::build(const Scenario& scenario, const SimulationOptions& 
     }
     write_text(run_path / "meta.json", meta.dump(2) + "\n");
     mcap = std::make_unique<McapLogger>(run_path / "log.mcap", std::move(names));
+    if (can) {
+      can->open_logs(run_path);
+    }
   }
   log();
 }
@@ -313,6 +325,9 @@ void Simulation::Impl::step_once() {
     }
   }
   plant->read_inputs(bus);
+  for (auto& scheduled : blocks) {
+    scheduled.block->after_plant_inputs(bus);
+  }
   integrator.step(*plant, t, dt, state);
   ++tick;
   plant->write_outputs(static_cast<double>(tick) * dt, state, bus);
@@ -367,6 +382,10 @@ void Simulation::Impl::finish() {
       summary["laps"] = laps_json;
       summary["best_lap_s"] = best > 0.0 ? nlohmann::json(best) : nlohmann::json(nullptr);
     }
+    if (can) {
+      summary["can"] = nlohmann::json::parse(can->summary_json());
+      can->close_logs();
+    }
     for (const PluginBlock* plugin : plugins) {
       const PluginBlock::Stats& st = plugin->stats();
       summary["plugins"][std::string(plugin->name())] = {
@@ -418,6 +437,7 @@ const SignalBus& Simulation::bus() const { return impl_->bus; }
 void Simulation::set_signal(const std::string& name, double value) { impl_->bus.set(impl_->bus.require(name), value); }
 const Recorder& Simulation::recorder() const { return impl_->recorder; }
 std::vector<const PluginBlock*> Simulation::plugins() const { return impl_->plugins; }
+std::string Simulation::can_summary() const { return impl_->can ? impl_->can->summary_json() : ""; }
 const std::filesystem::path& Simulation::run_path() const { return impl_->run_path; }
 
 void Simulation::reset() {

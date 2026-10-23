@@ -1,0 +1,16 @@
+test: can_torque_path
+description: >
+  토크 명령은 가상 CAN(1 Mbit/s, 프레임 시간·중재·노드 클록)을 거쳐 인버터로, 모터 속도·BMS 한계·IMU는
+  CAN을 거쳐 VCU로 갑니다. 버스 부하, 메시지 지연, 타임아웃을 확인합니다 (can/network.yaml).
+scenario: ../scenarios/acceleration.yaml
+overrides: {can.enabled: true, can.fidelity: timing}
+duration_s: 5
+checks:
+  - name: CAN을 거쳐도 75 m를 4.0초 안에
+    expr: "final(track.last_lap) < 4.0"
+  - name: 버스 부하 15 % 이하
+    expr: "max(can.can_main.load) < 0.15"
+  - name: 토크 명령 지연 1 ms 이하
+    expr: "max(can.VCU_TorqueCmd.latency) < 0.001"
+  - name: 타임아웃 없음
+    expr: "max(can.VCU_TorqueCmd.timeout) == 0 and max(can.INV_FL_Status.timeout) == 0"

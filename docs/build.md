@@ -4,6 +4,14 @@ M5 기준 안내입니다. 설계는 [design.md](design.md)를 보세요.
 
 ## 지금 되는 것
 
+**M8 (CAN으로 말한다)**
+- **가상 CAN**: 프로젝트의 DBC와 `can/network.yaml`로 버스·노드·신호 연결을 정하면, VCU의 토크 명령은 CAN 프레임으로 인버터(플랜트)에, 모터 속도·BMS 한계·IMU 값은 CAN 프레임으로 VCU에 갑니다
+- 충실도 3단계: `ideal`(메시지 주기만), `timing`(비트 스터핑까지 센 프레임 길이, ID 중재, 대기열, 노드마다 클록 오차·지터), `faults`(+ 프레임 손실·지연·에러 프레임·bus-off·송신 누락)
+- 수신 타임아웃(그때 마지막 값 유지 또는 0), 수신 태스크마다 프레임 놓침·중복 집계, 버스 부하·메시지 지연 신호와 실행 요약
+- **버스 로그**: 실행 폴더에 Vector ASC(`<버스>.asc`), candump(`<버스>.log`) → SavvyCAN·CANalyzer로 열기
+- **CAN 네트워크 편집기** (`ui/can/index.html`): 버스·DBC·노드·신호 연결·타임아웃·추가 트래픽·고장 편집, DBC 올리기·내보내기, 예상 부하와 실제 부하, 메시지별 지연·손실·타임아웃
+- 예제 DBC(`can/fs_ev.dbc`, VCU·인버터 4개·BMS·IMU)
+
 **M7 (실차 코드로 달린다)**
 - **플러그인**: 팀 코드를 VCU·드라이버 자리에 넣거나 VCU 다음에 블록으로 더합니다. C/C++ 공유 라이브러리(`sdk/c/include/vsim_plugin.h`), **FMU**(FMI 2.0 Co-Simulation: Simulink·Modelica·AMESim 등에서 내보낸 것), **Python** 클래스. 프로젝트의 `plugins/components.yaml`에서 포트를 신호에 연결하고, 단위는 자동 변환
 - **Simulink `vsim_export`**: 모델 하나를 명령 하나로 플러그인으로. Embedded Coder가 있으면 실차와 같은 C 코드로, 없으면 FMU로. 포트 이름으로 신호에 자동 연결, 모델 버전·해시 기록
@@ -379,6 +387,56 @@ vsim_export('tv_2026.slx', 'Project', 'D:/projects/my_car_2026', 'After', 'vcu')
 
 ---
 
+## 가상 CAN
+
+예제 프로젝트에는 `can/fs_ev.dbc`(메시지 10개)와 `can/network.yaml`이 있고, 기본으로 꺼져 있습니다. 켜면 토크 명령과 피드백이 실제 차처럼 버스를 거칩니다.
+
+```powershell
+# 1 Mbit/s 버스, 프레임 시간·중재·노드 클록까지 (ui\can\index.html로 보기)
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/autocross_auto.yaml --set can.enabled=true --set can.fidelity=timing
+# 버스가 붐빌 때 (PH-08): 우선순위가 높은 0x050 프레임 6개를 1 ms마다 더 보냄 → 부하 84 %, 토크 명령 지연 증가
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/acceleration.yaml --mode fast --log-dir runs `
+  --set can.enabled=true --set can.fidelity=timing --set can.load.0.id=0x050 --set can.load.0.count=6 --set can.load.0.period_ms=1
+```
+
+| `can/network.yaml` | 내용 |
+|---|---|
+| `enabled` | 켜기 |
+| `fidelity` | `ideal` \| `timing` \| `faults` (없으면 `realism.comms`: ideal → ideal, real → faults) |
+| `buses` | `{name, bitrate, data_bitrate, dbc: [can/....dbc]}` (CAN FD는 DBC의 `VFrameFormat`이나 8바이트 초과) |
+| `nodes` | DBC 노드의 `role`(controller: VCU처럼 시뮬레이터의 제어기 값을 보냄 / device: 인버터·BMS·센서), `clock_ppm`, `jitter_us`, `offset_ms`(송신 위상), `task_ms`(수신 태스크 주기: 놓침·중복 집계), `bus_off_recovery_ms` |
+| `map` | `메시지: {신호: 시뮬레이터 신호}`. 보내는 노드는 그 신호 값을 담아 보내고, 받는 쪽에서는 그 신호가 받은 값으로 바뀝니다(단위 자동 변환: rpm ↔ rad/s, kW ↔ W, % ↔ - …). 단위를 바꾸려면 `{signal, unit}` |
+| `timeouts` | `메시지: 초` 또는 `{after_s, then: hold \| zero}` (기본 주기의 3배, hold). 예제의 토크 명령은 50 ms 뒤 0 (명령이 끊긴 인버터) |
+| `load` | 추가 트래픽 `[{bus, id, count, period_ms, length}]` (데이터로거, 게이트웨이 등) |
+| `faults` | `[{type: drop \| delay \| error_rate \| bus_off \| skip, message, node, bus, probability, value_ms, jitter_ms, at_s, until_s}]` (`fidelity: faults`일 때) |
+| `log` | `asc` \| `candump` \| `both` \| `none` |
+
+- DBC: 표준·확장 ID, CAN FD, Intel·Motorola, 부호, float(`SIG_VALTYPE_`), 멀티플렉스(돌아가며 송신), `GenMsgCycleTime`, 주석. 주기가 없는 메시지(이벤트)는 아직 보내지 않습니다.
+- 받는 쪽: device가 보낸 메시지는 VCU·플러그인이 실행되기 전에, controller가 보낸 메시지는 플랜트가 입력을 읽기 전에 반영됩니다. 받은 값은 다음 프레임까지 유지되고, 시뮬레이터 신호 자체(로그)는 보내는 쪽 값으로 남습니다. 받은 값은 `can.<메시지>.<신호>`로 따로 기록됩니다.
+- 시간 단위: 버스는 연속 시간으로 계산하고, 받는 쪽은 1 ms 물리 스텝마다 그때까지 도착한 프레임을 봅니다.
+
+| 신호 | 내용 |
+|---|---|
+| `can.<버스>.load` | 최근 100 ms 버스 부하 (0~1) |
+| `can.<메시지>.<신호>` | 받은 값 (DBC 단위) |
+| `can.<메시지>.latency` | 마지막 프레임의 송신 요청 → 도착 [s] |
+| `can.<메시지>.age`, `.timeout`, `.lost` | 마지막 도착 후 시간, 타임아웃 중이면 1, 잃은 프레임 수 |
+| `can.<메시지>.missed`, `.doubled` | 받는 controller의 `task_ms` 태스크가 새 프레임을 못 찾은 / 둘 이상 찾은 횟수 |
+| `can.<노드>.tec`, `.bus_off` | 송신 에러 카운터, bus-off 중이면 1 |
+
+`summary.json`의 `can`에 버스 부하 평균·최대, 메시지별 보냄·받음·잃음·지연(최소·평균·최대)·타임아웃이 남고, `python -m vsim.phenomena`가 CAN 타임아웃·bus-off·과부하를 이벤트로 보여 줍니다.
+
+### CAN 네트워크 편집기
+
+`vsim-core`를 실시간으로 띄우고 `ui\can\index.html`을 엽니다.
+
+- 버스(비트레이트, DBC 선택, 예상 부하: 비트 스터핑 없음~최악, 실행 중 실제 부하), 노드(역할·클록·지터·태스크), 추가 트래픽과 고장
+- DBC 탭: 메시지(ID, 이름, 길이, 주기, 송신 노드, 타임아웃과 그때 동작, 지연 통계)와 선택한 메시지의 신호(시작 비트, 길이, 바이트 순서, 부호, 배율, 오프셋, 범위, 단위, 받는 노드, **시뮬레이터 신호 연결**). 연결 칸은 단위가 맞으면 초록, 안 맞거나 없는 신호면 빨강
+- "빈 연결 자동 제안": 메시지·신호 이름과 시뮬레이터 신호 이름이 겹치는 단어와 단위로 후보를 채움
+- DBC 올리기(프로젝트 `can/`에 저장), 새 DBC, 내보내기(.dbc 다운로드). 저장하면 시뮬레이터가 다시 시작하고, 불러오지 못하면 이전 파일로 되돌립니다. 편집기로 저장한 `network.yaml`에는 주석이 남지 않습니다
+
+---
+
 ## 센서와 현상 탐지
 
 예제 차량에는 센서 12개가 있습니다 ([vehicle.yaml](../templates/projects/example_fs_ev/vehicle/vehicle.yaml)의 `sensors:`, 항목 설명은 [vehicle_parameters.md §18.1](vehicle_parameters.md#181-vehiclesensors-쓰는-법-m6)). 기본은 `realism: ideal`이라 센서가 참값을 그대로 냅니다. 실제처럼 하려면 시나리오에서 켭니다.
@@ -600,6 +658,7 @@ build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/sce
 | `bat.*` | SoC, 단자 전압·전류·전력, OCV, 온도, BMS 한계 (`bat.limit.*`) |
 | `vcu.*` | 출력 한계, 회생 비율, 바퀴별 슬립과 슬립 제어 계수, 센서로 판단한 페달·차속, 타당성 검사 상태 |
 | `sens.<센서>.*` | 센서 출력 (위 "센서와 현상 탐지") |
+| `can.*` | 가상 CAN: 버스 부하, 받은 신호, 메시지 지연·타임아웃 (위 "가상 CAN") |
 | `energy.*` | 에너지 흐름 누적값 (배터리 화학 에너지, 각 손실, 운동에너지, `residual`은 수지 오차) |
 
 ### 자주 쓰는 옵션
@@ -723,3 +782,6 @@ Linux에서 휠을 쓰려면 `/dev/input/event*`, `/dev/hidraw*` 읽기 권한�
 | `inputs not connected: ...` | `components.yaml`에서 그 입력 포트에 신호나 `{value: ...}`를 지정 |
 | `python plugins need python3xx.dll` | vsim-core를 빌드한 버전의 Python을 설치하고 PATH에 추가 (Python 플러그인을 안 쓰면 필요 없음) |
 | FMU `no binary for this platform` | FMU를 64비트 Windows(`win64`) 또는 Linux(`linux64`) 바이너리 포함으로 다시 내보내기 |
+| `can.map...: cannot convert ...` | DBC 신호 단위와 시뮬레이터 신호 단위의 종류가 다름. 연결이 맞는지 확인하거나 `{signal: ..., unit: ...}`로 DBC 쪽 단위 지정 |
+| CAN을 켜니 차가 안 감 | `can.<메시지>.timeout` 확인. 토크 명령 메시지가 타임아웃이면 인버터가 0으로 (버스 과부하, bus-off, 고장 설정) |
+| ASC를 CANalyzer가 못 엶 | CAN FD 줄은 ASC 형식을 간단히 씁니다. candump 로그(`can.log: candump`)를 SavvyCAN으로 |

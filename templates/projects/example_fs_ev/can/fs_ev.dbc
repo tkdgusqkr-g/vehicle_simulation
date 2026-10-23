@@ -1,0 +1,80 @@
+VERSION "vsim example FS EV 1.0"
+
+NS_ :
+	CM_
+	BA_DEF_
+	BA_
+	BA_DEF_DEF_
+
+BS_:
+
+BU_: VCU INV_FL INV_FR INV_RL INV_RR BMS IMU DASH
+
+BO_ 160 IMU_Accel: 6 IMU
+ SG_ AccelX : 0|16@1- (0.01,0) [-327.68|327.67] "m/s^2" VCU,DASH
+ SG_ AccelY : 16|16@1- (0.01,0) [-327.68|327.67] "m/s^2" VCU,DASH
+ SG_ AccelZ : 32|16@1- (0.01,0) [-327.68|327.67] "m/s^2" VCU,DASH
+
+BO_ 161 IMU_Gyro: 6 IMU
+ SG_ GyroX : 0|16@1- (0.01,0) [-327.68|327.67] "deg/s" VCU,DASH
+ SG_ GyroY : 16|16@1- (0.01,0) [-327.68|327.67] "deg/s" VCU,DASH
+ SG_ GyroZ : 32|16@1- (0.01,0) [-327.68|327.67] "deg/s" VCU,DASH
+
+BO_ 256 VCU_TorqueCmd: 8 VCU
+ SG_ TorqueFL : 0|16@1- (0.01,0) [-327.68|327.67] "N*m" INV_FL
+ SG_ TorqueFR : 16|16@1- (0.01,0) [-327.68|327.67] "N*m" INV_FR
+ SG_ TorqueRL : 32|16@1- (0.01,0) [-327.68|327.67] "N*m" INV_RL
+ SG_ TorqueRR : 48|16@1- (0.01,0) [-327.68|327.67] "N*m" INV_RR
+
+BO_ 272 VCU_Status: 5 VCU
+ SG_ VxEst : 0|16@1+ (0.01,0) [0|655.35] "m/s" DASH
+ SG_ PowerLimit : 16|16@1+ (0.01,0) [0|655.35] "kW" DASH
+ SG_ AppsImplausible : 32|1@1+ (1,0) [0|1] "" DASH
+ SG_ Bspc : 33|1@1+ (1,0) [0|1] "" DASH
+
+BO_ 512 INV_FL_Status: 6 INV_FL
+ SG_ MotorSpeed : 0|16@1- (1,0) [-32768|32767] "rpm" VCU,DASH
+ SG_ TorqueAct : 16|16@1- (0.01,0) [-327.68|327.67] "N*m" VCU,DASH
+ SG_ MotorTemp : 32|8@1+ (1,-40) [-40|215] "degC" VCU,DASH
+
+BO_ 513 INV_FR_Status: 6 INV_FR
+ SG_ MotorSpeed : 0|16@1- (1,0) [-32768|32767] "rpm" VCU,DASH
+ SG_ TorqueAct : 16|16@1- (0.01,0) [-327.68|327.67] "N*m" VCU,DASH
+ SG_ MotorTemp : 32|8@1+ (1,-40) [-40|215] "degC" VCU,DASH
+
+BO_ 514 INV_RL_Status: 6 INV_RL
+ SG_ MotorSpeed : 0|16@1- (1,0) [-32768|32767] "rpm" VCU,DASH
+ SG_ TorqueAct : 16|16@1- (0.01,0) [-327.68|327.67] "N*m" VCU,DASH
+ SG_ MotorTemp : 32|8@1+ (1,-40) [-40|215] "degC" VCU,DASH
+
+BO_ 515 INV_RR_Status: 6 INV_RR
+ SG_ MotorSpeed : 0|16@1- (1,0) [-32768|32767] "rpm" VCU,DASH
+ SG_ TorqueAct : 16|16@1- (0.01,0) [-327.68|327.67] "N*m" VCU,DASH
+ SG_ MotorTemp : 32|8@1+ (1,-40) [-40|215] "degC" VCU,DASH
+
+BO_ 768 BMS_Status: 6 BMS
+ SG_ PackVoltage : 0|16@1+ (0.1,0) [0|6553.5] "V" VCU,DASH
+ SG_ PackCurrent : 16|16@1- (0.1,0) [-3276.8|3276.7] "A" VCU,DASH
+ SG_ Soc : 32|8@1+ (0.5,0) [0|127.5] "%" VCU,DASH
+ SG_ CellTempMax : 40|8@1+ (1,-40) [-40|215] "degC" VCU,DASH
+
+BO_ 769 BMS_Limits: 4 BMS
+ SG_ DischargePowerLimit : 0|16@1+ (0.01,0) [0|655.35] "kW" VCU
+ SG_ ChargePowerLimit : 16|16@1+ (0.01,0) [0|655.35] "kW" VCU
+
+CM_ BO_ 256 "Torque commands to the four in-wheel inverters (motor shaft torque).";
+CM_ BO_ 512 "Front-left inverter feedback.";
+CM_ BO_ 768 "Accumulator state from the BMS.";
+CM_ SG_ 256 TorqueFL "Front-left motor torque command";
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 65535;
+BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_ "GenMsgCycleTime" BO_ 160 10;
+BA_ "GenMsgCycleTime" BO_ 161 10;
+BA_ "GenMsgCycleTime" BO_ 256 10;
+BA_ "GenMsgCycleTime" BO_ 272 100;
+BA_ "GenMsgCycleTime" BO_ 512 10;
+BA_ "GenMsgCycleTime" BO_ 513 10;
+BA_ "GenMsgCycleTime" BO_ 514 10;
+BA_ "GenMsgCycleTime" BO_ 515 10;
+BA_ "GenMsgCycleTime" BO_ 768 20;
+BA_ "GenMsgCycleTime" BO_ 769 20;

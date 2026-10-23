@@ -37,6 +37,7 @@
 #ifdef VSIM_HAS_SDL
 #include "vsim/input/input_service.hpp"
 #endif
+#include "vsim/can/dbc.hpp"
 #include "vsim/link/state_link.hpp"
 #include "vsim/plugin/plugin.hpp"
 #include "vsim/models/vehicle/suspension.hpp"
@@ -607,10 +608,54 @@ std::vector<std::string> import_vehicle_files(const std::filesystem::path& proje
 
 // --- Plugins page (ui/plugins) -------------------------------------------------------------
 
-// The components file before the page last saved it: restored if the new one
-// fails to load, so a bad mapping does not stop the simulator.
-std::optional<std::pair<std::filesystem::path, std::string>> g_components_backup;
-std::string g_components_error;  // why the last save was rolled back, for the page
+// Project files a page last saved, with what they held before (nothing if
+// they are new): put back if the simulation does not load with them, so a
+// bad mapping does not stop the simulator.
+std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> g_saved_backup;
+std::string g_reload_error;  // why the last save was rolled back, for the pages
+
+std::optional<std::string> read_text(const std::filesystem::path& file) {
+  std::ifstream in(file, std::ios::binary);
+  if (!in) {
+    return std::nullopt;
+  }
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+// Writes a project file a page saved, keeping its old text for a rollback.
+void save_project_file(const std::filesystem::path& file, const std::string& text) {
+  if (std::none_of(g_saved_backup.begin(), g_saved_backup.end(), [&](const auto& b) { return b.first == file; })) {
+    g_saved_backup.emplace_back(file, read_text(file));
+  }
+  std::filesystem::create_directories(file.parent_path());
+  std::ofstream out(file, std::ios::binary);
+  out << text;
+  if (!out) {
+    throw std::runtime_error("cannot write " + vsim::path_to_utf8(file));
+  }
+}
+
+// Makes project.yaml point at a section file (components:, can:).
+void ensure_project_key(const vsim::Scenario& scenario, const std::string& key, const std::filesystem::path& file) {
+  const std::filesystem::path project = scenario.project_dir / "project.yaml";
+  if (!vsim::ParamTree::from_yaml_file(project).has(key)) {
+    const std::string text = read_text(project).value_or("");
+    save_project_file(project, text + (text.empty() || text.back() == '\n' ? "" : "\n") + key + ": " +
+                                   vsim::path_to_utf8(file.lexically_relative(scenario.project_dir)) + "\n");
+  }
+}
+
+void rollback_saved_files() {
+  for (const auto& [file, old] : g_saved_backup) {
+    if (old) {
+      std::ofstream(file, std::ios::binary) << *old;
+    } else {
+      std::error_code ec;
+      std::filesystem::remove(file, ec);
+    }
+  }
+  g_saved_backup.clear();
+}
 
 std::filesystem::path components_file(const vsim::Scenario& scenario) {
   const vsim::ParamTree project = vsim::ParamTree::from_yaml_file(scenario.project_dir / "project.yaml");
@@ -673,7 +718,7 @@ json plugins_state(const vsim::Simulation& sim) {
                 {"active", active},
                 {"signals", signals},
                 {"files", files},
-                {"load_error", g_components_error}}}};
+                {"load_error", g_reload_error}}}};
 }
 
 // Loads a component on its own to read its ports (the page maps them before running).
@@ -703,26 +748,178 @@ json probe_plugin(const vsim::Simulation& sim, const std::string& name, const js
 // project point at it.
 void save_components(const vsim::Scenario& scenario, const std::string& text) {
   vsim::ParamTree::from_yaml_string(text);  // throws on a YAML error
+  g_saved_backup.clear();
+  g_reload_error.clear();
   const std::filesystem::path file = components_file(scenario);
-  std::filesystem::create_directories(file.parent_path());
-  std::string old;
-  if (std::ifstream in(file, std::ios::binary); in) {
-    old.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  save_project_file(file, text);
+  ensure_project_key(scenario, "components", file);
+}
+
+// --- CAN network page (ui/can) ------------------------------------------------------------
+
+json dbc_json(const vsim::Dbc& dbc) {
+  json messages = json::array();
+  for (const vsim::DbcMessage& m : dbc.messages) {
+    json signals = json::array();
+    for (const vsim::DbcSignal& sg : m.signals) {
+      signals.push_back({{"name", sg.name},
+                         {"start_bit", sg.start_bit},
+                         {"length", sg.length},
+                         {"little_endian", sg.little_endian},
+                         {"signed", sg.is_signed},
+                         {"kind", sg.kind == vsim::DbcSignal::Kind::Float32   ? "float32"
+                                  : sg.kind == vsim::DbcSignal::Kind::Float64 ? "float64"
+                                                                               : "int"},
+                         {"factor", sg.factor},
+                         {"offset", sg.offset},
+                         {"min", sg.minimum},
+                         {"max", sg.maximum},
+                         {"unit", sg.unit},
+                         {"receivers", sg.receivers},
+                         {"multiplexer", sg.multiplexer},
+                         {"mux_value", sg.mux_value ? json(*sg.mux_value) : json(nullptr)},
+                         {"comment", sg.comment}});
+    }
+    messages.push_back({{"id", m.id},
+                        {"extended", m.extended},
+                        {"fd", m.fd},
+                        {"name", m.name},
+                        {"length", m.length},
+                        {"transmitter", m.transmitter},
+                        {"cycle_ms", m.cycle_time * 1000.0},
+                        {"comment", m.comment},
+                        {"signals", signals}});
   }
-  g_components_backup.emplace(file, old);
-  g_components_error.clear();
-  {
-    std::ofstream out(file, std::ios::binary);
-    out << text;
-    if (!out) {
-      throw std::runtime_error("cannot write " + vsim::path_to_utf8(file));
+  return {{"version", dbc.version}, {"nodes", dbc.nodes}, {"messages", messages}};
+}
+
+vsim::Dbc dbc_from_json(const json& j) {
+  vsim::Dbc dbc;
+  dbc.version = j.value("version", std::string());
+  dbc.nodes = j.value("nodes", std::vector<std::string>{});
+  for (const json& m : j.at("messages")) {
+    vsim::DbcMessage msg;
+    msg.id = m.at("id").get<std::uint32_t>();
+    msg.extended = m.value("extended", false);
+    msg.fd = m.value("fd", false);
+    msg.name = m.at("name");
+    msg.length = m.value("length", 8);
+    msg.transmitter = m.value("transmitter", std::string());
+    msg.cycle_time = m.value("cycle_ms", 0.0) / 1000.0;
+    msg.comment = m.value("comment", std::string());
+    for (const json& sg : m.value("signals", json::array())) {
+      vsim::DbcSignal s;
+      s.name = sg.at("name");
+      s.start_bit = sg.at("start_bit");
+      s.length = sg.at("length");
+      s.little_endian = sg.value("little_endian", true);
+      s.is_signed = sg.value("signed", false);
+      const std::string kind = sg.value("kind", std::string("int"));
+      s.kind = kind == "float32"   ? vsim::DbcSignal::Kind::Float32
+               : kind == "float64" ? vsim::DbcSignal::Kind::Float64
+                                   : vsim::DbcSignal::Kind::Integer;
+      s.factor = sg.value("factor", 1.0);
+      s.offset = sg.value("offset", 0.0);
+      s.minimum = sg.value("min", 0.0);
+      s.maximum = sg.value("max", 0.0);
+      s.unit = sg.value("unit", std::string());
+      s.receivers = sg.value("receivers", std::vector<std::string>{});
+      s.multiplexer = sg.value("multiplexer", false);
+      if (sg.contains("mux_value") && !sg["mux_value"].is_null()) {
+        s.mux_value = sg["mux_value"].get<std::int64_t>();
+      }
+      s.comment = sg.value("comment", std::string());
+      msg.signals.push_back(s);
+    }
+    dbc.messages.push_back(msg);
+  }
+  // Through the text and back: the same checks as a file (fits, factor, ...).
+  return vsim::Dbc::parse(dbc.to_text(), "edited DBC");
+}
+
+std::filesystem::path can_file(const vsim::Scenario& scenario) {
+  const vsim::ParamTree project = vsim::ParamTree::from_yaml_file(scenario.project_dir / "project.yaml");
+  return scenario.project_dir / vsim::path_from_utf8(project.get_string("can", "can/network.yaml"));
+}
+
+json can_state(const vsim::Simulation& sim) {
+  const vsim::Scenario& scenario = sim.scenario();
+  json dbcs = json::array();
+  const std::filesystem::path dir = scenario.project_dir / "can";
+  std::error_code ec;
+  if (std::filesystem::is_directory(dir, ec)) {
+    std::vector<std::filesystem::path> files;
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+      std::string ext = vsim::path_to_utf8(entry.path().extension());
+      std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
+      if (entry.is_regular_file(ec) && ext == ".dbc") {
+        files.push_back(entry.path());
+      }
+    }
+    std::sort(files.begin(), files.end());
+    for (const auto& f : files) {
+      json item = {{"path", vsim::path_to_utf8(f.lexically_relative(scenario.project_dir))}};
+      try {
+        item["dbc"] = dbc_json(vsim::Dbc::from_file(f));
+      } catch (const std::exception& e) {
+        item["error"] = e.what();
+      }
+      dbcs.push_back(item);
     }
   }
-  const std::filesystem::path project = scenario.project_dir / "project.yaml";
-  if (!vsim::ParamTree::from_yaml_file(project).has("components")) {
-    std::ofstream out(project, std::ios::binary | std::ios::app);
-    out << "\ncomponents: " << vsim::path_to_utf8(file.lexically_relative(scenario.project_dir)) << "\n";
+  json signals = json::array();
+  json loads = json::object();
+  for (vsim::SignalId id = 0; id < sim.bus().size(); ++id) {
+    const auto& info = sim.bus().info(id);
+    if (info.name.rfind("can.", 0) != 0) {
+      signals.push_back({{"name", info.name}, {"unit", info.unit}});
+    } else if (info.name.size() > 5 && info.name.compare(info.name.size() - 5, 5, ".load") == 0) {
+      loads[info.name.substr(4, info.name.size() - 9)] = sim.bus().get(id);
+    }
   }
+  const std::filesystem::path file = can_file(scenario);
+  const std::string summary = sim.can_summary();
+  return json{{"jsonrpc", "2.0"},
+              {"method", "can.state"},
+              {"params",
+               {{"project", vsim::path_to_utf8(scenario.project_dir)},
+                {"network_file", vsim::path_to_utf8(file.lexically_relative(scenario.project_dir))},
+                {"network_yaml", read_text(file).value_or("")},
+                {"dbcs", dbcs},
+                {"signals", signals},
+                {"running", !summary.empty()},
+                {"stats", summary.empty() ? json(nullptr) : json::parse(summary)},
+                {"loads", loads},
+                {"load_error", g_reload_error}}}};
+}
+
+// The network file and edited DBCs (all checked first), then a reload.
+void save_can(const vsim::Scenario& scenario, const json& params) {
+  const std::string network = params.at("network");
+  vsim::ParamTree::from_yaml_string(network);
+  std::vector<std::pair<std::filesystem::path, std::string>> files;
+  for (const json& d : params.value("dbcs", json::array())) {
+    const std::string rel = d.at("path");
+    const std::filesystem::path path = vsim::path_from_utf8(rel);
+    bool inside = rel.rfind("can/", 0) == 0 && path.is_relative() && path.extension() == ".dbc";
+    for (const auto& segment : path) {
+      inside = inside && segment != "..";
+    }
+    if (!inside) {
+      throw std::invalid_argument("refusing to write '" + rel + "' (only can/*.dbc)");
+    }
+    files.emplace_back(scenario.project_dir / path, d.contains("dbc") ? dbc_from_json(d["dbc"]).to_text()
+                                                                       : d.at("text").get<std::string>());
+    vsim::Dbc::parse(files.back().second, rel);
+  }
+  g_saved_backup.clear();
+  g_reload_error.clear();
+  for (const auto& [path, text] : files) {
+    save_project_file(path, text);
+  }
+  const std::filesystem::path file = can_file(scenario);
+  save_project_file(file, network);
+  ensure_project_key(scenario, "can", file);
 }
 
 std::string notice(const std::string& level, const std::string& text) {
@@ -1074,6 +1271,30 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
           } else {
             server.broadcast(notice("info", "components saved"));
           }
+        } else if (method == "can.get") {
+          server.broadcast(can_state(sim).dump());
+        } else if (method == "can.dbc.format") {
+          server.broadcast(json{{"jsonrpc", "2.0"},
+                                {"method", "can.dbc.text"},
+                                {"params", {{"path", params.value("path", std::string())},
+                                            {"text", dbc_from_json(params.at("dbc")).to_text()}}}}
+                               .dump());
+        } else if (method == "can.import") {
+          const auto written = import_project_files(sim.scenario().project_dir, params.at("files"), "can", {".dbc"});
+          for (const std::string& file : written) {
+            std::cout << "CAN page wrote " << file << "\n";
+          }
+          server.broadcast(notice("info", "saved " + std::to_string(written.size()) + " DBC file(s) to can/"));
+          server.broadcast(can_state(sim).dump());
+        } else if (method == "can.save") {
+          save_can(sim.scenario(), params);
+          std::cout << "CAN page saved " << vsim::path_to_utf8(can_file(sim.scenario())) << "\n";
+          if (params.value("reload", true)) {
+            server.broadcast(notice("info", "CAN network saved; reloading the simulation"));
+            reload = true;
+          } else {
+            server.broadcast(notice("info", "CAN network saved"));
+          }
         } else if (method == "vehicle.model") {
           server.broadcast(car_model_message(car_model, car_generation));
         } else if (method == "track.mesh") {
@@ -1254,17 +1475,16 @@ int main(int argc, char** argv) {
     try {
       loaded.emplace(vsim::Scenario::load(vsim::path_from_utf8(options->scenario), options->overrides), sim_options);
     } catch (const std::exception& error) {
-      if (!g_components_backup) {
+      if (g_saved_backup.empty()) {
         throw;
       }
-      // Components saved from the plugins page did not load: back to the old file.
-      std::cerr << "components rejected, restoring the previous file: " << error.what() << "\n";
-      g_components_error = error.what();
-      std::ofstream(g_components_backup->first, std::ios::binary) << g_components_backup->second;
-      g_components_backup.reset();
+      // Files saved from a page did not load: back to the old ones.
+      std::cerr << "saved files rejected, restoring the previous ones: " << error.what() << "\n";
+      g_reload_error = error.what();
+      rollback_saved_files();
       continue;
     }
-    g_components_backup.reset();
+    g_saved_backup.clear();
     vsim::Simulation& sim = *loaded;
 
     if (!options->list_signals.empty()) {
