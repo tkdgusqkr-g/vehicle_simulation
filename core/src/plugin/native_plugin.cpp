@@ -31,16 +31,17 @@ std::string shared_library_extension() {
 #endif
 }
 
-DynamicLibrary::DynamicLibrary(const std::filesystem::path& file) : file_(file) {
+DynamicLibrary::DynamicLibrary(const std::filesystem::path& file, bool global) : file_(file) {
 #ifdef _WIN32
   // Dependencies next to the library load too.
+  (void)global;
   handle_ = LoadLibraryExW(file.wstring().c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
   if (handle_ == nullptr) {
     throw std::runtime_error("cannot load '" + path_to_utf8(file) + "' (error " + std::to_string(GetLastError()) +
                              "; a 64-bit library and its DLLs are needed)");
   }
 #else
-  handle_ = dlopen(file.c_str(), RTLD_NOW | RTLD_LOCAL);
+  handle_ = dlopen(file.c_str(), RTLD_NOW | (global ? RTLD_GLOBAL : RTLD_LOCAL));
   if (handle_ == nullptr) {
     const char* error = dlerror();
     throw std::runtime_error("cannot load '" + path_to_utf8(file) + "': " + (error ? error : "unknown error"));

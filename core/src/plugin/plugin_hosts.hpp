@@ -19,7 +19,9 @@ std::string shared_library_extension();
 // A loaded shared library; unloaded on destruction.
 class DynamicLibrary {
  public:
-  explicit DynamicLibrary(const std::filesystem::path& file);
+  // `global`: its symbols serve libraries loaded later (an embedded
+  // interpreter's extension modules need libpython's).
+  explicit DynamicLibrary(const std::filesystem::path& file, bool global = false);
   ~DynamicLibrary();
   DynamicLibrary(const DynamicLibrary&) = delete;
   DynamicLibrary& operator=(const DynamicLibrary&) = delete;

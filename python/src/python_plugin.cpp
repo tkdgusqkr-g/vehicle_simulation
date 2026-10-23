@@ -6,6 +6,7 @@
 #include <pybind11/embed.h>
 #include <pybind11/pybind11.h>
 
+#include <cstdio>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -23,6 +24,7 @@
 
 #include "vsim/plugin/plugin.hpp"
 #include "vsim/util/paths.hpp"
+#include "vsim_plugin.h"
 
 namespace py = pybind11;
 
@@ -35,13 +37,6 @@ bool g_embedded = false;
 void ensure_interpreter() {
   static std::once_flag once;
   std::call_once(once, [] {
-#if defined(_WIN32) && defined(VSIM_PYTHON_DLL)
-    // The interpreter DLL is delay-loaded: check it exists before touching it.
-    if (LoadLibraryA(VSIM_PYTHON_DLL) == nullptr) {
-      throw std::runtime_error(std::string("python plugins need ") + VSIM_PYTHON_DLL +
-                               " (the Python vsim-core was built with) on the PATH");
-    }
-#endif
     if (!Py_IsInitialized()) {
       py::initialize_interpreter();
 #ifdef VSIM_PYTHON_DIR
@@ -203,6 +198,23 @@ class PythonPlugin final : public PluginInstance {
 };
 
 }  // namespace
+
+#ifdef VSIM_PYTHON_HOST_LIBRARY
+// vsim-core loads this library only when a component is of type python, so
+// it starts on machines without Python (core/src/plugin/python_host.cpp).
+extern "C" VSIM_PLUGIN_EXPORT PluginInstance* vsim_python_host_create(const ParamTree* params, const ComponentSpec* spec,
+                                                                     double period, char* error, int error_size) {
+  try {
+    ensure_interpreter();
+    return new PythonPlugin(*params, *spec, period);
+  } catch (const std::exception& e) {
+    std::snprintf(error, static_cast<std::size_t>(error_size), "%s", e.what());
+    return nullptr;
+  }
+}
+
+extern "C" VSIM_PLUGIN_EXPORT void vsim_python_host_destroy(PluginInstance* plugin) { delete plugin; }
+#endif
 
 void register_python_plugins(bool embedded) {
   g_embedded = embedded;

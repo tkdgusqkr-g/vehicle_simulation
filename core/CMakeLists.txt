@@ -37,6 +37,7 @@ add_library(vsim_core STATIC
   src/plugin/fmu_plugin.cpp
   src/plugin/native_plugin.cpp
   src/plugin/plugin.cpp
+  src/plugin/python_host.cpp
   src/plugin/units.cpp
   src/sensors/sensor_chain.cpp
   src/sensors/sensor_system.cpp
@@ -76,19 +77,17 @@ if(VSIM_BUILD_APP)
 
   add_executable(vsim-core apps/vsim-core/main.cpp)
   target_link_libraries(vsim-core PRIVATE vsim_core vsim_api nlohmann_json::nlohmann_json)
-  # Python plugins: an interpreter started on first use (design doc §11.2).
+  # Python plugins (design doc §11.2): a host library with the interpreter,
+  # next to vsim-core, loaded the first time a Python component is used.
   if(VSIM_BUILD_PYTHON AND TARGET Python::Python AND TARGET pybind11::embed)
-    target_sources(vsim-core PRIVATE "${PROJECT_SOURCE_DIR}/python/src/python_plugin.cpp")
-    target_include_directories(vsim-core PRIVATE "${PROJECT_SOURCE_DIR}/python/src")
-    target_link_libraries(vsim-core PRIVATE pybind11::embed)
-    target_compile_definitions(vsim-core PRIVATE VSIM_WITH_PYTHON VSIM_PYTHON_DIR="${PROJECT_SOURCE_DIR}/python")
-    if(MSVC)
-      # Starts without Python installed; only Python plugins need the DLL.
-      set(_vsim_python_dll "python${Python_VERSION_MAJOR}${Python_VERSION_MINOR}.dll")
-      target_link_options(vsim-core PRIVATE "/DELAYLOAD:${_vsim_python_dll}")
-      target_link_libraries(vsim-core PRIVATE delayimp)
-      target_compile_definitions(vsim-core PRIVATE VSIM_PYTHON_DLL="${_vsim_python_dll}")
-    endif()
+    add_library(vsim_python_host MODULE "${PROJECT_SOURCE_DIR}/python/src/python_plugin.cpp")
+    target_link_libraries(vsim_python_host PRIVATE vsim_core pybind11::embed)
+    target_include_directories(vsim_python_host PRIVATE "${PROJECT_SOURCE_DIR}/sdk/c/include")
+    target_compile_definitions(vsim_python_host PRIVATE VSIM_PYTHON_HOST_LIBRARY
+                               VSIM_PYTHON_DIR="${PROJECT_SOURCE_DIR}/python")
+    set_target_properties(vsim_python_host PROPERTIES PREFIX "")
+    add_dependencies(vsim-core vsim_python_host)
+    target_compile_definitions(vsim-core PRIVATE VSIM_WITH_PYTHON)
   endif()
   if(WIN32)
     target_link_libraries(vsim-core PRIVATE winmm shell32)

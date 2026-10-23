@@ -47,9 +47,7 @@
 #include "vsim/visual/vehicle_visual.hpp"
 #include "vsim/util/paths.hpp"
 #include "vsim/version.hpp"
-#ifdef VSIM_WITH_PYTHON
-#include "python_plugin.hpp"
-#endif
+#include "vsim/plugin/python_host.hpp"
 
 namespace {
 
@@ -105,6 +103,28 @@ In realtime mode open ui/live/index.html in a browser to watch and drive.
 
 // Command-line arguments as UTF-8, also on Windows where argv uses the ANSI
 // code page and would mangle non-ASCII paths.
+// Folder of this executable (the Python plugin host sits next to it).
+std::filesystem::path executable_dir() {
+#ifdef _WIN32
+  std::wstring buffer(32768, L'\0');
+  const DWORD n = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+  buffer.resize(n);
+  return std::filesystem::path(buffer).parent_path();
+#else
+  std::error_code ec;
+  const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", ec);
+  return ec ? std::filesystem::current_path() : self.parent_path();
+#endif
+}
+
+std::string plugin_extension() {
+#ifdef _WIN32
+  return ".dll";
+#else
+  return ".so";  // CMake MODULE libraries
+#endif
+}
+
 std::vector<std::string> utf8_args(int argc, char** argv) {
 #ifdef _WIN32
   (void)argc;
@@ -1219,7 +1239,7 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
 #ifdef VSIM_WITH_PYTHON
-    vsim::register_python_plugins(true);
+    vsim::register_python_host(executable_dir() / ("vsim_python_host" + plugin_extension()));
 #endif
 #ifdef _WIN32
     // 1 ms timer resolution so the real-time loop can sleep in small steps.
