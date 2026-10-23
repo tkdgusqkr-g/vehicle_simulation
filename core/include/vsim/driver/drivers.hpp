@@ -131,7 +131,7 @@ class PursuitDriver final : public DriverBlock {
   SignalId target_out_ = 0, lateral_out_ = 0;
 };
 
-// Builds the driver named by driver.type (dil | keyboard | maneuver | pursuit | external).
+// Builds the driver named by driver.type (dil | keyboard | maneuver | pursuit | mpc | external).
 std::unique_ptr<DriverBlock> make_driver(const ParamTree& params);
 
 }  // namespace vsim

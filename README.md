@@ -6,8 +6,9 @@
 - 빌드와 실행: [docs/build.md](docs/build.md)
 - 차량 데이터 요청 목록: [docs/vehicle_parameters.md](docs/vehicle_parameters.md)
 
-## 현재 상태: M9 (전기가 흐른다)
+## 현재 상태: M10 (스스로 한계까지)
 
+- **M10**: MPC 드라이버. 차량의 타이어 데이터로 자기 모델을 맞추고 달리면서 앞뒤 축의 반응을 배우는 예측 제어 드라이버. 추종 모드(주행 라인·속도 프로파일을 사람처럼: 반응 지연·근육 지연·손떨림)와 한계 주행 모드(MPCC, 진행 거리 최대화). 외란을 모두 켠 서킷에서 두 모드 완주, 속도 프로파일 추출(`python -m vsim.profiles`), 라이브 뷰에 계획 경로
 - **M9**: 전기 네트워크. 고전압(축전지·AIR·프리차지·DC 링크·인버터), 셧다운 회로, 저전압(LV 배터리·DC-DC·ECU·펌프·팬), 센서 배선을 넷리스트로 정하고 매 스텝 회로 해석(MNA). 프리차지 순서·위반·채터링, ECU 브라운아웃 리셋과 CAN 노드 정지, 배선 고장 → APPS 차단, 전선 강하·온도·LV 전력 예산. 회로 편집기(`ui/elec/index.html`)
 - **M8**: 가상 CAN. DBC로 정한 버스로 토크 명령·인버터 피드백·BMS·IMU가 오가고, 프레임 길이(비트 스터핑)·ID 중재·노드 클록 오차·지터·프레임 손실·bus-off·타임아웃이 제어에 그대로 영향을 줌. ASC·candump 버스 로그, CAN 네트워크 편집기(`ui/can/index.html`)
 - **M7**: 플러그인. 팀 코드(C/C++ 공유 라이브러리, FMU, Python, Simulink → `vsim_export`)를 VCU·드라이버 자리나 VCU 다음에 넣고 포트를 신호에 연결(단위 자동 변환). 플러그인 페이지(`ui/plugins/index.html`), SDK와 예제(`sdk/`)
@@ -25,6 +26,8 @@ cmake -S . -B build
 cmake --build build --config Release
 # 자동 주행으로 오토크로스 랩 (ui\live\index.html을 열어서 보기)
 build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/autocross_auto.yaml --mode realtime
+# MPC 드라이버: 사람처럼 추종 / 한계 주행 (--set driver.mode=race)
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/autocross_mpc.yaml --mode realtime
 # 직접 운전 (G29 또는 키보드): ui\view3d\index.html(3D) 또는 Unreal 뷰어로 보기
 # 트랙 편집기(ui\editor\index.html)에서 트랙을 보내면 바로 그 트랙에서 주행, 휠 보정은 ui\input\index.html
 build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/drive.yaml --set track.template=autocross

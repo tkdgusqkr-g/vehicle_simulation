@@ -24,6 +24,8 @@ add_library(vsim_core STATIC
   src/elec/elements.cpp
   src/elec/network.cpp
   src/driver/drivers.cpp
+  src/driver/mpc_driver.cpp
+  src/driver/qp.cpp
   src/driver/profile.cpp
   src/input/force_feedback.cpp
   src/input/wheel_profile.cpp

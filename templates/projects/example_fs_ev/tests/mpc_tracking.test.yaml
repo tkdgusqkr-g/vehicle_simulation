@@ -1,0 +1,18 @@
+test: mpc_tracking
+description: MPC 드라이버 추종 모드(사람 특성 포함)로 오토크로스 2랩. 라인 추종, 코스 이탈, 해 실패를 확인합니다.
+scenario: ../scenarios/autocross_mpc.yaml
+duration_s: 45
+seeds: [1, 2]
+checks:
+  - name: 2랩 완주
+    expr: "final(track.lap) >= 2"
+  - name: 코스 이탈 없음
+    expr: "final(track.off_track_count) == 0"
+  - name: 베스트 랩 20.6초 이내
+    expr: "final(track.best_lap) < 20.6"
+  - name: 라인 추종 오차 0.8 m 이내
+    expr: "max(abs(window(drv.line_offset, 3, 45))) < 0.8"
+  - name: Pure Pursuit 대체 없음
+    expr: "max(drv.mpc.status) < 2"
+  - name: 실패한 해 5회 미만
+    expr: "final(drv.mpc.failures) < 5"

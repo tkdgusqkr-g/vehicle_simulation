@@ -4,6 +4,14 @@ M9 기준 안내입니다. 설계는 [design.md](design.md)를 보세요.
 
 ## 지금 되는 것
 
+**M10 (스스로 한계까지)**
+- **MPC 드라이버** (`driver.type: mpc`): 1.5~2초 앞을 예측하면서 조향과 가감속을 매 50 ms 최적화합니다. 차량의 타이어 데이터로 자기 모델(축별 타이어 곡선, 하중 이동)을 맞추고, 달리면서 앞뒤 축이 실제로 얼마나 무는지 배웁니다
+- **추종 모드** (`mode: track`): 주행 라인과 속도 프로파일을 사람처럼 따라감. 반응 지연 0.15 s, 근육 지연(2차 필터), 핸들 속도 한계, 손떨림. 예제 오토크로스 20.3 s
+- **한계 주행 모드** (`mode: race`, MPCC): 트랙 경계와 마찰 한계 안에서 진행 거리를 최대화. 예제 오토크로스 19.1 s (Pure Pursuit 20.8 s)
+- 두 모드 모두 고저차·뱅크·연석·젖은 구간·노면 요철과 모든 비이상성(센서·액추에이터·CAN·전기·개체 편차)을 켠 서킷에서 코스 이탈 없이 완주
+- **속도 프로파일**: `python -m vsim.profiles`로 주행 기록(사람·레이싱 MPC·실차 로그)에서 한 랩의 속도를 뽑아 추종 모드에 줌
+- 라이브 뷰에 MPC가 계획한 경로(점선)
+
 **M9 (전기가 흐른다)**
 - **전기 네트워크**: 프로젝트의 `electrical/netlist.yaml`로 고전압(축전지·퓨즈·AIR·프리차지·방전·HV 케이블·DC 링크·인버터), 셧다운 회로, 저전압(LV 배터리·DC-DC·퓨즈·ECU·펌프·팬), 센서 배선(5 V 레귤레이터·APPS 포텐셔미터·커넥터 핀·ADC)을 정하면, 매 1 ms 수정 절점 해석(MNA)으로 풉니다
 - 켜면 배터리 ↔ 인버터가 직결이 아닙니다: AIR가 붙어야 모터에 전기가 가고, DC 링크 전압으로 모터 출력이 정해지고, 배터리 전류는 회로에서 나옵니다
@@ -573,6 +581,7 @@ build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/sce
 | `acceleration.yaml` | FS 가속 75 m (출발선 0.3 m 뒤, 풀 스로틀) |
 | `skidpad_auto.yaml` | 스키드패드 자동 주행 (오른쪽 2바퀴, 왼쪽 2바퀴; 구간 2·4가 기록 랩) |
 | `autocross_auto.yaml` | 예제 오토크로스 3랩 자동 주행 |
+| `autocross_mpc.yaml` | 같은 트랙을 MPC 드라이버로 ([MPC 드라이버](#mpc-드라이버)) |
 | `drive.yaml` | 직접 운전 (트랙 없음 — 편집기에서 트랙을 보내거나 `--set track.template=autocross`) |
 
 직접 운전하면서 트랙을 쓰려면:
@@ -614,6 +623,80 @@ driver:
 | `track.sector`, `track.last_sector` | 현재 구간, 마지막으로 끝난 구간 시간 |
 | `track.off_track`, `track.off_track_count`, `track.lap_valid` | 코스 이탈 여부, 횟수, 현재 랩 유효 여부 |
 | `drv.target_speed`, `drv.line_offset` | 자동 주행의 목표 속도, 주행 라인에서 벗어난 거리 |
+
+## MPC 드라이버
+
+```powershell
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/autocross_mpc.yaml --mode realtime
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/autocross_mpc.yaml --mode realtime --set driver.mode=race
+```
+
+라이브 뷰에 차 앞으로 MPC가 계획한 1.5~2초 경로가 점선으로 나옵니다. 헤드리스로는 45초(2랩)를 추종 모드 약 7초, 한계 주행 모드 약 17초에 끝냅니다.
+
+| 모드 | 하는 일 | 예제 오토크로스 (베스트 랩) |
+|---|---|---|
+| `track` | 주행 라인과 속도 프로파일을 따라감. 사람 특성(반응 지연, 근육 지연, 핸들 속도, 손떨림)을 거침 | 20.3 s |
+| `race` | 트랙과 마찰 한계 안에서 진행 거리를 최대화 (MPCC). 라인은 참고만, 사람 특성 없음 | 19.1 s |
+| (참고) `pursuit` | Pure Pursuit + 속도 프로파일 | 20.8 s |
+
+### 어떻게 동작하나
+
+- **예측 모델**: 센터라인 기준 Frenet 좌표의 dynamic single-track (상태 s, n, Δψ, vx, vy, r / 입력 앞바퀴 조향각, 종가속도). 걷는 속도에서는 kinematic 모델로 넘어갑니다.
+- **차를 아는 드라이버**: 시작할 때 차량의 타이어 모델(`simple` 또는 `.tir`)을 축 하중과 코너링 하중 이동(롤센터·롤 강성 배분)으로 평가해서 앞뒤 축의 타이어 곡선(마찰, 하중 민감도, Magic Formula B·C)을 맞추고, 그립의 95 %를 기대합니다 (`model.grip_scale`).
+- **달리면서 배우기**: 잰 횡가속도·요 가속도로 앞뒤 축의 횡력을 구하고, 그 힘에 필요한 슬립각과 실제 슬립각의 비로 축별 슬립 강성(`drv.mpc.front_gain`, `drv.mpc.rear_gain`)을 6초 평균으로 고칩니다. 애커만, 컴플라이언스·롤 스티어, 토, 캠버처럼 single-track에 없는 것을 흡수합니다 (예제 차: 앞 0.87, 뒤 1.12 → 실제 차가 모델보다 언더스티어).
+- **최적화**: 50 ms마다 예측 구간 30단계를 이전 계획 주변에서 선형화해서 QP를 풀고(내부점법), 크게 바뀌면 다시 선형화해서 최대 3번(신뢰 영역 안의 순차 QP).
+- **제약**: 트랙 경계(차 반폭 + 여유), 마찰원(팔각형 |ax| + |ay| ≤ 1.25 g, |ay| ≤ g), 앞뒤 타이어 슬립각이 최대 횡력 슬립각 이하, 조향각·조향 속도·저크. 지킬 수 없으면 벌점이 큰 여유 변수로 풉니다.
+- **페달**: 계획한 가속도를 공칭 역맵(모터 토크·기어비, 브레이크 게인 + 회생)으로 페달로 바꾸고, 느끼는 가속도(PI, 생각보다 덜 서면 더 밟음)와 계획 속도(PI)로 보정합니다.
+- **사람 특성(추종 모드)**: 반응 지연만큼 앞의 상태를 예측해서 계획하고, 근육 지연만큼 미리 핸들을 돌립니다.
+- **실패 처리**: QP가 실패하면 이전 계획을 이어 쓰고, 3번 연속이면 Pure Pursuit로 넘어갑니다 (`drv.mpc.status` 1, 2).
+- 결정론: 같은 시드면 비트 단위로 같은 결과. 솔버는 시뮬레이션 스텝 안에서 동기로 풉니다.
+
+### 설정
+
+```yaml
+driver:
+  type: mpc
+  mode: track                  # track | race
+  # line: racing               # 따라갈 라인 (기본: 트랙 파일의 첫 번째 라인)
+  # horizon_s: 1.5             # 예측 시간 (race 2.0), steps: 30, mpc_period_s: 0.05
+  # aggressiveness: 0.95       # 기대 그립 중 최대로 쓰는 비율 (race 0.97)
+  # margin_m: 0.3              # 트랙 경계 여유 (race 0.15)
+  # profile:                   # 추종 모드의 속도 프로파일: 기대 그립 대비 비율
+  #   lateral_share: 0.8
+  #   brake_share: 0.55
+  #   max_kph: 110
+  # speed_profile: profiles/autocross.csv   # 기록한 속도 프로파일 (s_m, v_mps; 프로젝트 기준 상대 경로)
+  # human: {enabled: true, delay_s: 0.15, bandwidth_hz: 2.5, steer_rate_deg_per_s: 600, noise_deg: 0.3}
+  # model: {grip_scale: 0.95, learn: true, front_gain: 1, rear_gain: 1}   # mu: 1.4 → 타이어 데이터 대신 고정 마찰
+  # weights: {lateral: 3, heading: 1, speed: 0.6, steer_rate: 20, accel_rate: 0.02, progress: 7}
+  # road_wheel_rate_deg_per_s: 90, max_jerk: 60
+```
+
+- 추종 모드를 빠르게 하려면 `profile.lateral_share`·`brake_share`를 올리거나(최대 `aggressiveness`), 레이싱 모드 주행에서 뽑은 프로파일을 `speed_profile`로 줍니다.
+- 사람 특성을 끄면(`human.enabled: false`) 같은 라인을 정확한 로봇처럼 따라갑니다.
+
+### 속도 프로파일 뽑기
+
+```powershell
+# 실행 기록에서 (가장 빠른 유효 랩)
+python -m vsim.profiles runs\2026-10-23_120000_autocross_mpc\log.mcap -o templates\projects\example_fs_ev\profiles\autocross.csv
+# 시나리오를 돌려서 바로 (레이싱 모드 주행 → 추종 모드 프로파일)
+python -m vsim.profiles templates/projects/example_fs_ev/scenarios/autocross_mpc.yaml --set driver.mode=race --duration 45 -o race.csv
+```
+
+`--lap 2`로 랩을 고를 수 있고, 결과는 센터라인 1 m 간격의 `s_m, v_mps` CSV입니다. 실차 로그는 `track.s`, `veh.chassis.speed`, `track.last_lap` 신호로 바꿔 MCAP에 넣으면 같은 방법으로 씁니다.
+
+### MPC 신호
+
+| 신호 | 내용 |
+|---|---|
+| `drv.mpc.status` | 0 새로 풂, 1 이전 계획, 2 Pure Pursuit 폴백 |
+| `drv.mpc.iterations`, `drv.mpc.failures` | 마지막 풀이의 QP 반복 수(순차 QP 합), 지금까지 실패한 풀이 수 |
+| `drv.mpc.s`, `drv.mpc.n`, `drv.mpc.n_ref` | 드라이버가 보는 센터라인 위치, 좌우 위치, 목표 라인 |
+| `drv.mpc.v_ref` | 추종 모드의 목표 속도 (race: 준정상상태 한계 속도) |
+| `drv.mpc.delta_cmd`, `drv.mpc.ax_cmd` | 손이 따라갈 앞바퀴 조향각, 계획한 종가속도 |
+| `drv.mpc.front_gain`, `drv.mpc.rear_gain` | 드라이버가 배운 앞뒤 축 슬립 강성 (1 = 타이어 데이터 그대로) |
+| `drv.mpc.path.<0..7>.x/y` | 계획한 경로 점 (라이브 뷰 점선) |
 
 ---
 

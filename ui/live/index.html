@@ -432,6 +432,23 @@ function drawTrail(p) {
   ctx.stroke();
 }
 
+// The MPC driver's plan ahead of the car (dashed).
+function drawPlan(p, s) {
+  if (!s.plan || !s.plan.length) return;
+  ctx.beginPath();
+  ctx.setLineDash([6, 5]);
+  ctx.strokeStyle = color("--accent");
+  ctx.lineWidth = 2;
+  const [x0, y0] = p(s.x, s.y);
+  ctx.moveTo(x0, y0);
+  for (const [px, py] of s.plan) {
+    const [x, y] = p(px, py);
+    ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
 // Polygon given in car coordinates (forward, left) around a local origin.
 function carPolygon(p, s, points, fill, origin = [0, 0], angle = 0) {
   const ch = Math.cos(s.yaw), sh = Math.sin(s.yaw);
@@ -478,6 +495,7 @@ function frame() {
   drawGrid(p, p.center);
   drawTrack(p);
   drawTrail(p);
+  drawPlan(p, s);
   drawCar(p, s);
   requestAnimationFrame(frame);
 }

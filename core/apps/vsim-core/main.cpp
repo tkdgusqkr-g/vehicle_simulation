@@ -318,6 +318,8 @@ struct StateStream {
       {"road_z", "veh.chassis.road_z", {}},
   };
   std::vector<vsim::SignalId> motor_temps;
+  // The MPC driver's planned path (x, y pairs); empty for other drivers.
+  std::vector<std::pair<vsim::SignalId, vsim::SignalId>> plan;
   // Per wheel (FL, FR, RL, RR) arrays for the 3D view; empty if the model has none.
   struct WheelArray {
     const char* key;
@@ -338,6 +340,15 @@ struct StateStream {
       field.id = bus.find(field.signal);
     }
     motor_temps = bus.match("pt.motor.*.temp");
+    plan.clear();
+    for (std::size_t i = 0;; ++i) {
+      const std::string base = "drv.mpc.path." + std::to_string(i);
+      const auto x = bus.find(base + ".x"), y = bus.find(base + ".y");
+      if (!x || !y) {
+        break;
+      }
+      plan.emplace_back(*x, *y);
+    }
     for (WheelArray& array : wheel_arrays) {
       array.ids.clear();
       for (const char* corner : {"fl", "fr", "rl", "rr"}) {
@@ -367,6 +378,13 @@ struct StateStream {
         hottest = std::max(hottest, sim.bus().get(id));
       }
       params["motor_temp"] = hottest;
+    }
+    if (!plan.empty()) {
+      json points = json::array();
+      for (const auto& [x, y] : plan) {
+        points.push_back({sim.bus().get(x), sim.bus().get(y)});
+      }
+      params["plan"] = points;
     }
     for (const WheelArray& array : wheel_arrays) {
       if (!array.ids.empty()) {

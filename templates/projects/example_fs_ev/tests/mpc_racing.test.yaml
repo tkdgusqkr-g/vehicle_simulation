@@ -1,0 +1,15 @@
+test: mpc_racing
+description: MPC 드라이버 레이싱 모드(MPCC)로 오토크로스 2랩. 추종 모드보다 빨라야 하고 코스 안에 있어야 합니다.
+scenario: ../scenarios/autocross_mpc.yaml
+duration_s: 45
+overrides:
+  driver.mode: race
+checks:
+  - name: 2랩 완주
+    expr: "final(track.lap) >= 2"
+  - name: 코스 이탈 없음
+    expr: "final(track.off_track_count) == 0"
+  - name: 베스트 랩 19.3초 이내 (추종 모드보다 0.9초 이상 빠름)
+    expr: "final(track.best_lap) < 19.3"
+  - name: Pure Pursuit 대체 없음
+    expr: "max(drv.mpc.status) < 2"

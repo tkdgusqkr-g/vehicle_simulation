@@ -1,0 +1,23 @@
+test: mpc_disturbances_race
+description: 같은 외란 조건에서 MPC 레이싱 모드로 2랩.
+scenario: ../scenarios/autocross_mpc.yaml
+duration_s: 40
+seeds: [1, 2]
+overrides:
+  driver.mode: race
+  track.template: hill_circuit
+  realism.environment: real
+  realism.sensors: real
+  realism.actuators: real
+  realism.comms: real
+  realism.electrical: real
+  realism.variation: real
+checks:
+  - name: 2랩 완주
+    expr: "final(track.lap) >= 2"
+  - name: 코스 이탈 없음
+    expr: "final(track.off_track_count) == 0"
+  - name: 베스트 랩 16.8초 이내 (추종 모드보다 빠름)
+    expr: "final(track.best_lap) < 16.8"
+  - name: Pure Pursuit 대체 없음
+    expr: "max(drv.mpc.status) < 2"

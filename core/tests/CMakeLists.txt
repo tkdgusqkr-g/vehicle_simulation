@@ -6,6 +6,7 @@ add_executable(vsim_tests
   test_input.cpp
   test_integrator.cpp
   test_lap.cpp
+  test_mpc.cpp
   test_link.cpp
   test_params.cpp
   test_plugins.cpp

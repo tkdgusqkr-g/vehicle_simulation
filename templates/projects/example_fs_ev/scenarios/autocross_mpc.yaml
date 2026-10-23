@@ -1,0 +1,27 @@
+# 예제 오토크로스 트랙을 MPC 드라이버로 자동 주행 (설계 문서 §9.5).
+# mode: track은 라인과 속도 프로파일을 따르는 사람 같은 드라이버(반응 지연·근육 지연·노이즈),
+# mode: race는 트랙과 마찰 한계 안에서 진행을 최대화하는 레이싱 드라이버입니다.
+name: autocross_mpc
+project: ..
+seed: 1
+
+time:
+  dt: 0.001
+  mode: fast
+  t_end: 65
+
+track:
+  template: autocross
+
+driver:
+  type: mpc
+  mode: track                  # track | race
+  # line: racing               # 따라갈 라인. 생략하면 트랙 파일의 첫 번째 라인
+  # aggressiveness: 0.95       # 기대 그립 중 최대로 쓰는 비율 (race 0.97)
+  # profile: {lateral_share: 0.8, brake_share: 0.55, max_kph: 110}   # track 모드의 속도 프로파일 (기대 그립 대비)
+  # human: {delay_s: 0.15, bandwidth_hz: 2.5, steer_rate_deg_per_s: 600, noise_deg: 0.3}
+  # speed_profile: profiles/autocross.csv   # 기록한 속도 프로파일 (s_m, v_mps)
+
+logging:
+  rate_hz: 100
+  signals: ["veh.*", "drv.*", "pt.*", "bat.*", "vcu.*", "track.*"]

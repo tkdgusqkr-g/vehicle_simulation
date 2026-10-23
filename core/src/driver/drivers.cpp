@@ -5,6 +5,7 @@
 #include <numbers>
 #include <stdexcept>
 
+#include "vsim/driver/mpc.hpp"
 #include "vsim/sim/context.hpp"
 #include "vsim/track/speed_profile.hpp"
 
@@ -268,6 +269,9 @@ std::unique_ptr<DriverBlock> make_driver(const ParamTree& params) {
   if (type == "pursuit") {
     return std::make_unique<PursuitDriver>();
   }
+  if (type == "mpc") {
+    return std::make_unique<MpcDriver>();
+  }
   if (type == "maneuver") {
     return std::make_unique<ManeuverDriver>();
   }
@@ -275,7 +279,7 @@ std::unique_ptr<DriverBlock> make_driver(const ParamTree& params) {
     return std::make_unique<ExternalDriver>();
   }
   throw std::invalid_argument("driver.type '" + type +
-                              "' is not available (expected dil, keyboard, maneuver, pursuit or external)");
+                              "' is not available (expected dil, keyboard, maneuver, pursuit, mpc or external)");
 }
 
 }  // namespace vsim

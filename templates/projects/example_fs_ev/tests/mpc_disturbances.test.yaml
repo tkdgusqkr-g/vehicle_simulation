@@ -1,0 +1,22 @@
+test: mpc_disturbances
+description: 고저차·뱅크·연석·미끄러운 구간·노면 요철이 있는 서킷에서 모든 비이상성(센서·액추에이터·통신·전기·개체 편차)을 켜고 MPC 추종 모드로 2랩.
+scenario: ../scenarios/autocross_mpc.yaml
+duration_s: 40
+seeds: [1, 2]
+overrides:
+  track.template: hill_circuit
+  realism.environment: real
+  realism.sensors: real
+  realism.actuators: real
+  realism.comms: real
+  realism.electrical: real
+  realism.variation: real
+checks:
+  - name: 2랩 완주
+    expr: "final(track.lap) >= 2"
+  - name: 코스 이탈 없음
+    expr: "final(track.off_track_count) == 0"
+  - name: 베스트 랩 18.5초 이내
+    expr: "final(track.best_lap) < 18.5"
+  - name: Pure Pursuit 대체 없음
+    expr: "max(drv.mpc.status) < 2"
