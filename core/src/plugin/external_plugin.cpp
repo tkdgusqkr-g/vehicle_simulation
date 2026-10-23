@@ -5,9 +5,12 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <map>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 
 #include "../util/tcp.hpp"
@@ -102,9 +105,25 @@ class ExternalPlugin final : public PluginInstance, public ExternalEndpoint {
     const std::string address = host + ":" + std::to_string(listener_->port());
     const std::vector<std::string> command = params.get_string_list(p + "command");
     if (!command.empty()) {
-      child_ = std::make_unique<ChildProcess>(command, std::vector<std::pair<std::string, std::string>>{
-                                                           {"VSIM_EXTERNAL", address}, {"VSIM_COMPONENT", name_}},
-                                              path_to_utf8(spec.project_dir));
+      std::vector<std::pair<std::string, std::string>> env = {{"VSIM_EXTERNAL", address}, {"VSIM_COMPONENT", name_}};
+      // It runs in the project folder: a relative PYTHONPATH (PYTHONPATH=python) must still find vsim.
+      if (const char* python_path = std::getenv("PYTHONPATH"); python_path != nullptr && *python_path != '\0') {
+#ifdef _WIN32
+        const char separator = ';';
+#else
+        const char separator = ':';
+#endif
+        std::string absolute, entry;
+        std::istringstream in(python_path);
+        while (std::getline(in, entry, separator)) {
+          if (!entry.empty()) {
+            absolute += (absolute.empty() ? "" : std::string(1, separator)) +
+                        path_to_utf8(std::filesystem::absolute(path_from_utf8(entry)).lexically_normal());
+          }
+        }
+        env.emplace_back("PYTHONPATH", absolute);
+      }
+      child_ = std::make_unique<ChildProcess>(command, env, path_to_utf8(spec.project_dir));
     } else {
       std::fprintf(stderr, "external component %s: waiting for its program on %s (VSIM_EXTERNAL=%s)\n",
                    name_.c_str(), address.c_str(), address.c_str());

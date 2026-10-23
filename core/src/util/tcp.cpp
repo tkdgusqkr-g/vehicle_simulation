@@ -1,5 +1,6 @@
 #include "tcp.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <stdexcept>
@@ -296,7 +297,11 @@ ChildProcess::ChildProcess(const std::vector<std::string>& argv,
                            const std::vector<std::pair<std::string, std::string>>& env, const std::string& working_dir) {
   std::vector<std::string> environment;
   for (char** e = environ; *e != nullptr; ++e) {
-    environment.emplace_back(*e);
+    const std::string entry(*e);
+    const std::string key = entry.substr(0, entry.find('='));
+    if (std::none_of(env.begin(), env.end(), [&](const auto& kv) { return kv.first == key; })) {
+      environment.push_back(entry);  // overridden ones are left out
+    }
   }
   for (const auto& [key, value] : env) {
     environment.push_back(key + "=" + value);
