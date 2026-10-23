@@ -154,13 +154,13 @@ void Simulation::Impl::build(const Scenario& scenario, const SimulationOptions& 
   }
 
   const std::string model = params.get_string("vehicle.model", "two_track");
-  if (model == "two_track") {
+  if (model == "two_track" || model == "full") {
     plant = std::make_unique<TwoTrackModel>();
   } else if (model == "single_track") {
     plant = std::make_unique<SingleTrackModel>();
   } else {
     throw std::invalid_argument("vehicle.model '" + model +
-                                "' is not available (expected two_track or single_track)");
+                                "' is not available (expected full, two_track or single_track)");
   }
   plant->init(effective, *context);
 

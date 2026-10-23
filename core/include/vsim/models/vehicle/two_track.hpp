@@ -12,22 +12,40 @@
 #include "vsim/models/powertrain/motor.hpp"
 #include "vsim/models/tire/tire.hpp"
 #include "vsim/models/vehicle/corners.hpp"
+#include "vsim/models/vehicle/suspension.hpp"
 #include "vsim/sim/plant.hpp"
 
 namespace vsim {
 
-// L2 vehicle model (design doc §6.2): planar two-track chassis (x, y, yaw and
-// their rates) on four tires with transient slip, quasi-static load transfer
-// through roll stiffness and roll centres, wheel spin through the driveline
-// graph, motors (Level A) and the accumulator equivalent circuit. Every power
-// flow is integrated so the energy balance can be checked (V-03).
+class Track;
+
+// Two-track vehicle on four tires with transient slip, wheel spin through the
+// driveline graph, motors (Level A) and the accumulator equivalent circuit.
+// Every power flow is integrated so the energy balance can be checked (V-03).
 //
-// Inputs:  drv.cmd.steer, drv.cmd.brake, pt.motor.<id>.torque_cmd
+// vehicle.model: two_track (L2, design doc §6.3): planar chassis (x, y, yaw
+//   and their rates), quasi-static load transfer through roll stiffness and
+//   roll centres, flat road.
+// vehicle.model: full (L3, §6.4): 14 DOF. The sprung body also heaves, rolls
+//   and pitches, each corner's unsprung mass moves vertically on a
+//   spring-damper tire over the track's 3D surface (elevation, bank, kerbs,
+//   roughness, friction). Springs, dampers, bump and droop stops and anti-roll
+//   bars act along the wheel travel; steering, camber, scrub, jacking forces,
+//   motion ratio and the steering-axis moments come from K&C tables solved
+//   from the hardpoints. Equations from Kane's method, so the energy balance
+//   holds here too.
+//
+// Inputs:  drv.cmd.steer, drv.cmd.brake, pt.motor.<id>.torque_cmd,
+//          (full) rig.<corner>.z / rig.<corner>.vz: road displacement and its
+//          rate added under each wheel (four-post rig)
 // Outputs: veh.*, pt.*, bat.*, energy.*
 class TwoTrackModel final : public PlantModel {
  public:
   // Chassis states; the rest of the state vector is laid out at init().
   enum Chassis : std::size_t { kX, kY, kYaw, kVx, kVy, kYawRate, kAxFiltered, kAyFiltered, kChassisSize };
+  // Body states of the full model: sprung CG height, roll (left side up +),
+  // pitch (nose down +) and their rates.
+  enum Body : std::size_t { kZ, kRoll, kPitch, kVz, kRollRate, kPitchRate, kBodySize };
 
   // Integrated energies [J], in state order.
   enum Energy : std::size_t {
@@ -41,7 +59,9 @@ class TwoTrackModel final : public PlantModel {
     kBrakeLoss,
     kSlipLoss,         // tire slip, including the transient carcass energy
     kRollingLoss,
-    kDragLoss,
+    kDragLoss,         // drag, and downforce on a moving body (full)
+    kDamperLoss,       // suspension dampers (full)
+    kTireDampingLoss,  // tire carcass vertical damping (full)
     kEnergyCount
   };
 
@@ -77,6 +97,27 @@ class TwoTrackModel final : public PlantModel {
     double brake_gain_rear = 18.0;
     double ambient_temp = 25.0;         // [degC]
 
+    // Full model.
+    std::array<double, kCorners> unsprung_mass{12.0, 12.0, 12.0, 12.0};
+    double roll_inertia = 25.0;         // sprung body about its CG [kg m^2]
+    double pitch_inertia = 85.0;
+    double unloaded_radius = 0.0;       // 0: rolling radius + static deflection
+    double tire_vertical_stiffness = 100e3;  // [N/m]
+    double tire_vertical_damping = 150.0;    // [N s/m]
+    double contact_length = 0.1;        // [m] road averaged over the patch
+    struct Axle {
+      double spring_rate = 35e3;        // [N/m] at the spring
+      double damper_bump = 1800.0;      // [N s/m] at the wheel
+      double damper_rebound = 1800.0;
+      double damper_knee = 0.1;         // [m/s] above it the slope drops
+      double damper_high_speed = 0.5;   // high-speed slope / low-speed slope
+      double anti_roll_bar = 120.0;     // [N m/deg] of body roll
+      double bump_travel = 0.03;        // [m] wheel travel to the bump stop
+      double droop_travel = 0.04;       // [m] to the droop limit
+      double bump_stop_rate = 200e3;    // [N/m] at first contact, progressive
+    };
+    std::array<Axle, 2> axle;
+
     double cg_to_rear() const { return wheelbase - cg_to_front; }
     double track(std::size_t corner) const { return is_front(corner) ? track_front : track_rear; }
   };
@@ -84,7 +125,8 @@ class TwoTrackModel final : public PlantModel {
   TwoTrackModel();
   ~TwoTrackModel() override;
 
-  std::string_view name() const override { return "two_track"; }
+  std::string_view name() const override { return full_ ? "full" : "two_track"; }
+  bool full() const { return full_; }
   void init(const ParamTree& params, Context& ctx) override;
   std::size_t state_size() const override { return size_; }
   void initial_state(std::span<double> x) const override;
@@ -102,6 +144,14 @@ class TwoTrackModel final : public PlantModel {
   std::size_t wheel_dof_offset() const { return wheel_offset_; }
   std::size_t energy_offset() const { return energy_offset_; }
   std::size_t battery_offset() const { return battery_offset_; }
+  std::size_t body_offset() const { return body_offset_; }          // full model
+  std::size_t unsprung_offset() const { return unsprung_offset_; }  // zu[4], then vzu[4]
+  const KcTable& kc(std::size_t axle) const { return kc_[axle]; }
+  // Static figures of the suspension (full model).
+  double sprung_mass() const { return sprung_mass_; }
+  double sprung_cg_height() const { return h_s_; }
+  double static_hub_height(std::size_t corner) const { return hub0_[corner]; }
+  double rack_per_steering_rad() const { return rack_per_rad_; }
 
  private:
   struct Eval;
@@ -109,7 +159,9 @@ class TwoTrackModel final : public PlantModel {
 
   // Forces and flows for state x; also fills dx unless it is empty.
   void evaluate(std::span<const double> x, Eval& e, std::span<double> dx) const;
+  void init_full(const ParamTree& params, Context& ctx);
   double kinetic_energy(std::span<const double> x) const;
+  double stored_energy(std::span<const double> x) const;  // potential energy (full)
 
   Params p_;
   MotorParams motor_;
@@ -124,7 +176,28 @@ class TwoTrackModel final : public PlantModel {
   std::size_t motor_offset_ = 0;    // per motor: torque, temperature
   std::size_t battery_offset_ = 0;  // soc, rc voltages (2), temperature
   std::size_t energy_offset_ = 0;
+  std::size_t body_offset_ = 0;
+  std::size_t unsprung_offset_ = 0;
   std::size_t size_ = 0;
+
+  // Full model.
+  bool full_ = false;
+  std::shared_ptr<const Track> track_;
+  std::size_t patch_samples_ = 1;
+  std::array<KcTable, 2> kc_;
+  double rack_per_rad_ = 0.0;             // rack travel per steering wheel radian
+  double sprung_mass_ = 0.0, x_s_ = 0.0, h_s_ = 0.0;
+  double izz_s_ = 0.0;
+  std::array<double, kCorners> free_radius_{};  // unloaded tire radius
+  std::array<double, kCorners> hub0_{};   // static hub height above the road
+  std::array<double, kCorners> offset0_{};  // static hub height minus body corner height
+  std::array<double, kCorners> preload_{};  // spring compression at design [m]
+  std::array<double, 25> mass_inverse_{};   // [vx, vy, r, p, q]
+  double z0_ = 0.0, roll0_ = 0.0, pitch0_ = 0.0;
+  std::array<double, kCorners> zu0_{};
+  double stored0_ = 0.0;
+  mutable std::array<std::array<double, 3>, kCorners> road_hint_{};
+  std::array<double, kCorners> rig_z_{}, rig_vz_{};
 
   // Initial conditions.
   double x0_ = 0.0, y0_ = 0.0, yaw0_ = 0.0, v0_ = 0.0;

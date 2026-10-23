@@ -2,25 +2,32 @@
 # 차량 빌더(ui/builder)로 CAD를 올리면 질량·관성·하드포인트가 채워집니다.
 # 규정 점검: python -m vsim.rules templates/projects/example_fs_ev
 # 항목 설명과 측정 방법은 docs/vehicle_parameters.md를 보세요.
-model: two_track               # two_track (L2, 기본) | single_track (L1)
+model: full                    # full (L3 14자유도, 기본) | two_track (L2, 빠른 배치) | single_track (L1)
 
 mass_kg: 280                   # 드라이버 포함
-yaw_inertia_kgm2: 110
+yaw_inertia_kgm2: 110          # 전체, 무게중심 기준
+roll_inertia_kgm2: 22          # 현가 질량(차체), 그 무게중심 기준 (L3)
+pitch_inertia_kgm2: 80         # 현가 질량 (L3)
+unsprung_mass_kg: {fl: 14, fr: 14, rl: 14, rr: 14}   # 바퀴·업라이트·인휠 모터·브레이크, 링크 절반 (L3)
 wheelbase_m: 1.53             # FSAE: 1525 mm 이상
 cg_to_front_axle_m: 0.80       # 무게중심 → 앞차축
 cg_height_m: 0.28
 track_front_m: 1.22           # FSAE: 작은 쪽이 큰 쪽의 75% 이상
 track_rear_m: 1.18
 
-suspension:                    # L2는 준정적 하중 이동만 계산 (서스펜션 자유도는 L3/M5)
+suspension:
+  # L2 전용: 준정적 하중 이동 (L3는 아래 하드포인트·스프링·댐퍼로 계산)
   roll_center_front_m: 0.03
   roll_center_rear_m: 0.05
   roll_stiffness_front_ratio: 0.55   # 전체 롤 강성 중 앞 비율
   load_transfer_tau_s: 0.05          # 하중 이동 지연 (차체 롤·피치 응답 근사)
-  roll_gradient_deg_per_g: 1.0       # 화면용 차체 롤 (L3 전까지)
+  roll_gradient_deg_per_g: 1.0       # L2일 때 화면용 차체 롤
   pitch_gradient_deg_per_g: 0.6
-  # 더블 위시본 + 푸시로드 (L3/M5에서 기구학으로 사용, 지금은 3D 모델에 사용).
-  # 왼쪽 기준 [x, y, z] m: x는 해당 축 중심에서 앞쪽, y는 차체 중심선에서 왼쪽, z는 지면에서 위
+  # 더블 위시본 + 푸시로드. L3는 이 점들로 기구학(K&C)을 풀어서 캠버·범프 스티어·
+  # 잭킹·조향축 모멘트를 계산합니다 (vsim-core --export-kc로 확인).
+  # 왼쪽 기준 [x, y, z] m: x는 해당 축 중심에서 앞쪽, y는 차체 중심선에서 왼쪽, z는 지면에서 위.
+  # 설계 차고(정적 상태) 기준입니다. 로커를 넣으려면 rocker_pivot, rocker_axis, spring_rocker,
+  # spring_chassis를 추가하면 모션비를 기구학으로 계산합니다 (없으면 motion_ratio 사용).
   front:
     hardpoints:
       lower_front: [0.13, 0.20, 0.11]
@@ -33,11 +40,19 @@ suspension:                    # L2는 준정적 하중 이동만 계산 (서스
       tie_outer: [0.075, 0.565, 0.175]
       push_outer: [0.0, 0.52, 0.125]
       push_inner: [0.0, 0.25, 0.46]
-      wheel_centre: [0.0, 0.61, 0.203]
+      wheel_centre: [0.0, 0.61, 0.222]
+    static_camber_deg: -1.5          # 위쪽이 안으로 -
+    static_toe_deg: 0.0              # 토인 +
     spring_rate_n_per_mm: 35
-    motion_ratio: 1.0                # 바퀴 이동 / 스프링 이동 (M5에서 하드포인트로 계산)
-    damper_n_s_per_m: 1800           # 바퀴 기준
-    anti_roll_bar_nm_per_deg: 120
+    motion_ratio: 1.0                # 바퀴 이동 / 스프링 이동 (로커 점이 있으면 기구학으로 계산)
+    damper_n_s_per_m: 1800           # 바퀴 기준, 압축(범프)
+    damper_rebound_n_s_per_m: 2200   # 바퀴 기준, 신장
+    damper_knee_mps: 0.08            # 이 속도부터 기울기 감소 (디그레시브)
+    damper_high_speed_ratio: 0.5
+    anti_roll_bar_nm_per_deg: 120    # 차체 롤 1도당
+    bump_travel_m: 0.025             # 범프 스톱까지 바퀴 이동
+    droop_travel_m: 0.030            # 처짐 한계
+    bump_stop_n_per_mm: 150          # 닿는 순간, 점진적으로 단단해짐
   rear:
     hardpoints:
       lower_front: [0.17, 0.22, 0.11]
@@ -50,20 +65,28 @@ suspension:                    # L2는 준정적 하중 이동만 계산 (서스
       tie_outer: [-0.08, 0.545, 0.18]
       push_outer: [0.0, 0.50, 0.125]
       push_inner: [0.0, 0.26, 0.44]
-      wheel_centre: [0.0, 0.59, 0.203]
+      wheel_centre: [0.0, 0.59, 0.222]
+    static_camber_deg: -1.0
+    static_toe_deg: 0.2
     spring_rate_n_per_mm: 40
     motion_ratio: 1.0
     damper_n_s_per_m: 2000
+    damper_rebound_n_s_per_m: 2400
+    damper_knee_mps: 0.08
+    damper_high_speed_ratio: 0.5
     anti_roll_bar_nm_per_deg: 80
+    bump_travel_m: 0.025
+    droop_travel_m: 0.030
+    bump_stop_n_per_mm: 150
 
 steering:
   ratio: 4.5                   # 핸들각 / 바퀴 조향각
   lock_deg: 110                # 핸들 최대각 (한쪽)
   ackermann: 0.5               # 0 = 평행, 1 = 완전 Ackermann
-  mechanical_trail_m: 0.02     # 캐스터 트레일 (FFB 조향 반력)
+  mechanical_trail_m: 0.02     # L2의 캐스터 트레일 (L3는 하드포인트의 조향축으로 계산)
 
 wheel:
-  radius_m: 0.203              # 하중 상태 반경
+  radius_m: 0.203              # 유효 회전 반경 (바퀴 속도 ↔ 차속)
   unloaded_radius_m: 0.2286    # 18" 타이어 (16x7.5-10)
   rim_diameter_in: 10          # FSAE: 8" 이상
   inertia_kgm2: 0.25           # 휠 + 타이어 + 허브 (모터 로터·감속기는 별도)
@@ -71,6 +94,9 @@ wheel:
 tire:
   model: simple                # simple | mf (.tir, M1 후반)
   width_m: 0.19                # 트레드 폭 (3D 화면 표시용)
+  vertical_stiffness_n_per_mm: 100   # 타이어 수직 강성 (L3)
+  vertical_damping_n_s_per_m: 150
+  contact_length_m: 0.10       # 접지면 길이: 노면을 이 길이로 평균 (짧은 요철을 감쌈)
   rolling_resistance: 0.015
   relaxation_length_x_m: 0.10  # 과도 슬립
   relaxation_length_y_m: 0.25
@@ -86,6 +112,7 @@ tire:
     Cy: 1.4
     Ey: 0.2
     pneumatic_trail_m: 0.025   # 셀프 얼라이닝 토크
+    camber_stiffness: 0.8      # 캠버 1 rad당 횡력/하중 (캠버 추력)
   # 축별로 다르게 하려면 front: / rear: 아래에 simple: {...}를 지정
 
 aero:

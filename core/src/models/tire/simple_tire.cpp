@@ -50,6 +50,7 @@ SimpleTire::Params SimpleTire::params_from(const ParamTree& params, std::string_
   p.cy = get("Cy", p.cy);
   p.ey = get("Ey", p.ey);
   p.pneumatic_trail = get("pneumatic_trail_m", p.pneumatic_trail);
+  p.camber_stiffness = get("camber_stiffness", p.camber_stiffness);
   return p;
 }
 
@@ -64,20 +65,29 @@ TireForces SimpleTire::evaluate(const TireInput& in) const {
     return out;
   }
   const double scale = friction_scale(in.fz);
-  const double dx = p_.mu_x * scale * in.fz;
-  const double dy = p_.mu_y * scale * in.fz;
+  // Road friction scales the peak (D) and keeps the stiffness (B C D): B and
+  // the peak slips scale inversely.
+  const double road = std::max(0.05, in.mu_scale);
+  const double dx = p_.mu_x * scale * road * in.fz;
+  const double dy = p_.mu_y * scale * road * in.fz;
+  const double bx = p_.bx / road;
+  const double by = p_.by / road;
+  const double peak_x = peak_slip_ratio_ * road;
+  const double peak_y = peak_slip_angle_ * road;
+  // Camber thrust as the slip angle giving the same force at small slip.
+  const double slip_angle = in.slip_angle - p_.camber_stiffness * in.camber / (p_.by * p_.cy * p_.mu_y * scale);
 
   // Normalized slips; the combined slip magnitude drives both curves and the
   // direction splits the result, giving a friction ellipse.
-  const double nx = in.slip_ratio / peak_slip_ratio_;
-  const double ny = in.slip_angle / peak_slip_angle_;
+  const double nx = in.slip_ratio / peak_x;
+  const double ny = slip_angle / peak_y;
   const double combined = std::hypot(nx, ny);
   if (combined < 1e-12) {
-    out.fx = p_.bx * p_.cx * dx * in.slip_ratio;
-    out.fy = p_.by * p_.cy * dy * in.slip_angle;
+    out.fx = bx * p_.cx * dx * in.slip_ratio;
+    out.fy = by * p_.cy * dy * slip_angle;
   } else {
-    out.fx = magic_formula(combined * peak_slip_ratio_, p_.bx, p_.cx, dx, p_.ex) * nx / combined;
-    out.fy = magic_formula(combined * peak_slip_angle_, p_.by, p_.cy, dy, p_.ey) * ny / combined;
+    out.fx = magic_formula(combined * peak_x, bx, p_.cx, dx, p_.ex) * nx / combined;
+    out.fy = magic_formula(combined * peak_y, by, p_.cy, dy, p_.ey) * ny / combined;
   }
 
   // Pneumatic trail falls to zero a little beyond the peak slip angle.

@@ -80,13 +80,15 @@ $----------------------------------------------------------------lateral
 PCY1                     = 1.4              $Shape factor Cfy for lateral forces
 PDY1                     = 1.6              $Lateral friction Muy
 PDY2                     = -0.1             $Variation of friction Muy with load
-PDY3                     = 0                $Variation of friction Muy with squared camber
+PDY3                     = 2                $Variation of friction Muy with squared camber
 PEY1                     = 0.2              $Lateral curvature Efy at Fznom
 PEY2                     = 0                $Variation of curvature Efy with load
 PEY3                     = 0                $Zero order camber dependency of curvature Efy
 PKY1                     = -33.6            $Maximum value of stiffness Kfy/Fznom (ISO: negative)
 PKY2                     = 2                $Load at which Kfy reaches maximum value
 PKY4                     = 2                $Curvature of stiffness Kfy
+PKY6                     = -0.9             $Camber stiffness Kfy_gamma/Fz (ISO: negative)
+PKY7                     = 0                $Variation of camber stiffness with load
 PHY1                     = 0                $Horizontal shift Shy at Fznom
 PHY2                     = 0                $Variation of shift Shy with load
 PVY1                     = 0                $Vertical shift in Svy/Fz at Fznom
@@ -116,6 +118,7 @@ QDZ1                     = 0.096            $Peak trail Dpt = Dpt*(Fz/Fznom*R0)
 QDZ2                     = 0                $Variation of peak Dpt with load
 QDZ6                     = 0                $Peak residual torque Dmr = Dmr/(Fz*R0)
 QDZ7                     = 0                $Variation of peak factor Dmr with load
+QDZ8                     = -0.05            $Variation of peak factor Dmr with camber
 QEZ1                     = -2               $Trail curvature Ept at Fznom
 QEZ2                     = 0                $Variation of curvature Ept with load
 QEZ3                     = 0                $Variation of curvature Ept with load squared

@@ -15,14 +15,15 @@ namespace {
 
 // Coefficients the formulas use, cached by index at load.
 #define VSIM_MF_COEFFICIENTS(X) \
-  X(LCX) X(LCY) X(LEX) X(LEY) X(LHX) X(LHY) X(LKX) X(LKY) X(LMUX) X(LMUY) X(LRES) X(LS) X(LTR) \
-  X(LVX) X(LVY) X(LVYKA) X(LXAL) X(LYKA) X(PCX1) X(PCY1) X(PDX1) X(PDX2) X(PDY1) X(PDY2) \
-  X(PEX1) X(PEX2) X(PEX3) X(PEX4) X(PEY1) X(PEY2) X(PEY3) X(PHX1) X(PHX2) X(PHY1) X(PHY2) \
-  X(PKX1) X(PKX2) X(PKX3) X(PKY1) X(PKY2) X(PKY4) X(PVX1) X(PVX2) X(PVY1) X(PVY2) X(QBZ1) \
-  X(QBZ10) X(QBZ2) X(QBZ3) X(QBZ9) X(QCZ1) X(QDZ1) X(QDZ2) X(QDZ6) X(QDZ7) X(QEZ1) X(QEZ2) \
-  X(QEZ3) X(QEZ4) X(QHZ1) X(QHZ2) X(RBX1) X(RBX2) X(RBY1) X(RBY2) X(RBY3) X(RCX1) X(RCY1) \
-  X(REX1) X(REX2) X(REY1) X(REY2) X(RHX1) X(RHY1) X(RHY2) X(RVY1) X(RVY2) X(RVY4) X(RVY5) \
-  X(RVY6) X(SSZ1) X(SSZ2)
+  X(LCX) X(LCY) X(LEX) X(LEY) X(LGAY) X(LGAZ) X(LHX) X(LHY) X(LKX) X(LKY) X(LKYC) X(LKZC) X(LMUX) \
+  X(LMUY) X(LRES) X(LS) X(LTR) X(LVX) X(LVY) X(LVYKA) X(LXAL) X(LYKA) X(PCX1) X(PCY1) X(PDX1) \
+  X(PDX2) X(PDX3) X(PDY1) X(PDY2) X(PDY3) X(PEX1) X(PEX2) X(PEX3) X(PEX4) X(PEY1) X(PEY2) X(PEY3) \
+  X(PEY4) X(PEY5) X(PHX1) X(PHX2) X(PHY1) X(PHY2) X(PHY3) X(PKX1) X(PKX2) X(PKX3) X(PKY1) X(PKY2) \
+  X(PKY3) X(PKY4) X(PKY5) X(PKY6) X(PKY7) X(PVX1) X(PVX2) X(PVY1) X(PVY2) X(PVY3) X(PVY4) X(QBZ1) \
+  X(QBZ10) X(QBZ2) X(QBZ3) X(QBZ4) X(QBZ5) X(QBZ6) X(QBZ9) X(QCZ1) X(QDZ1) X(QDZ10) X(QDZ11) \
+  X(QDZ2) X(QDZ3) X(QDZ4) X(QDZ6) X(QDZ7) X(QDZ8) X(QDZ9) X(QEZ1) X(QEZ2) X(QEZ3) X(QEZ4) X(QEZ5) \
+  X(QHZ1) X(QHZ2) X(RBX1) X(RBX2) X(RBY1) X(RBY2) X(RBY3) X(RCX1) X(RCY1) X(REX1) X(REX2) X(REY1) \
+  X(REY2) X(RHX1) X(RHY1) X(RHY2) X(RVY1) X(RVY2) X(RVY3) X(RVY4) X(RVY5) X(RVY6) X(SSZ1) X(SSZ2)
 
 enum Coefficient : std::size_t {
 #define VSIM_MF_ENUM(name) name,
@@ -113,11 +114,12 @@ MagicFormulaTire::MagicFormulaTire(std::map<std::string, double, std::less<>> co
   if (c("PCX1") <= 0.0 || c("PDX1") <= 0.0 || c("PCY1") <= 0.0 || c("PDY1") == 0.0 || c("PKY1") == 0.0) {
     throw std::invalid_argument("tire file lacks the basic coefficients (PCX1, PDX1, PCY1, PDY1, PKY1)");
   }
-  if (const double fittyp = coefficient("FITTYP"); fittyp != 0.0 && fittyp != 6.0 && fittyp != 21.0 &&
-                                                   fittyp != 52.0 && fittyp != 61.0 && fittyp != 62.0) {
+  const double fittyp = coefficient("FITTYP");
+  if (fittyp != 0.0 && fittyp != 6.0 && fittyp != 21.0 && fittyp != 52.0 && fittyp != 61.0 && fittyp != 62.0) {
     notes_.push_back("FITTYP " + std::to_string(static_cast<int>(fittyp)) +
                      " is not MF 5.2/6.1; reading it as MF 6.1 coefficients");
   }
+  mf61_ = !(fittyp == 6.0 || fittyp == 21.0 || fittyp == 52.0);
   // ISO-W files have a negative cornering stiffness (PKY1 * LKY < 0): a
   // positive ISO slip angle gives a negative lateral force.
   if (c("PKY1") * c("LKY") * c("PDY1") > 0.0) {
@@ -125,7 +127,7 @@ MagicFormulaTire::MagicFormulaTire(std::map<std::string, double, std::less<>> co
     notes_.push_back("cornering stiffness has the SAE sign; slip angle taken without ISO flip");
   }
   if (coefficient("TYRESIDE") != 0.0) {
-    notes_.push_back("TYRESIDE ignored (no camber or conicity terms are used)");
+    notes_.push_back("TYRESIDE ignored (the file is used for both sides as written)");
   }
   v_.resize(kCoefficientCount);
   for (std::size_t i = 0; i < kCoefficientCount; ++i) {
@@ -170,12 +172,20 @@ TireForces MagicFormulaTire::evaluate(const TireInput& in) const {
   const double kappa = in.slip_ratio;
   const double alpha =
       std::clamp(std::tan(alpha_sign_ * in.slip_angle), -kMaxTanAlpha, kMaxTanAlpha);  // ISO, tan
+  // Camber in the file's axes (mirrored with the slip angle for SAE-sign
+  // files); MF 6.1 uses sin(gamma), MF 5.2 gamma times its scaling factor.
+  const double gamma_iso = -alpha_sign_ * in.camber;
+  const double gamma_y = mf61_ ? std::sin(gamma_iso) : gamma_iso * v_[LGAY];
+  const double gamma_z = mf61_ ? std::sin(gamma_iso) : gamma_iso * v_[LGAZ];
+  // Road friction scales the peaks like LMUX / LMUY; the stiffnesses stay.
+  const double road = std::max(0.05, in.mu_scale);
 
   // --- Pure longitudinal ------------------------------------------------------
   const double shx = (v_[PHX1] + v_[PHX2] * dfz) * v_[LHX];
   const double kx = kappa + shx;
   const double cx = v_[PCX1] * v_[LCX];
-  const double mux = (v_[PDX1] + v_[PDX2] * dfz) * v_[LMUX];
+  const double mux =
+      (v_[PDX1] + v_[PDX2] * dfz) * (mf61_ ? 1.0 - v_[PDX3] * gamma_y * gamma_y : 1.0) * v_[LMUX] * road;
   const double dx = mux * fz;
   const double ex = std::min(1.0, (v_[PEX1] + v_[PEX2] * dfz + v_[PEX3] * dfz * dfz) *
                                       (1.0 - v_[PEX4] * sign(kx)) * v_[LEX]);
@@ -185,15 +195,26 @@ TireForces MagicFormulaTire::evaluate(const TireInput& in) const {
   const double fx0 = mf(kx, bx, cx, dx, ex) + svx;
 
   // --- Pure lateral -------------------------------------------------------------
-  const double kya = v_[PKY1] * fz0_ * std::sin(v_[PKY4] * std::atan(fz / (v_[PKY2] * fz0_))) * v_[LKY];
+  const double g2 = gamma_y * gamma_y;
+  const double kya = v_[PKY1] * fz0_ * std::sin(v_[PKY4] * std::atan(fz / ((v_[PKY2] + v_[PKY5] * g2) * fz0_))) *
+                     (1.0 - v_[PKY3] * std::abs(gamma_y)) * v_[LKY];
   const double kya_safe = kya + (kya >= 0.0 ? kEpsilon : -kEpsilon);
-  const double shy = (v_[PHY1] + v_[PHY2] * dfz) * v_[LHY];
-  const double svy = fz * (v_[PVY1] + v_[PVY2] * dfz) * v_[LVY] * v_[LMUY];
+  const double svy_gamma = fz * (v_[PVY3] + v_[PVY4] * dfz) * gamma_y * (mf61_ ? v_[LKYC] : 1.0) * v_[LMUY];
+  double shy = (v_[PHY1] + v_[PHY2] * dfz) * v_[LHY];
+  if (mf61_) {
+    const double kyg0 = fz * (v_[PKY6] + v_[PKY7] * dfz) * v_[LKYC];
+    shy += (kyg0 * gamma_y - svy_gamma) / kya_safe;
+  } else {
+    shy += v_[PHY3] * gamma_y;
+  }
+  const double svy = fz * (v_[PVY1] + v_[PVY2] * dfz) * v_[LVY] * v_[LMUY] + svy_gamma;
   const double ay = alpha + shy;
   const double cy = v_[PCY1] * v_[LCY];
-  const double muy = (v_[PDY1] + v_[PDY2] * dfz) * v_[LMUY];
+  const double muy = (v_[PDY1] + v_[PDY2] * dfz) * (1.0 - v_[PDY3] * g2) * v_[LMUY] * road;
   const double dy = muy * fz;
-  const double ey = std::min(1.0, (v_[PEY1] + v_[PEY2] * dfz) * (1.0 - v_[PEY3] * sign(ay)) * v_[LEY]);
+  const double ey = std::min(1.0, (v_[PEY1] + v_[PEY2] * dfz) *
+                                      (1.0 + (mf61_ ? v_[PEY5] * g2 : 0.0) - (v_[PEY3] + v_[PEY4] * gamma_y) * sign(ay)) *
+                                      v_[LEY]);
   const double by = kya / (cy * dy + kEpsilon);
   const double fy0 = mf(ay, by, cy, dy, ey) + svy;
 
@@ -208,7 +229,8 @@ TireForces MagicFormulaTire::evaluate(const TireInput& in) const {
   }
   out.fx = gxa * fx0;
 
-  const double dvyk = muy * fz * (v_[RVY1] + v_[RVY2] * dfz) * std::cos(std::atan(v_[RVY4] * alpha));
+  const double dvyk =
+      muy * fz * (v_[RVY1] + v_[RVY2] * dfz + v_[RVY3] * gamma_y) * std::cos(std::atan(v_[RVY4] * alpha));
   const double svyk = dvyk * std::sin(v_[RVY5] * std::atan(v_[RVY6] * kappa)) * v_[LVYKA];
   const double shyk = v_[RHY1] + v_[RHY2] * dfz;
   const double byk = v_[RBY1] * std::cos(std::atan(v_[RBY2] * (alpha - v_[RBY3]))) * v_[LYKA];
@@ -224,13 +246,21 @@ TireForces MagicFormulaTire::evaluate(const TireInput& in) const {
   const double cos_alpha = 1.0 / std::sqrt(1.0 + alpha * alpha);
   const double sht = v_[QHZ1] + v_[QHZ2] * dfz;
   const double alpha_t = alpha + sht;
-  const double bt = (v_[QBZ1] + v_[QBZ2] * dfz + v_[QBZ3] * dfz * dfz) * v_[LKY] / v_[LMUY];
+  const double gz_abs = std::abs(gamma_z);
+  const double bt = (v_[QBZ1] + v_[QBZ2] * dfz + v_[QBZ3] * dfz * dfz) *
+                    (mf61_ ? 1.0 + v_[QBZ5] * gz_abs + v_[QBZ6] * gamma_z * gamma_z
+                           : 1.0 + v_[QBZ4] * gamma_z + v_[QBZ5] * gz_abs) *
+                    v_[LKY] / v_[LMUY];
   const double ct = v_[QCZ1];
-  const double dt = fz * (v_[QDZ1] + v_[QDZ2] * dfz) * v_[LTR] * r0_ / fz0_;
+  const double dt = fz * (v_[QDZ1] + v_[QDZ2] * dfz) * v_[LTR] * r0_ / fz0_ *
+                    (1.0 + v_[QDZ3] * (mf61_ ? gz_abs : gamma_z) + v_[QDZ4] * gamma_z * gamma_z);
   const double shf = shy + svy / kya_safe;
   const double alpha_r = alpha + shf;
   const double br = v_[QBZ9] * v_[LKY] / v_[LMUY] + v_[QBZ10] * by * cy;
-  const double dr = fz * r0_ * (v_[QDZ6] + v_[QDZ7] * dfz) * v_[LRES] * v_[LMUY] * cos_alpha;
+  const double camber_torque = mf61_ ? ((v_[QDZ8] + v_[QDZ9] * dfz) + (v_[QDZ10] + v_[QDZ11] * dfz) * gz_abs) *
+                                           gamma_z * v_[LKZC]
+                                     : (v_[QDZ8] + v_[QDZ9] * dfz) * gamma_z;
+  const double dr = fz * r0_ * ((v_[QDZ6] + v_[QDZ7] * dfz) * v_[LRES] + camber_torque) * v_[LMUY] * cos_alpha;
 
   // Equivalent slip angles include the longitudinal slip.
   const double ratio = kxk / kya_safe;
@@ -240,7 +270,8 @@ TireForces MagicFormulaTire::evaluate(const TireInput& in) const {
   const double alpha_t_eq = equivalent(alpha_t);
   const double alpha_r_eq = equivalent(alpha_r);
   const double et = std::min(1.0, (v_[QEZ1] + v_[QEZ2] * dfz + v_[QEZ3] * dfz * dfz) *
-                                      (1.0 + v_[QEZ4] * 2.0 / std::numbers::pi * std::atan(bt * ct * alpha_t)));
+                                      (1.0 + (v_[QEZ4] + v_[QEZ5] * gamma_z) * 2.0 / std::numbers::pi *
+                                                 std::atan(bt * ct * alpha_t)));
   const double trail = dt * weight(alpha_t_eq, bt, ct, et) * cos_alpha;
   const double residual = dr * std::cos(std::atan(br * alpha_r_eq));
   const double s = r0_ * (v_[SSZ1] + v_[SSZ2] * (out.fy / fz0_)) * v_[LS];

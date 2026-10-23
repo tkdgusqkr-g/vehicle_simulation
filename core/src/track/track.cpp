@@ -10,6 +10,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "vsim/sim/rng.hpp"
 #include "vsim/util/paths.hpp"
 
 namespace vsim {
@@ -214,6 +215,31 @@ TrackDefinition TrackDefinition::from_json(std::string_view text) {
       }
       def.lines.push_back(std::move(line));
     }
+    if (doc.contains("surface")) {
+      const json& f = doc["surface"];
+      def.surface.mu = f.value("mu", def.surface.mu);
+      def.surface.roughness = f.value("roughness", def.surface.roughness);
+      def.surface.grass_mu = f.value("grass_mu", def.surface.grass_mu);
+      def.surface.grass_roughness = f.value("grass_roughness", def.surface.grass_roughness);
+    }
+    for (const json& k : doc.value("kerbs", json::array())) {
+      Kerb kerb;
+      kerb.from_point = require(k, "from_point").get<int>();
+      kerb.to_point = require(k, "to_point").get<int>();
+      kerb.side = k.value("side", kerb.side);
+      kerb.width = k.value("width", kerb.width);
+      kerb.height = k.value("height", kerb.height);
+      def.kerbs.push_back(kerb);
+    }
+    for (const json& k : doc.value("patches", json::array())) {
+      Patch patch;
+      patch.from_point = require(k, "from_point").get<int>();
+      patch.to_point = require(k, "to_point").get<int>();
+      patch.n_min = k.value("n_min", patch.n_min);
+      patch.n_max = k.value("n_max", patch.n_max);
+      patch.mu = require(k, "mu").get<double>();
+      def.patches.push_back(patch);
+    }
   } catch (const json::exception& e) {
     throw std::invalid_argument(std::string("track file: ") + e.what());
   }
@@ -280,6 +306,28 @@ std::string TrackDefinition::to_json() const {
     lines_json.push_back({{"name", line.name}, {"offsets", offsets}});
   }
   doc["lines"] = lines_json;
+  const Surface plain;
+  if (surface.mu != plain.mu || surface.roughness != plain.roughness || surface.grass_mu != plain.grass_mu ||
+      surface.grass_roughness != plain.grass_roughness) {
+    doc["surface"] = {{"mu", surface.mu}, {"roughness", surface.roughness}, {"grass_mu", surface.grass_mu},
+                      {"grass_roughness", surface.grass_roughness}};
+  }
+  if (!kerbs.empty()) {
+    json kerbs_json = json::array();
+    for (const Kerb& k : kerbs) {
+      kerbs_json.push_back({{"from_point", k.from_point}, {"to_point", k.to_point}, {"side", k.side},
+                            {"width", k.width}, {"height", k.height}});
+    }
+    doc["kerbs"] = kerbs_json;
+  }
+  if (!patches.empty()) {
+    json patches_json = json::array();
+    for (const Patch& k : patches) {
+      patches_json.push_back({{"from_point", k.from_point}, {"to_point", k.to_point}, {"n_min", k.n_min},
+                              {"n_max", k.n_max}, {"mu", k.mu}});
+    }
+    doc["patches"] = patches_json;
+  }
   return doc.dump(1) + "\n";
 }
 
@@ -314,6 +362,37 @@ void TrackDefinition::validate() const {
   }
   for (const int sector : sector_points) {
     check_index(sector, "sector point");
+  }
+  const auto check_class = [](const std::string& c, const char* what) {
+    if (!c.empty()) {
+      try {
+        iso8608_gd0(c);
+      } catch (const std::invalid_argument&) {
+        throw std::invalid_argument(std::string(what) + " '" + c + "' is not an ISO 8608 class A..H");
+      }
+    }
+  };
+  check_class(surface.roughness, "surface.roughness");
+  check_class(surface.grass_roughness, "surface.grass_roughness");
+  if (!(surface.mu > 0.0) || !(surface.grass_mu > 0.0)) {
+    throw std::invalid_argument("surface friction must be positive");
+  }
+  for (const Kerb& k : kerbs) {
+    check_index(k.from_point, "kerb from_point");
+    check_index(k.to_point, "kerb to_point");
+    if (k.side != "left" && k.side != "right") {
+      throw std::invalid_argument("kerb side must be left or right, not '" + k.side + "'");
+    }
+    if (!(k.width > 0.0) || !(k.height >= 0.0) || k.height > 0.3) {
+      throw std::invalid_argument("kerb width must be positive and height between 0 and 0.3 m");
+    }
+  }
+  for (const Patch& k : patches) {
+    check_index(k.from_point, "patch from_point");
+    check_index(k.to_point, "patch to_point");
+    if (!(k.mu > 0.0) || !(k.n_max > k.n_min)) {
+      throw std::invalid_argument("patch needs mu > 0 and n_max > n_min");
+    }
   }
   for (const Line& line : lines) {
     if (line.name.empty() || line.name == "center") {
@@ -409,7 +488,7 @@ CurveProjection SampledCurve::project(double x, double y, std::optional<double> 
     f = std::clamp(f, 0.0, 1.0);
     const double px = a.x + f * dx;
     const double py = a.y + f * dy;
-    const double d = std::hypot(x - px, y - py);
+    const double d = (x - px) * (x - px) + (y - py) * (y - py);  // squared
     if (d < best) {
       best = d;
       const double span = (i + 1 < n ? b.s : length_) - a.s;
@@ -419,6 +498,7 @@ CurveProjection SampledCurve::project(double x, double y, std::optional<double> 
       result.distance = d;
     }
   }
+  result.distance = std::sqrt(result.distance);
   result.s = wrap(result.s);
   return result;
 }
@@ -437,12 +517,17 @@ Track::Track(TrackDefinition definition) : def_(std::move(definition)) {
     ys[i] = p.y;
     t[i] = i == 0 ? 0.0 : t[i - 1] + std::hypot(p.x - xs[i - 1], p.y - ys[i - 1]);
   }
+  std::vector<double> zs(knots);
+  for (std::size_t i = 0; i < knots; ++i) {
+    zs[i] = pts[i % n].z;
+  }
   const std::vector<double> mx = spline_moments(t, xs, def_.closed);
   const std::vector<double> my = spline_moments(t, ys, def_.closed);
+  const std::vector<double> mz = spline_moments(t, zs, def_.closed);
 
   // Dense samples along each segment, arc length from their chords.
   struct Dense {
-    double s, x, y, heading, curvature;
+    double s, x, y, heading, curvature, z;
     std::size_t segment;
   };
   std::vector<Dense> dense;
@@ -464,7 +549,8 @@ Track::Track(TrackDefinition definition) : def_(std::move(definition)) {
         s += std::hypot(vx.v - prev.x, vy.v - prev.y);
       }
       const double curvature = speed > 1e-12 ? (vx.d1 * vy.d2 - vy.d1 * vx.d2) / (speed * speed * speed) : 0.0;
-      dense.push_back({s, vx.v, vy.v, std::atan2(vy.d1, vx.d1), curvature, i});
+      const double z = spline_eval(t[i], t[i + 1], zs[i], zs[i + 1], mz[i], mz[i + 1], tt).v;
+      dense.push_back({s, vx.v, vy.v, std::atan2(vy.d1, vx.d1), curvature, z, i});
     }
     if (i + 1 < n) {
       point_s_[i + 1] = s;
@@ -479,6 +565,8 @@ Track::Track(TrackDefinition definition) : def_(std::move(definition)) {
 
   std::vector<CurveSample> samples(def_.closed ? count : count + 1);
   widths_.resize(samples.size());
+  z_.resize(samples.size());
+  tan_bank_.resize(samples.size());
   std::size_t j = 0;
   for (std::size_t k = 0; k < samples.size(); ++k) {
     const double sk = std::min(static_cast<double>(k) * ds, total);
@@ -503,10 +591,207 @@ Track::Track(TrackDefinition definition) : def_(std::move(definition)) {
     const TrackDefinition::Point& p0 = pts[seg % n];
     const TrackDefinition::Point& p1 = pts[(seg + 1) % n];
     widths_[k] = {p0.w_left + g * (p1.w_left - p0.w_left), p0.w_right + g * (p1.w_right - p0.w_right)};
+    // Elevation follows the spline; bank varies linearly like the widths.
+    z_[k] = a.z + f * (b.z - a.z);
+    const double bank = (p0.bank_deg + g * (p1.bank_deg - p0.bank_deg)) * std::numbers::pi / 180.0;
+    tan_bank_[k] = std::tan(bank);
   }
   samples_ = std::move(samples);
   closed_ = def_.closed;
   length_ = total;
+
+  for (const TrackDefinition::Point& p : pts) {
+    relief_ = relief_ || p.z != 0.0 || p.bank_deg != 0.0;
+  }
+  relief_ = relief_ || !def_.kerbs.empty() || !def_.surface.roughness.empty();
+  const std::uint64_t seed = fnv1a64("road:" + def_.name);
+  road_waves_ = make_waves(def_.surface.roughness, seed);
+  grass_waves_ = make_waves(def_.surface.grass_roughness, splitmix64(seed));
+}
+
+// --- Road surface ---------------------------------------------------------------------
+
+double iso8608_gd0(const std::string& road_class) {
+  if (road_class.size() != 1 || road_class[0] < 'A' || road_class[0] > 'H') {
+    throw std::invalid_argument("ISO 8608 road class must be A..H, not '" + road_class + "'");
+  }
+  // Class A: 16e-6 m^3; every class is four times the one before.
+  return 16e-6 * std::pow(4.0, road_class[0] - 'A');
+}
+
+// Displacement PSD Gd(n) = Gd(n0) (n / n0)^-2, n0 = 0.1 cycles/m, as cosines
+// at log-spaced spatial frequencies with random phases. Each cosine also
+// varies slowly across the road (a lateral wavenumber up to half its own),
+// so the two wheel tracks see the same long waves and different short ones.
+// On closed tracks the frequencies fit the lap length so the start line has
+// no seam.
+std::vector<Track::Wave> Track::make_waves(const std::string& iso_class, std::uint64_t seed) const {
+  std::vector<Wave> waves;
+  if (iso_class.empty()) {
+    return waves;
+  }
+  constexpr int kCount = 96;
+  constexpr double kLow = 0.01, kHigh = 5.0, kN0 = 0.1;  // cycles/m
+  const double gd0 = iso8608_gd0(iso_class);
+  const double ratio = std::pow(kHigh / kLow, 1.0 / (kCount - 1));
+  const double band = std::sqrt(ratio) - 1.0 / std::sqrt(ratio);
+  Rng rng(seed);
+  for (int k = 0; k < kCount; ++k) {
+    double n = kLow * std::pow(ratio, k);
+    const double amplitude = std::sqrt(2.0 * gd0 * std::pow(n / kN0, -2.0) * n * band);
+    if (closed_) {
+      n = std::max(1.0, std::round(n * length_)) / length_;
+    }
+    const double lateral = rng.uniform() - 0.5;
+    const double phase = 2.0 * std::numbers::pi * rng.uniform();
+    waves.push_back({2.0 * std::numbers::pi * n, 2.0 * std::numbers::pi * n * lateral, amplitude, phase});
+  }
+  return waves;
+}
+
+void Track::add_waves(const std::vector<Wave>& waves, double s, double n, Ground& g) {
+  for (const Wave& w : waves) {
+    const double arg = w.ks * s + w.kn * n + w.phase;
+    const double c = std::cos(arg), sn = std::sin(arg);
+    g.z += w.amplitude * c;
+    g.dzds -= w.amplitude * w.ks * sn;
+    g.dzdn -= w.amplitude * w.kn * sn;
+  }
+}
+
+double Track::elevation(double s) const { return centre_ground(s, 0.0).z; }
+
+// Centerline elevation plus the bank's cross slope, linear between samples
+// (so the slope is the exact derivative of the height).
+Track::Ground Track::centre_ground(double s, double n) const {
+  s = wrap(s);
+  const std::size_t i = index_at(s);
+  const bool last = i + 1 >= samples_.size();
+  if (last && !closed_) {
+    return {z_.back() + n * tan_bank_.back(), 0.0, tan_bank_.back()};
+  }
+  const std::size_t j = last ? 0 : i + 1;
+  const double span = (last ? length_ : samples_[j].s) - samples_[i].s;
+  const double f = span > 0.0 ? (s - samples_[i].s) / span : 0.0;
+  const double tb = tan_bank_[i] + f * (tan_bank_[j] - tan_bank_[i]);
+  const double dtb = span > 0.0 ? (tan_bank_[j] - tan_bank_[i]) / span : 0.0;
+  const double zc = z_[i] + f * (z_[j] - z_[i]);
+  const double dzc = span > 0.0 ? (z_[j] - z_[i]) / span : 0.0;
+  return {zc + n * tb, dzc + n * dtb, tb};
+}
+
+// Kerb crest across its width with rumble ridges along it, ramped in at the
+// ends. Adds to g and returns the kerb's width (scaled by the end ramps)
+// where one runs along this side at s, else 0. e: distance beyond the edge.
+double Track::kerb_at(double s, double e, bool left, Ground& g) const {
+  for (const TrackDefinition::Kerb& k : def_.kerbs) {
+    if ((k.side == "left") != left) {
+      continue;
+    }
+    const double s0 = point_s(k.from_point);
+    double s1 = point_s(k.to_point);
+    double along = s - s0;
+    if (closed_) {
+      if (s1 <= s0) {
+        s1 += length_;
+      }
+      if (along < 0.0) {
+        along += length_;
+      }
+    }
+    const double kerb_length = s1 - s0;
+    if (along < 0.0 || along > kerb_length) {
+      continue;
+    }
+    constexpr double kRamp = 1.5, kRidge = 0.5;
+    const double pi = std::numbers::pi;
+    const double ramp_in = std::min(1.0, along / kRamp), ramp_out = std::min(1.0, (kerb_length - along) / kRamp);
+    const double ramp = std::min(ramp_in, ramp_out);
+    if (e >= 0.0 && e <= k.width) {
+      const double dramp =
+          ramp_in < ramp_out ? (ramp_in < 1.0 ? 1.0 / kRamp : 0.0) : (ramp_out < 1.0 ? -1.0 / kRamp : 0.0);
+      const double cross = std::sin(pi * e / k.width), dcross = pi / k.width * std::cos(pi * e / k.width);
+      const double ridge = 0.8 + 0.2 * std::cos(2.0 * pi * along / kRidge);
+      const double dridge = -0.2 * 2.0 * pi / kRidge * std::sin(2.0 * pi * along / kRidge);
+      g.z += k.height * ramp * cross * ridge;
+      g.dzds += k.height * cross * (dramp * ridge + ramp * dridge);
+      g.dzdn += k.height * ramp * ridge * dcross * (left ? 1.0 : -1.0);
+    }
+    return k.width * ramp;
+  }
+  return 0.0;
+}
+
+double Track::surface_height(double s, double n) const {
+  Ground g = centre_ground(s, n);
+  const Widths w = widths_at(s);
+  if (n > w.left) {
+    kerb_at(s, n - w.left, true, g);
+  } else if (n < -w.right) {
+    kerb_at(s, -n - w.right, false, g);
+  }
+  return g.z;
+}
+
+RoadPoint Track::road(double x, double y, double* hint) const {
+  const CurveProjection p = hint ? project(x, y, *hint, 2.0) : project(x, y);
+  if (hint) {
+    *hint = p.s;
+  }
+  RoadPoint out;
+  out.s = p.s;
+  out.n = p.n;
+  Ground g = centre_ground(p.s, p.n);
+  const Widths w = widths_at(p.s);
+  if (p.n <= w.left && p.n >= -w.right) {
+    out.kind = SurfaceKind::Road;
+    add_waves(road_waves_, p.s, p.n, g);
+    out.mu = def_.surface.mu;
+    for (const TrackDefinition::Patch& patch : def_.patches) {
+      double along = p.s - point_s(patch.from_point);
+      double length = point_s(patch.to_point) - point_s(patch.from_point);
+      if (closed_) {
+        along = along < 0.0 ? along + length_ : along;
+        length = length <= 0.0 ? length + length_ : length;
+      }
+      if (along >= 0.0 && along <= length && p.n >= patch.n_min && p.n <= patch.n_max) {
+        out.mu = patch.mu;
+      }
+    }
+  } else {
+    // Beyond the edge: a kerb if there is one, then grass. The road's
+    // roughness hands over to the grass's within kFade, so the height has no
+    // step anywhere.
+    constexpr double kFade = 1.5;  // [m]
+    const bool left = p.n > w.left;
+    const double e = left ? p.n - w.left : -p.n - w.right;
+    const double kerb = kerb_at(p.s, e, left, g);
+    const double u = std::clamp((e - kerb) / kFade, 0.0, 1.0);
+    const double fade = u * u * (3.0 - 2.0 * u);
+    const double dfade_dn = (u > 0.0 && u < 1.0 ? 6.0 * u * (1.0 - u) / kFade : 0.0) * (left ? 1.0 : -1.0);
+    Ground road{0.0, 0.0, 0.0}, grass{0.0, 0.0, 0.0};
+    if (fade < 1.0) {
+      add_waves(road_waves_, p.s, p.n, road);
+    }
+    if (fade > 0.0) {
+      add_waves(grass_waves_, p.s, p.n, grass);
+    }
+    g.z += (1.0 - fade) * road.z + fade * grass.z;
+    g.dzds += (1.0 - fade) * road.dzds + fade * grass.dzds;
+    g.dzdn += (1.0 - fade) * road.dzdn + fade * grass.dzdn + dfade_dn * (grass.z - road.z);
+    if (e <= kerb) {
+      out.kind = SurfaceKind::Kerb;
+      out.mu = 0.9 * def_.surface.mu;  // painted
+    } else {
+      out.kind = SurfaceKind::Grass;
+      out.mu = def_.surface.grass_mu;
+    }
+  }
+  out.z = g.z;
+  const double c = std::cos(p.heading), sn = std::sin(p.heading);
+  out.dzdx = g.dzds * c - g.dzdn * sn;
+  out.dzdy = g.dzds * sn + g.dzdn * c;
+  return out;
 }
 
 Track::Widths Track::widths_at(double s) const {

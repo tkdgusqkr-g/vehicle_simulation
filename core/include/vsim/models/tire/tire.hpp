@@ -19,10 +19,15 @@ namespace vsim {
 //               produces a positive (leftward) lateral force.
 //   mz          aligning torque about z; negative for positive alpha (it turns
 //               the wheel back towards its direction of travel).
+//   camber      inclination angle as in ISO-W: rotation about the wheel's x
+//               axis, positive when the top of the wheel leans right (-y).
+//               A wheel pushes towards the side it leans to (camber thrust).
 struct TireInput {
   double fz = 0.0;          // normal load [N]
   double slip_ratio = 0.0;  // [-]
   double slip_angle = 0.0;  // [rad]
+  double camber = 0.0;      // [rad]
+  double mu_scale = 1.0;    // road friction relative to the tire data (wet, grass, kerb)
 };
 
 struct TireForces {
@@ -44,7 +49,9 @@ class TireModel {
 // combination: at combined slip the force follows a friction ellipse, and
 // pure slip reproduces each curve exactly. The aligning torque comes from a
 // pneumatic trail that shrinks towards the peak slip angle, so steering goes
-// light near the grip limit as on a real car.
+// light near the grip limit as on a real car. Camber acts as an equivalent
+// slip angle (thrust within the friction limit); a lower road friction keeps
+// the stiffness and lowers the peak, which then comes at a smaller slip.
 class SimpleTire final : public TireModel {
  public:
   struct Params {
@@ -55,6 +62,7 @@ class SimpleTire final : public TireModel {
     double bx = 12.0, cx = 1.65, ex = 0.3;
     double by = 12.0, cy = 1.4, ey = 0.2;
     double pneumatic_trail = 0.025;  // [m] at zero slip angle
+    double camber_stiffness = 0.8;   // lateral force per Fz per rad of camber at zero slip
   };
 
   explicit SimpleTire(const Params& params);
@@ -76,9 +84,10 @@ class SimpleTire final : public TireModel {
 };
 
 // Pacejka Magic Formula from a TNO/ADAMS .tir file (MF 5.2 / 6.1 subset):
-// pure and combined slip for Fx, Fy and Mz with load dependency and the
-// file's scaling factors; camber and inflation pressure are taken at zero /
-// nominal (design doc §6.4). The file's ISO-W convention is converted to the
+// pure and combined slip for Fx, Fy and Mz with load and camber dependency
+// (FITTYP 61/62 use the 6.1 camber terms, others the 5.2 ones) and the file's
+// scaling factors; inflation pressure is taken at nominal and turn slip is
+// left out (design doc §6.4). The file's ISO-W convention is converted to the
 // vsim convention above (alpha_iso = -alpha); files whose cornering stiffness
 // has the opposite sign are detected and flipped, with a note.
 class MagicFormulaTire final : public TireModel {
@@ -105,6 +114,7 @@ class MagicFormulaTire final : public TireModel {
   double fz0_ = 0.0;
   double r0_ = 0.0;
   double alpha_sign_ = -1.0;  // alpha_iso = alpha_sign * alpha
+  bool mf61_ = true;          // camber terms of MF 6.1 (else 5.2)
   std::vector<std::string> notes_;
 };
 

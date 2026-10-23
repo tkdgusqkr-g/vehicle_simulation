@@ -5,6 +5,8 @@
 #include <numbers>
 #include <stdexcept>
 
+#include "vsim/models/vehicle/suspension.hpp"
+
 namespace vsim {
 namespace {
 
@@ -49,49 +51,6 @@ std::array<float, 3> hex_colour(const std::string& text, std::array<float, 3> fa
     c[i] = static_cast<float>(std::stoi(text.substr(1 + 2 * i, 2), nullptr, 16)) / 255.0f;
   }
   return c;
-}
-
-// Default hardpoints (left side; x forward from the axle centre, y left from
-// the centreline, z up from the ground), typical of a 10" FS car.
-struct Hardpoints {
-  Vec3 lower_front, lower_rear, lower_outer, upper_front, upper_rear, upper_outer;
-  Vec3 tie_inner, tie_outer, push_outer, push_inner, wheel_centre;
-};
-
-Hardpoints default_hardpoints(bool front) {
-  if (front) {
-    return {{0.13, 0.20, 0.11},    {-0.17, 0.20, 0.11},  {0.0, 0.555, 0.115}, {0.10, 0.26, 0.285},
-            {-0.14, 0.26, 0.285},  {-0.012, 0.535, 0.315}, {0.075, 0.21, 0.165}, {0.075, 0.565, 0.175},
-            {0.0, 0.52, 0.125},    {0.0, 0.25, 0.46},    {0.0, 0.61, 0.203}};
-  }
-  return {{0.17, 0.22, 0.11},   {-0.13, 0.22, 0.11},  {0.0, 0.535, 0.115},  {0.15, 0.27, 0.29},
-          {-0.12, 0.27, 0.29},  {0.012, 0.515, 0.315}, {-0.09, 0.22, 0.17},  {-0.08, 0.545, 0.18},
-          {0.0, 0.50, 0.125},   {0.0, 0.26, 0.44},    {0.0, 0.59, 0.203}};
-}
-
-Hardpoints read_hardpoints(const ParamTree& p, bool front) {
-  Hardpoints h = default_hardpoints(front);
-  const std::string base = std::string("vehicle.suspension.") + (front ? "front" : "rear") + ".hardpoints.";
-  const auto read = [&](const char* name, Vec3& v) {
-    const std::vector<double> xyz = p.get_double_list(base + name);
-    if (xyz.size() == 3) {
-      v = {xyz[0], xyz[1], xyz[2]};
-    } else if (!xyz.empty()) {
-      throw std::invalid_argument(base + name + " needs [x, y, z]");
-    }
-  };
-  read("lower_front", h.lower_front);
-  read("lower_rear", h.lower_rear);
-  read("lower_outer", h.lower_outer);
-  read("upper_front", h.upper_front);
-  read("upper_rear", h.upper_rear);
-  read("upper_outer", h.upper_outer);
-  read("tie_inner", h.tie_inner);
-  read("tie_outer", h.tie_outer);
-  read("push_outer", h.push_outer);
-  read("push_inner", h.push_inner);
-  read("wheel_centre", h.wheel_centre);
-  return h;
 }
 
 // NACA 4-digit style section, inverted (downforce), leading edge at the
@@ -451,7 +410,7 @@ VisualModel make_formula_car(const ParamTree& params) {
 
   // Dampers with springs on the rockers.
   for (const bool front : {true, false}) {
-    const Hardpoints h = read_hardpoints(params, front);
+    const WishboneGeometry h = WishboneGeometry::from_params(params, front);
     const double ax = front ? xf : xr;
     for (const double side : {1.0, -1.0}) {
       const Vec3 rocker{ax + h.push_inner.x, side * h.push_inner.y, h.push_inner.z};
@@ -513,7 +472,7 @@ VisualModel make_formula_car(const ParamTree& params) {
     const Vec3 hub = hub_position(params, corner);
     model.parts.push_back(make_wheel(d, corner, hub));
     model.parts.push_back(make_upright(d, corner, hub, caliper));
-    const Hardpoints h = read_hardpoints(params, front);
+    const WishboneGeometry h = WishboneGeometry::from_params(params, front);
     const double ax = front ? xf : xr;
     const auto inboard = [&](const Vec3& p) { return Vec3{ax + p.x, side * p.y, p.z}; };
     const auto outboard = [&](const Vec3& p) {

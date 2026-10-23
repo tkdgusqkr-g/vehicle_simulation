@@ -6,6 +6,7 @@
 #include <stdexcept>
 
 #include "vsim/sim/context.hpp"
+#include "vsim/track/track.hpp"
 #include "vsim/util/paths.hpp"
 
 namespace vsim {
@@ -24,6 +25,72 @@ void require_positive(double value, const char* key) {
   if (!(value > 0.0)) {
     throw std::invalid_argument(std::string(key) + " must be positive");
   }
+}
+
+// Progressive bump stop: k e (1 + e / kBumpProgression) and its energy.
+constexpr double kBumpProgression = 0.005;  // [m]
+double bump_force(double rate, double e) { return e > 0.0 ? rate * e * (1.0 + e / kBumpProgression) : 0.0; }
+double bump_energy(double rate, double e) {
+  return e > 0.0 ? rate * (0.5 * e * e + e * e * e / (3.0 * kBumpProgression)) : 0.0;
+}
+// Droop limit: a stiff linear stop.
+constexpr double kDroopStopRate = 2e6;  // [N/m]
+
+// Digressive damper at the wheel: bump / rebound slopes up to the knee, a
+// lower slope above it.
+double damper_force(const TwoTrackModel::Params::Axle& a, double v) {
+  const double c = v >= 0.0 ? a.damper_bump : a.damper_rebound;
+  const double speed = std::abs(v);
+  const double f = speed <= a.damper_knee ? c * speed : c * (a.damper_knee + a.damper_high_speed * (speed - a.damper_knee));
+  return v >= 0.0 ? f : -f;
+}
+
+// Solves the 5x5 system m u = b with m given by its inverse (row major).
+std::array<double, 5> apply(const std::array<double, 25>& inverse, const std::array<double, 5>& b) {
+  std::array<double, 5> u{};
+  for (std::size_t i = 0; i < 5; ++i) {
+    for (std::size_t j = 0; j < 5; ++j) {
+      u[i] += inverse[5 * i + j] * b[j];
+    }
+  }
+  return u;
+}
+
+std::array<double, 25> invert5(std::array<double, 25> a) {
+  std::array<double, 25> inv{};
+  for (std::size_t i = 0; i < 5; ++i) {
+    inv[6 * i] = 1.0;
+  }
+  for (std::size_t c = 0; c < 5; ++c) {
+    std::size_t pivot = c;
+    for (std::size_t r = c + 1; r < 5; ++r) {
+      if (std::abs(a[5 * r + c]) > std::abs(a[5 * pivot + c])) {
+        pivot = r;
+      }
+    }
+    for (std::size_t k = 0; k < 5; ++k) {
+      std::swap(a[5 * c + k], a[5 * pivot + k]);
+      std::swap(inv[5 * c + k], inv[5 * pivot + k]);
+    }
+    const double d = a[5 * c + c];
+    if (std::abs(d) < 1e-12) {
+      throw std::invalid_argument("vehicle mass matrix is singular (check masses and inertias)");
+    }
+    for (std::size_t k = 0; k < 5; ++k) {
+      a[5 * c + k] /= d;
+      inv[5 * c + k] /= d;
+    }
+    for (std::size_t r = 0; r < 5; ++r) {
+      if (r != c) {
+        const double f = a[5 * r + c];
+        for (std::size_t k = 0; k < 5; ++k) {
+          a[5 * r + k] -= f * a[5 * c + k];
+          inv[5 * r + k] -= f * inv[5 * c + k];
+        }
+      }
+    }
+  }
+  return inv;
 }
 
 // Relaxation-length slip state: sigma * ds/dt + |v| * s = slip velocity.
@@ -56,6 +123,14 @@ struct TwoTrackModel::Eval {
   double ocv = 0.0;  // pack
   BatteryOperatingPoint battery;
   BatteryLimits limits;
+
+  // Full model.
+  double rack = 0.0;
+  std::array<double, kCorners> travel{}, travel_rate{}, camber{}, mu{1.0, 1.0, 1.0, 1.0};
+  std::array<double, kCorners> road_z{}, deflection{}, spring_force{}, damper_force{}, arb_force{};
+  std::array<double, kCorners> wheel_z{}, kingpin_moment{}, spring_compression{};
+  std::array<int, kCorners> surface{};
+  double az = 0.0;  // vertical acceleration of the sprung CG
 };
 
 struct TwoTrackModel::Signals {
@@ -69,9 +144,16 @@ struct TwoTrackModel::Signals {
     SignalId torque_cmd, torque, speed, avail, temp, loss, power;
   };
 
+  struct Corner3 {
+    SignalId z, travel, camber, spring, damper, deflection, road_z, mu, surface, rig_z, rig_vz;
+  };
+
   SignalId steer, brake;
   SignalId x, y, yaw, vx, vy, r, speed, ax, ay, beta, delta;
   std::array<Wheel, kCorners> wheel;
+  // Full model.
+  SignalId z, roll, pitch, vz, roll_rate, pitch_rate, az, rack, potential;
+  std::array<Corner3, kCorners> corner3;
   std::array<Axle, 2> axle;
   SignalId drag, downforce, brake_pressure, ffb;
   std::vector<Motor> motor;
@@ -119,6 +201,32 @@ TwoTrackModel::Params TwoTrackModel::params_from(const ParamTree& params) {
   p.brake_gain_rear = params.get_double("vehicle.brakes.rear_gain_nm_per_bar");
   p.ambient_temp = params.get_double("environment.ambient_temp_c", p.ambient_temp);
 
+  // Full model (read always, checked when used).
+  for (std::size_t c = 0; c < kCorners; ++c) {
+    p.unsprung_mass[c] = params.get_double("vehicle.unsprung_mass_kg." + std::string(kCornerNames[c]),
+                                           params.get_double("vehicle.unsprung_mass_kg", p.unsprung_mass[c]));
+  }
+  p.roll_inertia = params.get_double("vehicle.roll_inertia_kgm2", p.roll_inertia);
+  p.pitch_inertia = params.get_double("vehicle.pitch_inertia_kgm2", p.pitch_inertia);
+  p.unloaded_radius = params.get_double("vehicle.wheel.unloaded_radius_m", 0.0);
+  p.tire_vertical_stiffness =
+      1000.0 * params.get_double("vehicle.tire.vertical_stiffness_n_per_mm", p.tire_vertical_stiffness / 1000.0);
+  p.tire_vertical_damping = params.get_double("vehicle.tire.vertical_damping_n_s_per_m", p.tire_vertical_damping);
+  p.contact_length = params.get_double("vehicle.tire.contact_length_m", p.contact_length);
+  for (std::size_t a = 0; a < 2; ++a) {
+    const std::string base = std::string("vehicle.suspension.") + (a == 0 ? "front." : "rear.");
+    Params::Axle& x = p.axle[a];
+    x.spring_rate = 1000.0 * params.get_double(base + "spring_rate_n_per_mm", x.spring_rate / 1000.0);
+    x.damper_bump = params.get_double(base + "damper_n_s_per_m", x.damper_bump);
+    x.damper_rebound = params.get_double(base + "damper_rebound_n_s_per_m", x.damper_bump);
+    x.damper_knee = params.get_double(base + "damper_knee_mps", x.damper_knee);
+    x.damper_high_speed = params.get_double(base + "damper_high_speed_ratio", x.damper_high_speed);
+    x.anti_roll_bar = params.get_double(base + "anti_roll_bar_nm_per_deg", x.anti_roll_bar);
+    x.bump_travel = params.get_double(base + "bump_travel_m", x.bump_travel);
+    x.droop_travel = params.get_double(base + "droop_travel_m", x.droop_travel);
+    x.bump_stop_rate = 1000.0 * params.get_double(base + "bump_stop_n_per_mm", x.bump_stop_rate / 1000.0);
+  }
+
   require_positive(p.mass, "vehicle.mass_kg");
   require_positive(p.yaw_inertia, "vehicle.yaw_inertia_kgm2");
   require_positive(p.wheelbase, "vehicle.wheelbase_m");
@@ -145,6 +253,7 @@ TwoTrackModel::Params TwoTrackModel::params_from(const ParamTree& params) {
 
 void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   p_ = params_from(params);
+  full_ = params.get_string("vehicle.model", "two_track") == "full";
   motor_ = MotorParams::from_params(params);
   battery_ = BatteryParams::from_params(params);
   driveline_config_ = DrivelineConfig::from_params(params);
@@ -159,7 +268,9 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   motor_offset_ = slip_offset_ + 2 * kCorners;
   battery_offset_ = motor_offset_ + 2 * motors;
   energy_offset_ = battery_offset_ + 4;
-  size_ = energy_offset_ + kEnergyCount;
+  body_offset_ = energy_offset_ + kEnergyCount;
+  unsprung_offset_ = body_offset_ + kBodySize;
+  size_ = full_ ? unsprung_offset_ + 2 * kCorners : body_offset_;
   torque_cmd_.assign(motors, 0.0);
 
   x0_ = params.get_double("initial.x_m", 0.0);
@@ -172,9 +283,13 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   if (!(soc0_ >= 0.0 && soc0_ <= 1.0)) {
     throw std::invalid_argument("initial.soc must be in [0, 1]");
   }
+  if (full_) {
+    init_full(params, ctx);
+  }
   std::vector<double> initial(size_);
   initial_state(initial);
   kinetic0_ = kinetic_energy(initial);
+  stored0_ = stored_energy(initial);
 
   SignalBus& bus = ctx.bus();
   sig_ = std::make_unique<Signals>();
@@ -242,7 +357,8 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   s.limit_charge_current = bus.declare("bat.limit.charge_current", "A", "BMS charge current limit");
   constexpr std::array<const char*, kEnergyCount> kEnergyNames = {
       "battery_chemical", "battery_loss", "aux", "motor_loss", "motor_shaft", "gear_loss",
-      "diff_loss", "brake_loss", "slip_loss", "rolling_loss", "drag_loss"};
+      "diff_loss", "brake_loss", "slip_loss", "rolling_loss", "drag_loss", "damper_loss",
+      "tire_damping_loss"};
   for (std::size_t i = 0; i < kEnergyCount; ++i) {
     s.energy[i] = bus.declare(std::string("energy.") + kEnergyNames[i], "J", "integrated energy");
   }
@@ -250,6 +366,152 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   s.rc_stored = bus.declare("energy.battery_rc_stored", "J", "energy in the cell RC elements");
   s.residual = bus.declare("energy.residual", "J",
                            "chemical energy minus losses and stored energy gain (should stay ~0)");
+  if (full_) {
+    s.z = bus.declare("veh.chassis.z", "m", "sprung CG height");
+    s.roll = bus.declare("veh.chassis.roll", "rad", "body roll, left side up");
+    s.pitch = bus.declare("veh.chassis.pitch", "rad", "body pitch, nose down");
+    s.vz = bus.declare("veh.chassis.vz", "m/s", "sprung CG vertical velocity");
+    s.roll_rate = bus.declare("veh.chassis.roll_rate", "rad/s", "body roll rate");
+    s.pitch_rate = bus.declare("veh.chassis.pitch_rate", "rad/s", "body pitch rate");
+    s.az = bus.declare("veh.chassis.az", "m/s^2", "sprung CG vertical acceleration");
+    s.rack = bus.declare("veh.steer.rack", "m", "steering rack travel, left +");
+    s.potential = bus.declare("energy.potential", "J", "gravity, spring and tire energy gained since the start");
+    for (std::size_t c = 0; c < kCorners; ++c) {
+      const std::string name(kCornerNames[c]);
+      const std::string base = "veh.wheel." + name + ".";
+      s.corner3[c] = {bus.declare(base + "z", "m", "hub height"),
+                      bus.declare(base + "travel", "m", "suspension travel from static, bump +"),
+                      bus.declare(base + "camber", "rad", "camber, top outwards +"),
+                      bus.declare(base + "spring_force", "N", "spring and stops at the wheel"),
+                      bus.declare(base + "damper_force", "N", "damper at the wheel"),
+                      bus.declare(base + "deflection", "m", "tire vertical deflection"),
+                      bus.declare(base + "road_z", "m", "road height under the tire"),
+                      bus.declare(base + "mu", "-", "road friction relative to the tire data"),
+                      bus.declare(base + "surface", "-", "0 road, 1 kerb, 2 grass"),
+                      bus.declare("rig." + name + ".z", "m", "four-post rig: road displacement under the wheel"),
+                      bus.declare("rig." + name + ".vz", "m/s", "four-post rig: its rate")};
+    }
+  }
+}
+
+void TwoTrackModel::init_full(const ParamTree& params, Context& ctx) {
+  track_ = ctx.track();
+  patch_samples_ = track_ && track_->has_relief() ? 3 : 1;
+  const Params& p = p_;
+  double unsprung = 0.0, unsprung_x = 0.0;
+  std::array<double, kCorners> x{}, y{};
+  for (std::size_t c = 0; c < kCorners; ++c) {
+    require_positive(p.unsprung_mass[c], "vehicle.unsprung_mass_kg");
+    x[c] = is_front(c) ? p.cg_to_front : -p.cg_to_rear();
+    y[c] = (is_left(c) ? 0.5 : -0.5) * p.track(c);
+    unsprung += p.unsprung_mass[c];
+    unsprung_x += p.unsprung_mass[c] * x[c];
+  }
+  sprung_mass_ = p.mass - unsprung;
+  if (!(sprung_mass_ > 0.2 * p.mass)) {
+    throw std::invalid_argument("vehicle.unsprung_mass_kg leaves too little sprung mass");
+  }
+  require_positive(p.roll_inertia, "vehicle.roll_inertia_kgm2");
+  require_positive(p.pitch_inertia, "vehicle.pitch_inertia_kgm2");
+  require_positive(p.tire_vertical_stiffness, "vehicle.tire.vertical_stiffness_n_per_mm");
+  require_positive(p.contact_length, "vehicle.tire.contact_length_m");
+  x_s_ = -unsprung_x / sprung_mass_;
+
+  // Static loads with the car level on a flat road.
+  const double g = kGravity;
+  std::array<double, kCorners> fz0{};
+  double hubs_moment = 0.0;
+  for (std::size_t c = 0; c < kCorners; ++c) {
+    fz0[c] = 0.5 * p.mass * g * (is_front(c) ? p.cg_to_rear() : p.cg_to_front) / p.wheelbase;
+    const double unloaded = p.unloaded_radius > 0.0 ? p.unloaded_radius
+                                                    : p.wheel_radius + fz0[c] / p.tire_vertical_stiffness;
+    free_radius_[c] = unloaded;
+    hub0_[c] = unloaded - fz0[c] / p.tire_vertical_stiffness;
+    hubs_moment += p.unsprung_mass[c] * hub0_[c];
+  }
+  h_s_ = (p.mass * p.cg_height - hubs_moment) / sprung_mass_;
+  if (!(h_s_ > 0.0)) {
+    throw std::invalid_argument("vehicle.cg_height_m is below the hubs: no room for the sprung mass");
+  }
+  izz_s_ = p.yaw_inertia - sprung_mass_ * x_s_ * x_s_;
+  for (std::size_t c = 0; c < kCorners; ++c) {
+    izz_s_ -= p.unsprung_mass[c] * (x[c] * x[c] + y[c] * y[c]);
+  }
+  require_positive(izz_s_, "vehicle.yaw_inertia_kgm2 minus the unsprung masses' share");
+
+  // K&C tables; the rack follows the steering ratio at the centre.
+  for (std::size_t a = 0; a < 2; ++a) {
+    const WishboneSolver solver(WishboneGeometry::from_params(params, a == 0));
+    const double travel = std::max(0.06, 1.5 * std::max(p.axle[a].bump_travel, p.axle[a].droop_travel));
+    if (a == 0) {
+      constexpr double h = 1e-4;
+      const double slope = (solver.solve(0.0, h).steer - solver.solve(0.0, -h).steer) / (2.0 * h);
+      if (!(std::abs(slope) > 1e-6)) {
+        throw std::invalid_argument("front tie rods do not steer the wheels (check the hardpoints)");
+      }
+      rack_per_rad_ = 1.0 / (p.steering_ratio * slope);
+      const double rack_max = 1.15 * std::abs(rack_per_rad_) * p.max_steer_wheel;
+      kc_[a] = KcTable::build(solver, travel, 49, rack_max, 25);
+    } else {
+      kc_[a] = KcTable::build(solver, travel, 49, 0.0, 1);
+    }
+  }
+
+  // Spring preloads carry the static sprung loads at zero travel.
+  for (std::size_t c = 0; c < kCorners; ++c) {
+    const std::size_t a = is_front(c) ? 0 : 1;
+    const KcPoint k = kc_[a].at(0.0, 0.0);
+    const double sprung_load = fz0[c] - p.unsprung_mass[c] * g;
+    require_positive(p.axle[a].spring_rate, "vehicle.suspension.<axle>.spring_rate_n_per_mm");
+    preload_[c] = sprung_load / (p.axle[a].spring_rate * k.dspring) - k.spring;
+    offset0_[c] = hub0_[c] - h_s_;
+  }
+
+  // Kane's mass matrix for [vx, vy, r, p, q].
+  const double m = p.mass, ms = sprung_mass_, h = h_s_;
+  const std::array<double, 25> mass = {m,   0.0,      0.0,          0.0,          ms * h,
+                                       0.0, m,        0.0,          -ms * h,      0.0,
+                                       0.0, 0.0,      p.yaw_inertia, -ms * h * x_s_, 0.0,
+                                       0.0, -ms * h,  -ms * h * x_s_, p.roll_inertia + ms * h * h, 0.0,
+                                       ms * h, 0.0,   0.0,          0.0,          p.pitch_inertia + ms * h * h};
+  mass_inverse_ = invert5(mass);
+
+  // Start on the road under the start pose: wheels at their static
+  // deflection, the body fitted to them.
+  const double c0 = std::cos(yaw0_), s0 = std::sin(yaw0_);
+  std::array<double, kCorners> road{};
+  // The wheels follow the car's branch where a course crosses itself
+  // (skidpad): start their searches from the car's place near the start.
+  double car_s = 0.0;
+  if (track_) {
+    const CurveProjection near_start = track_->project(x0_, y0_, track_->start_s(), 30.0);
+    const CurveProjection anywhere = track_->project(x0_, y0_);
+    car_s = near_start.distance <= anywhere.distance + 0.5 ? near_start.s : anywhere.s;
+  }
+  for (std::size_t c = 0; c < kCorners; ++c) {
+    road_hint_[c].fill(0.0);
+    if (track_) {
+      const double wx = x0_ + c0 * x[c] - s0 * y[c];
+      const double wy = y0_ + s0 * x[c] + c0 * y[c];
+      double hint = track_->project(wx, wy, car_s, 5.0).s;
+      road[c] = track_->road(wx, wy, &hint).z;
+      road_hint_[c].fill(hint);
+    }
+    zu0_[c] = road[c] + hub0_[c];
+  }
+  // Least squares: zu - offset0 = Z - pitch (x - x_s) + roll y.
+  double a11 = 0, a12 = 0, a13 = 0, a22 = 0, a23 = 0, a33 = 0, b1 = 0, b2 = 0, b3 = 0;
+  for (std::size_t c = 0; c < kCorners; ++c) {
+    const double r = zu0_[c] - offset0_[c];
+    const double u = -(x[c] - x_s_), v = y[c];
+    a11 += 1.0; a12 += u; a13 += v; a22 += u * u; a23 += u * v; a33 += v * v;
+    b1 += r; b2 += u * r; b3 += v * r;
+  }
+  // 3x3 solve (Cramer).
+  const double det = a11 * (a22 * a33 - a23 * a23) - a12 * (a12 * a33 - a23 * a13) + a13 * (a12 * a23 - a22 * a13);
+  z0_ = (b1 * (a22 * a33 - a23 * a23) - a12 * (b2 * a33 - a23 * b3) + a13 * (b2 * a23 - a22 * b3)) / det;
+  pitch0_ = (a11 * (b2 * a33 - a23 * b3) - b1 * (a12 * a33 - a23 * a13) + a13 * (a12 * b3 - b2 * a13)) / det;
+  roll0_ = (a11 * (a22 * b3 - b2 * a23) - a12 * (a12 * b3 - b2 * a13) + b1 * (a12 * a23 - a22 * a13)) / det;
 }
 
 void TwoTrackModel::initial_state(std::span<double> x) const {
@@ -266,6 +528,14 @@ void TwoTrackModel::initial_state(std::span<double> x) const {
   }
   x[battery_offset_] = soc0_;
   x[battery_offset_ + 3] = battery_temp0_;
+  if (full_) {
+    x[body_offset_ + kZ] = z0_;
+    x[body_offset_ + kRoll] = roll0_;
+    x[body_offset_ + kPitch] = pitch0_;
+    for (std::size_t c = 0; c < kCorners; ++c) {
+      x[unsprung_offset_ + c] = zu0_[c];
+    }
+  }
 }
 
 void TwoTrackModel::read_inputs(const SignalBus& bus) {
@@ -273,6 +543,12 @@ void TwoTrackModel::read_inputs(const SignalBus& bus) {
   brake_ = std::clamp(bus.get(sig_->brake), 0.0, 1.0);
   for (std::size_t m = 0; m < torque_cmd_.size(); ++m) {
     torque_cmd_[m] = bus.get(sig_->motor[m].torque_cmd);
+  }
+  if (full_) {
+    for (std::size_t c = 0; c < kCorners; ++c) {
+      rig_z_[c] = bus.get(sig_->corner3[c].rig_z);
+      rig_vz_[c] = bus.get(sig_->corner3[c].rig_vz);
+    }
   }
 }
 
@@ -287,15 +563,28 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
   const double wheelbase = p_.wheelbase;
   const double radius = p_.wheel_radius;
   const std::span<const double> q = x.subspan(wheel_offset_, driveline_.dof_count());
+  const double g = kGravity;
 
-  // Steering with partial Ackermann.
-  e.delta = std::clamp(steer_, -p_.max_steer_wheel, p_.max_steer_wheel) / p_.steering_ratio;
-  const double tan_delta = std::tan(e.delta);
-  const double half_front = 0.5 * p_.track_front;
-  const double ackermann_left = std::atan2(wheelbase * tan_delta, wheelbase - tan_delta * half_front);
-  const double ackermann_right = std::atan2(wheelbase * tan_delta, wheelbase + tan_delta * half_front);
-  e.steer = {e.delta + p_.ackermann * (ackermann_left - e.delta),
-             e.delta + p_.ackermann * (ackermann_right - e.delta), 0.0, 0.0};
+  // Body states of the full model.
+  const double zs = full_ ? x[body_offset_ + kZ] : 0.0;
+  const double roll = full_ ? x[body_offset_ + kRoll] : 0.0;
+  const double pitch = full_ ? x[body_offset_ + kPitch] : 0.0;
+  const double vz = full_ ? x[body_offset_ + kVz] : 0.0;
+  const double roll_rate = full_ ? x[body_offset_ + kRollRate] : 0.0;
+  const double pitch_rate = full_ ? x[body_offset_ + kPitchRate] : 0.0;
+
+  // Steering: partial Ackermann (L2) or the rack through the K&C tables.
+  const double steer_wheel = std::clamp(steer_, -p_.max_steer_wheel, p_.max_steer_wheel);
+  e.delta = steer_wheel / p_.steering_ratio;
+  if (!full_) {
+    const double tan_delta = std::tan(e.delta);
+    const double half_front = 0.5 * p_.track_front;
+    const double ackermann_left = std::atan2(wheelbase * tan_delta, wheelbase - tan_delta * half_front);
+    const double ackermann_right = std::atan2(wheelbase * tan_delta, wheelbase + tan_delta * half_front);
+    e.steer = {e.delta + p_.ackermann * (ackermann_left - e.delta),
+               e.delta + p_.ackermann * (ackermann_right - e.delta), 0.0, 0.0};
+  }
+  e.rack = steer_wheel * rack_per_rad_;
 
   // Aero.
   const double speed_sq = vx * vx + vy * vy;
@@ -304,25 +593,111 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
   e.downforce = p_.cla * dynamic_pressure;
   e.drag = p_.cda * dynamic_pressure;
 
-  // Normal loads: static + aero + quasi-static transfer from lagged ax, ay.
-  const double ax_lag = x[kAxFiltered];
-  const double ay_lag = x[kAyFiltered];
-  const double h = p_.cg_height;
-  const double long_transfer = m * ax_lag * h / wheelbase;
-  const double roll_axis = p_.roll_center_front + (p_.roll_center_rear - p_.roll_center_front) * lf / wheelbase;
-  const double lat_front = m * ay_lag *
-                           (lr / wheelbase * p_.roll_center_front + (h - roll_axis) * p_.roll_stiffness_front) /
-                           p_.track_front;
-  const double lat_rear = m * ay_lag *
-                          (lf / wheelbase * p_.roll_center_rear + (h - roll_axis) * (1.0 - p_.roll_stiffness_front)) /
-                          p_.track_rear;
-  for (std::size_t c = 0; c < kCorners; ++c) {
-    const bool front = is_front(c);
-    const double axle_static = m * kGravity * (front ? lr : lf) / wheelbase;
-    const double axle_aero = e.downforce * (front ? p_.aero_front_ratio : 1.0 - p_.aero_front_ratio);
-    const double lateral = (front ? lat_front : lat_rear) * (is_left(c) ? -1.0 : 1.0);
-    const double longitudinal = 0.5 * long_transfer * (front ? -1.0 : 1.0);
-    e.fz[c] = std::max(0.0, 0.5 * (axle_static + axle_aero) + longitudinal + lateral);
+  // Contact patches: position in the body frame (from the CG), velocity, and
+  // what each one stands on.
+  std::array<double, kCorners> px{}, py{}, vcx{}, vcy{};
+  std::array<KcPoint, kCorners> kc{};
+  std::array<std::array<std::array<double, 2>, 3>, kCorners> grad{};
+  // The patch averages the road over three points along it; on a smooth,
+  // flat track one is enough.
+  const std::size_t patch_samples = patch_samples_;
+  const double weight = 1.0 / static_cast<double>(patch_samples);
+  const auto patch_offset = [&](std::size_t k) {
+    return patch_samples == 1 ? 0.0 : (static_cast<double>(k) - 1.0) * 0.5 * p_.contact_length;
+  };
+  if (!full_) {
+    // Normal loads: static + aero + quasi-static transfer from lagged ax, ay.
+    const double ax_lag = x[kAxFiltered];
+    const double ay_lag = x[kAyFiltered];
+    const double h = p_.cg_height;
+    const double long_transfer = m * ax_lag * h / wheelbase;
+    const double roll_axis = p_.roll_center_front + (p_.roll_center_rear - p_.roll_center_front) * lf / wheelbase;
+    const double lat_front = m * ay_lag *
+                             (lr / wheelbase * p_.roll_center_front + (h - roll_axis) * p_.roll_stiffness_front) /
+                             p_.track_front;
+    const double lat_rear = m * ay_lag *
+                            (lf / wheelbase * p_.roll_center_rear + (h - roll_axis) * (1.0 - p_.roll_stiffness_front)) /
+                            p_.track_rear;
+    for (std::size_t c = 0; c < kCorners; ++c) {
+      const bool front = is_front(c);
+      const double axle_static = m * g * (front ? lr : lf) / wheelbase;
+      const double axle_aero = e.downforce * (front ? p_.aero_front_ratio : 1.0 - p_.aero_front_ratio);
+      const double lateral = (front ? lat_front : lat_rear) * (is_left(c) ? -1.0 : 1.0);
+      const double longitudinal = 0.5 * long_transfer * (front ? -1.0 : 1.0);
+      e.fz[c] = std::max(0.0, 0.5 * (axle_static + axle_aero) + longitudinal + lateral);
+      px[c] = front ? lf : -lr;
+      py[c] = (is_left(c) ? 0.5 : -0.5) * p_.track(c);
+      vcx[c] = vx - r * py[c];
+      vcy[c] = vy + r * px[c];
+    }
+  } else {
+    const double cos_yaw = std::cos(yaw), sin_yaw = std::sin(yaw);
+    for (std::size_t c = 0; c < kCorners; ++c) {
+      const bool front = is_front(c);
+      const double side = is_left(c) ? 1.0 : -1.0;
+      const double xc = front ? lf : -lr;
+      const double yc = side * 0.5 * p_.track(c);
+      const double xb = xc - x_s_;
+      const double zu = x[unsprung_offset_ + c];
+      const double vzu = x[unsprung_offset_ + kCorners + c];
+      e.wheel_z[c] = zu;
+      e.travel[c] = zu - (zs - pitch * xb + roll * yc) - offset0_[c];
+      e.travel_rate[c] = vzu - (vz - pitch_rate * xb + roll_rate * yc);
+      kc[c] = kc_[front ? 0 : 1].at(e.travel[c], side * e.rack);
+      e.steer[c] = side * kc[c].steer;
+      e.camber[c] = kc[c].camber;
+      px[c] = xc + kc[c].cp_x;
+      py[c] = yc + side * kc[c].cp_y;
+      vcx[c] = vx - r * py[c] + kc[c].dcp_x * e.travel_rate[c];
+      vcy[c] = vy + r * px[c] + side * kc[c].dcp_y * e.travel_rate[c];
+
+      // The road averaged over the contact patch (three samples along the
+      // body's x axis), and its rate seen by the moving patch.
+      double z_road = rig_z_[c], z_rate = rig_vz_[c], mu = 0.0;
+      int surface = 0;
+      for (std::size_t k = 0; k < patch_samples; ++k) {
+        const double ox = patch_offset(k);
+        double gx = 0.0, gy = 0.0, z = 0.0, mu_k = 1.0;
+        if (track_) {
+          const double bx = px[c] + ox;
+          const double wx = x[kX] + cos_yaw * bx - sin_yaw * py[c];
+          const double wy = x[kY] + sin_yaw * bx + cos_yaw * py[c];
+          const RoadPoint rp = track_->road(wx, wy, &road_hint_[c][k]);
+          z = rp.z;
+          mu_k = rp.mu;
+          gx = cos_yaw * rp.dzdx + sin_yaw * rp.dzdy;
+          gy = -sin_yaw * rp.dzdx + cos_yaw * rp.dzdy;
+          surface = std::max(surface, static_cast<int>(rp.kind));
+        }
+        grad[c][k] = {gx, gy};
+        z_road += z * weight;
+        z_rate += (gx * vcx[c] + gy * (vcy[c] + r * ox)) * weight;
+        mu += mu_k * weight;
+      }
+      e.road_z[c] = z_road;
+      e.mu[c] = mu;
+      e.surface[c] = surface;
+      e.deflection[c] = z_road + free_radius_[c] - zu;
+      const double deflection_rate = z_rate - vzu;
+      e.fz[c] = e.deflection[c] > 0.0
+                    ? std::max(0.0, p_.tire_vertical_stiffness * e.deflection[c] +
+                                        p_.tire_vertical_damping * deflection_rate)
+                    : 0.0;
+    }
+    // Springs, stops, dampers, anti-roll bars along the wheel travel.
+    for (std::size_t c = 0; c < kCorners; ++c) {
+      const std::size_t a = is_front(c) ? 0 : 1;
+      const Params::Axle& ax = p_.axle[a];
+      const double s = e.travel[c];
+      e.spring_compression[c] = preload_[c] + kc[c].spring;
+      e.spring_force[c] = ax.spring_rate * e.spring_compression[c] * kc[c].dspring +
+                          bump_force(ax.bump_stop_rate, s - ax.bump_travel) -
+                          (s < -ax.droop_travel ? kDroopStopRate * (-ax.droop_travel - s) : 0.0);
+      e.damper_force[c] = damper_force(ax, e.travel_rate[c]);
+      const std::size_t other = c ^ 1u;
+      const double arb = ax.anti_roll_bar * 180.0 / std::numbers::pi / (p_.track(c) * p_.track(c));
+      e.arb_force[c] = arb * (s - e.travel[other]);
+    }
   }
 
   // Battery open-circuit state and motor envelopes.
@@ -366,17 +741,14 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
   loads.motor_torque = std::span<const double>(e.motor_torque.data(), motors);
   double fx_body = 0.0, fy_body = 0.0, yaw_moment = 0.0;
   double slip_power = 0.0, rolling_power = 0.0;
+  std::array<double, kCorners> jack{};  // generalized tire force along each wheel's travel
   e.ffb = 0.0;
   for (std::size_t c = 0; c < kCorners; ++c) {
     const bool front = is_front(c);
-    const double px = front ? lf : -lr;
-    const double py = (is_left(c) ? 0.5 : -0.5) * p_.track(c);
     const double cos_s = std::cos(e.steer[c]);
     const double sin_s = std::sin(e.steer[c]);
-    const double vx_body = vx - r * py;
-    const double vy_body = vy + r * px;
-    const double vx_wheel = cos_s * vx_body + sin_s * vy_body;
-    const double vy_wheel = -sin_s * vx_body + cos_s * vy_body;
+    const double vx_wheel = cos_s * vcx[c] + sin_s * vcy[c];
+    const double vy_wheel = -sin_s * vcx[c] + cos_s * vcy[c];
     e.omega[c] = driveline_.wheel_speed(c, q);
     const double slip_velocity = e.omega[c] * radius - vx_wheel;
 
@@ -403,7 +775,12 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
       kappa_used += fade * 2.0 * zeta * std::sqrt(wheel_mass / (p_.relaxation_x * c_kappa)) * slip_velocity;
       tan_alpha_used -= fade * 2.0 * zeta * std::sqrt(0.25 * m / (p_.relaxation_y * c_alpha)) * vy_wheel;
     }
-    const TireForces f = tire.evaluate({e.fz[c], kappa_used, std::atan(tan_alpha_used)});
+    // Camber as the tire sees it (ISO: top leaning right +): the left wheel's
+    // outward lean is to the left. Camber thrust builds up as the tire rolls,
+    // so it fades out towards standstill like the slip damping fades in (a
+    // parked car with toe and camber does not creep).
+    const double inclination = (is_left(c) ? -1.0 : 1.0) * e.camber[c] * (1.0 - fade);
+    const TireForces f = tire.evaluate({e.fz[c], kappa_used, std::atan(tan_alpha_used), inclination, e.mu[c]});
     e.fx[c] = f.fx;
     e.fy[c] = f.fy;
     e.mz[c] = f.mz;
@@ -414,15 +791,40 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
     const double fy_b = sin_s * f.fx + cos_s * f.fy;
     fx_body += fx_b;
     fy_body += fy_b;
-    yaw_moment += px * fy_b - py * fx_b + f.mz;
+    yaw_moment += px[c] * fy_b - py[c] * fx_b + f.mz;
     slip_power += f.fx * slip_velocity - f.fy * vy_wheel - f.mz * r;
 
     const double rolling = p_.rolling_resistance * e.fz[c] * radius * std::tanh(e.omega[c] / kRollingSmoothing);
     rolling_power += rolling * e.omega[c];
     loads.wheel_torque[c] = -f.fx * radius - rolling;
     loads.brake_capacity[c] = 0.5 * e.brake_pressure * (front ? p_.brake_gain_front : p_.brake_gain_rear);
+    if (!full_) {
+      if (front) {
+        e.ffb += (f.mz - p_.mechanical_trail * f.fy) / p_.steering_ratio;
+      }
+      continue;
+    }
+    // Full model: the road's slope tilts the normal force (applied at the
+    // patch samples), and both act along the travel through the scrub.
+    const double side = is_left(c) ? 1.0 : -1.0;
+    double gx_force = 0.0, gy_force = 0.0;
+    for (std::size_t k = 0; k < patch_samples; ++k) {
+      const double ox = patch_offset(k);
+      const double fgx = -e.fz[c] * weight * grad[c][k][0];
+      const double fgy = -e.fz[c] * weight * grad[c][k][1];
+      gx_force += fgx;
+      gy_force += fgy;
+      yaw_moment += (px[c] + ox) * fgy - py[c] * fgx;
+    }
+    fx_body += gx_force;
+    fy_body += gy_force;
+    jack[c] = (fx_b + gx_force) * kc[c].dcp_x + (fy_b + gy_force) * side * kc[c].dcp_y;
+    // Steering-axis moment (towards steer-left); the right corner's table is
+    // the mirror image of the left one.
+    const KcPoint& k = kc[c];
+    e.kingpin_moment[c] = side * (k.arm_x * f.fx + k.arm_z * e.fz[c]) + k.arm_y * f.fy + k.arm_mz * f.mz;
     if (front) {
-      e.ffb += (f.mz - p_.mechanical_trail * f.fy) / p_.steering_ratio;
+      e.ffb += e.kingpin_moment[c] * k.dsteer_drack * rack_per_rad_;
     }
   }
 
@@ -430,20 +832,76 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
   const double drag_scale = speed > 0.0 ? e.drag / speed : 0.0;
   fx_body -= drag_scale * vx;
   fy_body -= drag_scale * vy;
-  e.ax = fx_body / m;
-  e.ay = fy_body / m;
-  if (dx.empty()) {
-    return;
-  }
 
-  dx[kX] = vx * std::cos(yaw) - vy * std::sin(yaw);
-  dx[kY] = vx * std::sin(yaw) + vy * std::cos(yaw);
-  dx[kYaw] = r;
-  dx[kVx] = e.ax + vy * r;
-  dx[kVy] = e.ay - vx * r;
-  dx[kYawRate] = yaw_moment / p_.yaw_inertia;
-  dx[kAxFiltered] = (e.ax - ax_lag) / p_.load_transfer_tau;
-  dx[kAyFiltered] = (e.ay - ay_lag) / p_.load_transfer_tau;
+  if (!full_) {
+    e.ax = fx_body / m;
+    e.ay = fy_body / m;
+    if (dx.empty()) {
+      return;
+    }
+    const double ax_lag = x[kAxFiltered];
+    const double ay_lag = x[kAyFiltered];
+    dx[kX] = vx * std::cos(yaw) - vy * std::sin(yaw);
+    dx[kY] = vx * std::sin(yaw) + vy * std::cos(yaw);
+    dx[kYaw] = r;
+    dx[kVx] = e.ax + vy * r;
+    dx[kVy] = e.ay - vx * r;
+    dx[kYawRate] = yaw_moment / p_.yaw_inertia;
+    dx[kAxFiltered] = (e.ax - ax_lag) / p_.load_transfer_tau;
+    dx[kAyFiltered] = (e.ay - ay_lag) / p_.load_transfer_tau;
+  } else {
+    // Generalized forces (Kane): body heave, roll, pitch; unsprung heave.
+    const double ms = sprung_mass_, h = h_s_;
+    const double df_front = e.downforce * p_.aero_front_ratio;
+    const double df_rear = e.downforce - df_front;
+    const double xb_front = lf - x_s_, xb_rear = -lr - x_s_;
+    double q_z = -ms * g - e.downforce;
+    double q_roll = ms * g * h * roll;
+    double q_pitch = ms * g * h * pitch + xb_front * df_front + xb_rear * df_rear;
+    std::array<double, kCorners> q_unsprung{};
+    for (std::size_t c = 0; c < kCorners; ++c) {
+      const double xc = is_front(c) ? lf : -lr;
+      const double yc = (is_left(c) ? 0.5 : -0.5) * p_.track(c);
+      const double body = e.spring_force[c] + e.damper_force[c] + e.arb_force[c] - jack[c];
+      q_z += body;
+      q_roll += yc * body;
+      q_pitch -= (xc - x_s_) * body;
+      q_unsprung[c] = e.fz[c] + jack[c] - e.spring_force[c] - e.damper_force[c] - e.arb_force[c] -
+                      p_.unsprung_mass[c] * g;
+    }
+    const double ixx = p_.roll_inertia, iyy = p_.pitch_inertia;
+    const std::array<double, 5> b = {
+        fx_body + m * r * vy - ms * h * r * roll_rate,
+        fy_body - m * r * vx - ms * h * r * pitch_rate,
+        yaw_moment - ms * x_s_ * h * r * pitch_rate - (iyy - ixx) * roll_rate * pitch_rate,
+        q_roll + ms * h * r * vx + ms * h * h * r * pitch_rate + (iyy - izz_s_) * pitch_rate * r,
+        q_pitch + ms * h * r * vy - ms * h * h * r * roll_rate + ms * h * r * r * x_s_ + (izz_s_ - ixx) * r * roll_rate};
+    const std::array<double, 5> u = apply(mass_inverse_, b);
+    e.ax = u[0] - r * vy;
+    e.ay = u[1] + r * vx;
+    e.az = q_z / ms;
+    if (dx.empty()) {
+      return;
+    }
+    dx[kX] = vx * std::cos(yaw) - vy * std::sin(yaw);
+    dx[kY] = vx * std::sin(yaw) + vy * std::cos(yaw);
+    dx[kYaw] = r;
+    dx[kVx] = u[0];
+    dx[kVy] = u[1];
+    dx[kYawRate] = u[2];
+    dx[kAxFiltered] = 0.0;
+    dx[kAyFiltered] = 0.0;
+    dx[body_offset_ + kZ] = vz;
+    dx[body_offset_ + kRoll] = roll_rate;
+    dx[body_offset_ + kPitch] = pitch_rate;
+    dx[body_offset_ + kVz] = e.az;
+    dx[body_offset_ + kRollRate] = u[3];
+    dx[body_offset_ + kPitchRate] = u[4];
+    for (std::size_t c = 0; c < kCorners; ++c) {
+      dx[unsprung_offset_ + c] = x[unsprung_offset_ + kCorners + c];
+      dx[unsprung_offset_ + kCorners + c] = q_unsprung[c] / p_.unsprung_mass[c];
+    }
+  }
 
   Driveline::Losses losses;
   driveline_.accelerations(q, loads, dx.subspan(wheel_offset_, driveline_.dof_count()), losses);
@@ -491,12 +949,70 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
   energy[kSlipLoss] = slip_power;
   energy[kRollingLoss] = rolling_power;
   energy[kDragLoss] = e.drag * speed;
+  energy[kDamperLoss] = 0.0;
+  energy[kTireDampingLoss] = 0.0;
+  if (full_) {
+    const double df_front = e.downforce * p_.aero_front_ratio;
+    energy[kDragLoss] += df_front * (vz - pitch_rate * (lf - x_s_)) +
+                         (e.downforce - df_front) * (vz - pitch_rate * (-lr - x_s_));
+    for (std::size_t c = 0; c < kCorners; ++c) {
+      energy[kDamperLoss] += e.damper_force[c] * e.travel_rate[c];
+      // Tire carcass: what the force takes beyond the spring's share.
+      double z_rate = rig_vz_[c];
+      for (std::size_t k = 0; k < patch_samples; ++k) {
+        z_rate += (grad[c][k][0] * vcx[c] + grad[c][k][1] * (vcy[c] + r * patch_offset(k))) * weight;
+      }
+      const double deflection_rate = z_rate - x[unsprung_offset_ + kCorners + c];
+      energy[kTireDampingLoss] +=
+          (e.fz[c] - p_.tire_vertical_stiffness * std::max(0.0, e.deflection[c])) * deflection_rate;
+    }
+  }
 }
 
 double TwoTrackModel::kinetic_energy(std::span<const double> x) const {
-  return 0.5 * p_.mass * (x[kVx] * x[kVx] + x[kVy] * x[kVy]) +
-         0.5 * p_.yaw_inertia * x[kYawRate] * x[kYawRate] +
-         driveline_.kinetic_energy(x.subspan(wheel_offset_, driveline_.dof_count()));
+  double kinetic = 0.5 * p_.mass * (x[kVx] * x[kVx] + x[kVy] * x[kVy]) +
+                   0.5 * p_.yaw_inertia * x[kYawRate] * x[kYawRate] +
+                   driveline_.kinetic_energy(x.subspan(wheel_offset_, driveline_.dof_count()));
+  if (full_) {
+    // Kane's kinetic energy: the sprung CG moves with roll and pitch about
+    // the ground below it.
+    const double ms = sprung_mass_, h = h_s_;
+    const double p = x[body_offset_ + kRollRate], q = x[body_offset_ + kPitchRate], vz = x[body_offset_ + kVz];
+    kinetic += ms * h * (x[kVx] * q - x[kVy] * p) + 0.5 * (p_.roll_inertia + ms * h * h) * p * p +
+               0.5 * (p_.pitch_inertia + ms * h * h) * q * q - ms * h * x_s_ * p * x[kYawRate] + 0.5 * ms * vz * vz;
+    for (std::size_t c = 0; c < kCorners; ++c) {
+      const double v = x[unsprung_offset_ + kCorners + c];
+      kinetic += 0.5 * p_.unsprung_mass[c] * v * v;
+    }
+  }
+  return kinetic;
+}
+
+double TwoTrackModel::stored_energy(std::span<const double> x) const {
+  if (!full_) {
+    return 0.0;
+  }
+  Eval e;
+  evaluate(x, e, {});
+  const double g = kGravity;
+  const double roll = x[body_offset_ + kRoll], pitch = x[body_offset_ + kPitch];
+  double energy = sprung_mass_ * g * x[body_offset_ + kZ] - 0.5 * sprung_mass_ * g * h_s_ * (roll * roll + pitch * pitch);
+  for (std::size_t c = 0; c < kCorners; ++c) {
+    const Params::Axle& a = p_.axle[is_front(c) ? 0 : 1];
+    const double s = e.travel[c];
+    const double droop = std::max(0.0, -a.droop_travel - s);
+    energy += p_.unsprung_mass[c] * g * x[unsprung_offset_ + c] +
+              0.5 * a.spring_rate * e.spring_compression[c] * e.spring_compression[c] +
+              bump_energy(a.bump_stop_rate, s - a.bump_travel) + 0.5 * kDroopStopRate * droop * droop;
+    const double deflection = std::max(0.0, e.deflection[c]);
+    energy += 0.5 * p_.tire_vertical_stiffness * deflection * deflection;
+    if (is_left(c)) {
+      const double arb = a.anti_roll_bar * 180.0 / std::numbers::pi / (p_.track(c) * p_.track(c));
+      const double twist = s - e.travel[c + 1];
+      energy += 0.5 * arb * twist * twist;
+    }
+  }
+  return energy;
 }
 
 void TwoTrackModel::derivatives(double /*t*/, std::span<const double> x, std::span<double> dx) const {
@@ -590,8 +1106,33 @@ void TwoTrackModel::write_outputs(double /*t*/, std::span<const double> x, Signa
   bus.set(s.rc_stored, rc_stored);
   const double sinks = energy[kBatteryLoss] + energy[kAux] + energy[kMotorLoss] + energy[kGearLoss] +
                        energy[kDiffLoss] + energy[kBrakeLoss] + energy[kSlipLoss] + energy[kRollingLoss] +
-                       energy[kDragLoss];
-  bus.set(s.residual, energy[kBatteryChemical] - sinks - kinetic_gain - rc_stored);
+                       energy[kDragLoss] + energy[kDamperLoss] + energy[kTireDampingLoss];
+  const double potential_gain = full_ ? stored_energy(x) - stored0_ : 0.0;
+  bus.set(s.residual, energy[kBatteryChemical] - sinks - kinetic_gain - rc_stored - potential_gain);
+
+  if (full_) {
+    bus.set(s.z, x[body_offset_ + kZ]);
+    bus.set(s.roll, x[body_offset_ + kRoll]);
+    bus.set(s.pitch, x[body_offset_ + kPitch]);
+    bus.set(s.vz, x[body_offset_ + kVz]);
+    bus.set(s.roll_rate, x[body_offset_ + kRollRate]);
+    bus.set(s.pitch_rate, x[body_offset_ + kPitchRate]);
+    bus.set(s.az, e.az);
+    bus.set(s.rack, e.rack);
+    bus.set(s.potential, potential_gain);
+    for (std::size_t c = 0; c < kCorners; ++c) {
+      const Signals::Corner3& w = s.corner3[c];
+      bus.set(w.z, e.wheel_z[c]);
+      bus.set(w.travel, e.travel[c]);
+      bus.set(w.camber, e.camber[c]);
+      bus.set(w.spring, e.spring_force[c] + e.arb_force[c]);
+      bus.set(w.damper, e.damper_force[c]);
+      bus.set(w.deflection, e.deflection[c]);
+      bus.set(w.road_z, e.road_z[c]);
+      bus.set(w.mu, e.mu[c]);
+      bus.set(w.surface, static_cast<double>(e.surface[c]));
+    }
+  }
 }
 
 }  // namespace vsim

@@ -13,8 +13,13 @@
 namespace vsim {
 namespace {
 
-using test::load_example;
 using test::signal;
+
+// These tests are about the L2 model (the example car runs the full model).
+Scenario load_example(const std::string& name, Scenario::Overrides overrides = {}) {
+  overrides.emplace("vehicle.model", "two_track");
+  return test::load_example(name, overrides);
+}
 
 constexpr double kGravity = 9.81;
 
@@ -33,7 +38,7 @@ std::vector<double> column(const Simulation& sim, const std::string& name) {
 double max_of(const std::vector<double>& values) { return *std::max_element(values.begin(), values.end()); }
 double min_of(const std::vector<double>& values) { return *std::min_element(values.begin(), values.end()); }
 
-TEST(TwoTrack, IsTheDefaultModel) {
+TEST(TwoTrack, IsAvailable) {
   Simulation sim(load_example("straight_accel"));
   EXPECT_NO_THROW(sim.bus().require("veh.wheel.rr.slip_ratio"));
   EXPECT_NO_THROW(sim.bus().require("bat.soc"));

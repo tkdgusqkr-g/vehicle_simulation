@@ -32,6 +32,7 @@ add_library(vsim_core STATIC
   src/models/tire/tire_factory.cpp
   src/models/vehicle/corners.cpp
   src/models/vehicle/single_track.cpp
+  src/models/vehicle/suspension.cpp
   src/models/vehicle/two_track.cpp
   src/sim/integrator.cpp
   src/sim/params.cpp

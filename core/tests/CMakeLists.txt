@@ -1,5 +1,6 @@
 add_executable(vsim_tests
   test_driveline.cpp
+  test_full_vehicle.cpp
   test_input.cpp
   test_integrator.cpp
   test_lap.cpp
@@ -10,6 +11,7 @@ add_executable(vsim_tests
   test_signal_bus.cpp
   test_simulation.cpp
   test_single_track.cpp
+  test_suspension.cpp
   test_tire.cpp
   test_track.cpp
   test_track_mesh.cpp
