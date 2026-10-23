@@ -299,8 +299,11 @@ TEST(Can, BusyBusDelaysTheTorqueCommands) {
     Simulation sim(load_example("acceleration", o), options);
     sim.run_for(3.0);
     sim.finish();
-    std::ifstream in(sim.run_path() / "summary.json");
-    const auto s = nlohmann::json::parse(in);
+    nlohmann::json s;
+    {
+      std::ifstream in(sim.run_path() / "summary.json");
+      s = nlohmann::json::parse(in);
+    }  // closed before the folder goes (Windows keeps open files)
     std::filesystem::remove_all(options.log_dir);
     return std::pair{s["can"], signal(sim, "veh.chassis.vx")};
   };
