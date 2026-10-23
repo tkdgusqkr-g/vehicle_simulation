@@ -97,3 +97,59 @@ TEST(Battery, RejectsInconsistentTables) {
 
 }  // namespace
 }  // namespace vsim
+
+namespace vsim {
+namespace {
+
+TEST(CellSpread, LimitsComeFromTheWeakestGroup) {
+  const BatteryParams p = BatteryParams::from_params(test::load_example("straight_accel").params);
+  CellSpread spread;
+  spread.capacity.assign(static_cast<std::size_t>(p.series), 1.0);
+  spread.resistance.assign(static_cast<std::size_t>(p.series), 1.0);
+  spread.soc_offset.assign(static_cast<std::size_t>(p.series), 0.0);
+  spread.soc_start = 0.5;
+  // Identical groups: the same limits as without spread.
+  const BatteryLimits same = battery_limits(p, 0.2, 0.01, 25.0, &spread);
+  const BatteryLimits none = battery_limits(p, 0.2, 0.01, 25.0);
+  EXPECT_DOUBLE_EQ(same.discharge_current, none.discharge_current);
+  EXPECT_DOUBLE_EQ(same.charge_current, none.charge_current);
+  // A group with less capacity runs down faster: from 0.5, 30 % drawn from the mean leaves it
+  // at 0.5 - 0.3 / 0.9.
+  spread.capacity[3] = 0.9;
+  EXPECT_NEAR(spread.group_soc(3, 0.2), 0.5 - 0.3 / 0.9, 1e-12);
+  spread.resistance[3] = 1.3;
+  const BatteryLimits weak = battery_limits(p, 0.2, 0.01, 25.0, &spread);
+  EXPECT_LT(weak.discharge_current, none.discharge_current);
+  const CellExtremes x = cell_extremes(p, spread, 0.2, 0.01, 100.0);
+  EXPECT_EQ(x.weakest, 3u);
+  EXPECT_LT(x.v_min, x.v_max);
+  EXPECT_NEAR(x.soc_min, 0.5 - 0.3 / 0.9, 1e-12);
+  EXPECT_NEAR(x.soc_max, 0.2, 1e-12);
+}
+
+TEST(CellSpread, SampledPerCarWhenVariationIsReal) {
+  const Scenario::Overrides spread = {{"vehicle.battery.spread.capacity_pct", "2"},
+                                      {"vehicle.battery.spread.resistance_pct", "6"},
+                                      {"vehicle.model", "two_track"}};
+  Scenario::Overrides real = spread;
+  real.emplace("realism.variation", "real");
+  const auto cell_min = [](const Scenario::Overrides& o) {
+    Simulation sim(test::load_example("straight_accel", o));
+    sim.run_for(1.0);
+    return test::signal(sim, "bat.cell_v_min");
+  };
+  const auto cell_max = [](const Scenario::Overrides& o) {
+    Simulation sim(test::load_example("straight_accel", o));
+    sim.run_for(1.0);
+    return test::signal(sim, "bat.cell_v_max");
+  };
+  EXPECT_DOUBLE_EQ(cell_min(spread), cell_max(spread));  // ideal: identical cells
+  EXPECT_LT(cell_min(real), cell_max(real) - 0.01);       // a real pack spreads
+  EXPECT_DOUBLE_EQ(cell_min(real), cell_min(real));       // the same car every run
+  Scenario::Overrides other = real;
+  other.emplace("seed", "2");
+  EXPECT_NE(cell_min(real), cell_min(other));
+}
+
+}  // namespace
+}  // namespace vsim

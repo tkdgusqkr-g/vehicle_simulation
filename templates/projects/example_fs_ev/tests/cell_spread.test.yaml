@@ -1,0 +1,19 @@
+test: cell_spread_weak_group
+description: PH-06 SoC 15 %에서 가속. 세그먼트 하나의 셀 그룹이 용량 −8 %, 내부저항 +25 %, SoC −3 %이면 그 그룹의 전압이 먼저 3.0 V에 닿아 BMS가 팩 출력을 약 58 kW로 줄입니다 (같은 셀이면 76 kW).
+scenario: ../scenarios/acceleration.yaml
+overrides:
+  initial.soc: 0.15
+  vehicle.battery.spread.weak_group.capacity_pct: -8
+  vehicle.battery.spread.weak_group.resistance_pct: 25
+  vehicle.battery.spread.weak_group.soc_pct: -3
+checks:
+  - name: 약한 그룹(0번)이 최저 전압
+    expr: "at(bat.weak_group, 1) == 0"
+  - name: 최저 셀 전압이 하한(3.0 V) 근처에서 지켜짐
+    expr: "min(bat.cell_v_min) > 2.98 and min(bat.cell_v_min) < 3.05"
+  - name: 방전 출력 한계 62 kW 미만으로 감소
+    expr: "min(bat.limit.discharge_power) < 62000"
+  - name: 배터리 출력 70 kW 미만
+    expr: "max(bat.power) < 70000"
+  - name: 75 m 기록이 0.1초 이상 느려짐 (같은 셀이면 3.52초)
+    expr: "final(track.last_lap) > 3.62"

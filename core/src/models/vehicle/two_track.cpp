@@ -172,6 +172,7 @@ struct TwoTrackModel::Signals {
   std::vector<Motor> motor;
   SignalId power_mech, power_elec;
   SignalId soc, voltage, current, power, ocv, open_voltage, battery_temp, overloaded;
+  SignalId cell_v_min, cell_v_max, soc_min, soc_max, weak_group;
   // Electrical network inputs (when it carries the accumulator).
   SignalId elec_current = 0;
   std::vector<SignalId> elec_dc, elec_enabled;
@@ -311,6 +312,33 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   if (!(soc0_ >= 0.0 && soc0_ <= 1.0)) {
     throw std::invalid_argument("initial.soc must be in [0, 1]");
   }
+  // Cell spread: sampled per series group when variation is real, plus a known weak group.
+  spread_ = {};
+  if (params.has_prefix("vehicle.battery.spread")) {
+    const std::string b = "vehicle.battery.spread.";
+    const double sc = params.get_double(b + "capacity_pct", 0.0) / 100.0;
+    const double sr = params.get_double(b + "resistance_pct", 0.0) / 100.0;
+    const double ss = params.get_double(b + "soc_pct", 0.0) / 100.0;
+    if (sc < 0.0 || sr < 0.0 || ss < 0.0) {
+      throw std::invalid_argument("vehicle.battery.spread: capacity_pct, resistance_pct, soc_pct >= 0");
+    }
+    const auto groups = static_cast<std::size_t>(battery_.series);
+    spread_.capacity.assign(groups, 1.0);
+    spread_.resistance.assign(groups, 1.0);
+    spread_.soc_offset.assign(groups, 0.0);
+    spread_.soc_start = soc0_;
+    if (ctx.realism().is_real(RealismCategory::Variation)) {
+      Rng rng = ctx.make_rng("battery.cells");
+      for (std::size_t g = 0; g < groups; ++g) {
+        spread_.capacity[g] = std::clamp(1.0 + sc * rng.normal(), 0.5, 1.5);
+        spread_.resistance[g] = std::clamp(1.0 + sr * rng.normal(), 0.3, 3.0);
+        spread_.soc_offset[g] = ss * rng.normal();
+      }
+    }
+    spread_.capacity[0] = std::max(0.2, spread_.capacity[0] + params.get_double(b + "weak_group.capacity_pct", 0.0) / 100.0);
+    spread_.resistance[0] = std::max(0.2, spread_.resistance[0] + params.get_double(b + "weak_group.resistance_pct", 0.0) / 100.0);
+    spread_.soc_offset[0] += params.get_double(b + "weak_group.soc_pct", 0.0) / 100.0;
+  }
   if (full_) {
     init_full(params, ctx);
   }
@@ -403,6 +431,11 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   }
   s.battery_temp = bus.declare("bat.temp", "degC", "cell temperature");
   s.overloaded = bus.declare("bat.overloaded", "-", "1 when demand exceeds the pack's maximum power");
+  s.cell_v_min = bus.declare("bat.cell_v_min", "V", "lowest cell group voltage");
+  s.cell_v_max = bus.declare("bat.cell_v_max", "V", "highest cell group voltage");
+  s.soc_min = bus.declare("bat.soc_min", "-", "lowest cell group state of charge");
+  s.soc_max = bus.declare("bat.soc_max", "-", "highest cell group state of charge");
+  s.weak_group = bus.declare("bat.weak_group", "-", "series group with the lowest voltage (0-based)");
   s.limit_discharge_power = bus.declare("bat.limit.discharge_power", "W", "BMS discharge power limit");
   s.limit_charge_power = bus.declare("bat.limit.charge_power", "W", "BMS charge power limit");
   s.limit_discharge_current = bus.declare("bat.limit.discharge_current", "A", "BMS discharge current limit");
@@ -830,7 +863,7 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
     e.battery = solve_battery_power(open_voltage, resistance, e.power_elec);
     e.motor_power_sum = e.power_elec - battery_.aux_power;
   }
-  e.limits = battery_limits(battery_, soc, rc1 + rc2, battery_temp);
+  e.limits = battery_limits(battery_, soc, rc1 + rc2, battery_temp, spread_.empty() ? nullptr : &spread_);
   e.power_mech = 0.0;
   for (std::size_t i = 0; i < motors; ++i) {
     e.power_mech += e.motor_torque[i] * e.motor_speed[i];
@@ -1249,6 +1282,24 @@ void TwoTrackModel::write_outputs(double /*t*/, std::span<const double> x, Signa
   bus.set(s.open_voltage, e.open_voltage);
   bus.set(s.battery_temp, x[battery_offset_ + 3]);
   bus.set(s.overloaded, e.battery.limited ? 1.0 : 0.0);
+  {
+    const double soc = x[battery_offset_], rc = x[battery_offset_ + 1] + x[battery_offset_ + 2];
+    if (spread_.empty()) {
+      const double v = battery_.ocv_cell(soc) - rc - battery_.r0 * e.battery.current / battery_.parallel;
+      bus.set(s.cell_v_min, v);
+      bus.set(s.cell_v_max, v);
+      bus.set(s.soc_min, soc);
+      bus.set(s.soc_max, soc);
+      bus.set(s.weak_group, 0.0);
+    } else {
+      const CellExtremes c = cell_extremes(battery_, spread_, soc, rc, e.battery.current);
+      bus.set(s.cell_v_min, c.v_min);
+      bus.set(s.cell_v_max, c.v_max);
+      bus.set(s.soc_min, c.soc_min);
+      bus.set(s.soc_max, c.soc_max);
+      bus.set(s.weak_group, static_cast<double>(c.weakest));
+    }
+  }
   bus.set(s.limit_discharge_power, e.limits.discharge_power);
   bus.set(s.limit_charge_power, e.limits.charge_power);
   bus.set(s.limit_discharge_current, e.limits.discharge_current);

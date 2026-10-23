@@ -40,6 +40,39 @@ struct BatteryParams {
   double pack_resistance() const;  // ohmic, terminals to cells
 };
 
+// Cell-to-cell spread (design doc §7.2, PH-06): each series group of parallel
+// cells has its own capacity and resistance factor and starting SoC offset.
+// All groups carry the pack current, so a group's SoC and RC voltages follow
+// the mean group's exactly (scaled by its factors): no extra states. The BMS
+// limits then come from the weakest group (lowest voltage under discharge,
+// highest under charge).
+//
+//   vehicle.battery.spread: {capacity_pct: 1.5, resistance_pct: 6, soc_pct: 0.5,   # 1 sigma, sampled
+//                            weak_group: {capacity_pct: -8, resistance_pct: 25, soc_pct: -1}}
+// Sampled when realism.variation is real (seeded, one car); weak_group (group 0)
+// always applies.
+struct CellSpread {
+  std::vector<double> capacity;    // factor per series group
+  std::vector<double> resistance;  // factor per series group
+  std::vector<double> soc_offset;  // at the start
+  double soc_start = 0.0;          // mean SoC at the start
+
+  bool empty() const { return capacity.empty(); }
+  double group_soc(std::size_t group, double mean_soc) const {
+    return soc_start + soc_offset[group] + (mean_soc - soc_start) / capacity[group];
+  }
+};
+
+struct CellExtremes {
+  double v_min = 0.0, v_max = 0.0, soc_min = 0.0, soc_max = 0.0;
+  std::size_t weakest = 0;  // the group with the lowest voltage
+};
+
+// Cell voltages of every group at pack current `current` [A] (discharge +),
+// with `rc_voltage` the mean group's summed RC voltage.
+CellExtremes cell_extremes(const BatteryParams& params, const CellSpread& spread, double mean_soc,
+                           double rc_voltage, double current);
+
 struct BatteryOperatingPoint {
   double current = 0.0;   // [A], positive = discharge
   double voltage = 0.0;   // [V] at the terminals
@@ -60,6 +93,6 @@ struct BatteryLimits {
 // BMS limits for the present state: temperature derating, SoC windows and
 // cell voltage limits. `rc_voltage` is the summed RC voltage of one cell.
 BatteryLimits battery_limits(const BatteryParams& params, double soc, double rc_voltage,
-                             double temperature);
+                             double temperature, const CellSpread* spread = nullptr);
 
 }  // namespace vsim

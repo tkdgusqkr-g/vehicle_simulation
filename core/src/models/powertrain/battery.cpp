@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -90,14 +91,50 @@ BatteryOperatingPoint solve_battery_power(double open_voltage, double resistance
   return point;
 }
 
+CellExtremes cell_extremes(const BatteryParams& p, const CellSpread& spread, double mean_soc,
+                           double rc_voltage, double current) {
+  CellExtremes x;
+  x.v_min = std::numeric_limits<double>::infinity();
+  x.v_max = -x.v_min;
+  x.soc_min = x.v_min;
+  x.soc_max = x.v_max;
+  const double cell_current = current / p.parallel;
+  for (std::size_t g = 0; g < spread.capacity.size(); ++g) {
+    const double soc = spread.group_soc(g, mean_soc);
+    const double r = spread.resistance[g];
+    const double v = p.ocv_cell(soc) - r * (rc_voltage + p.r0 * cell_current);
+    if (v < x.v_min) {
+      x.v_min = v;
+      x.weakest = g;
+    }
+    x.v_max = std::max(x.v_max, v);
+    x.soc_min = std::min(x.soc_min, soc);
+    x.soc_max = std::max(x.soc_max, soc);
+  }
+  return x;
+}
+
 BatteryLimits battery_limits(const BatteryParams& p, double soc, double rc_voltage,
-                             double temperature) {
+                             double temperature, const CellSpread* spread) {
   const double thermal = std::clamp((p.cutoff - temperature) / (p.cutoff - p.derate_start), 0.0, 1.0);
-  const double empty = std::clamp(soc / 0.05, 0.0, 1.0);
-  const double full = std::clamp((1.0 - soc) / 0.1, 0.0, 1.0);
+  double soc_low = soc, soc_high = soc;
   const double cell_open = p.ocv_cell(soc) - rc_voltage;
-  const double by_min_voltage = p.parallel * (cell_open - p.cell_voltage_min) / p.r0;
-  const double by_max_voltage = p.parallel * (p.cell_voltage_max - cell_open) / p.r0;
+  double by_min_voltage = p.parallel * (cell_open - p.cell_voltage_min) / p.r0;
+  double by_max_voltage = p.parallel * (p.cell_voltage_max - cell_open) / p.r0;
+  if (spread != nullptr && !spread->empty()) {
+    // The weakest group sets each limit.
+    for (std::size_t g = 0; g < spread->capacity.size(); ++g) {
+      const double group_soc = spread->group_soc(g, soc);
+      const double r = spread->resistance[g];
+      const double open = p.ocv_cell(group_soc) - r * rc_voltage;
+      by_min_voltage = std::min(by_min_voltage, p.parallel * (open - p.cell_voltage_min) / (r * p.r0));
+      by_max_voltage = std::min(by_max_voltage, p.parallel * (p.cell_voltage_max - open) / (r * p.r0));
+      soc_low = std::min(soc_low, group_soc);
+      soc_high = std::max(soc_high, group_soc);
+    }
+  }
+  const double empty = std::clamp(soc_low / 0.05, 0.0, 1.0);
+  const double full = std::clamp((1.0 - soc_high) / 0.1, 0.0, 1.0);
 
   BatteryLimits limits;
   limits.discharge_current =

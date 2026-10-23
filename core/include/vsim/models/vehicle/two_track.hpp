@@ -141,6 +141,7 @@ class TwoTrackModel final : public PlantModel {
   const Params& params() const { return p_; }
   const MotorParams& motor_params() const { return motor_; }
   const BatteryParams& battery_params() const { return battery_; }
+  const CellSpread& cell_spread() const { return spread_; }
   const Driveline& driveline() const { return driveline_; }
   const TireThermalParams& tire_thermal() const { return tire_thermal_; }
   const BrakeThermalParams& brake_thermal() const { return brake_thermal_; }
@@ -173,6 +174,7 @@ class TwoTrackModel final : public PlantModel {
   Params p_;
   MotorParams motor_;
   BatteryParams battery_;
+  CellSpread spread_;
   DrivelineConfig driveline_config_;
   Driveline driveline_;
   std::array<std::unique_ptr<TireModel>, 2> tires_;  // front, rear

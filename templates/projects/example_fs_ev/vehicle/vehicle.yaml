@@ -188,6 +188,11 @@ battery:                       # 셀 등가회로 (OCV-R0-RC) × 직렬·병렬
   discharge_current_max_a: 200
   charge_current_max_a: 60
   aux_power_w: 300             # 저전압 계통·냉각 펌프
+  spread:                      # 셀 편차 (PH-06): realism.variation: real이면 직렬 그룹마다 표본 (1σ)
+    capacity_pct: 1.5
+    resistance_pct: 6
+    soc_pct: 0.5
+    # weak_group: {capacity_pct: -8, resistance_pct: 25, soc_pct: -3}   # 알고 있는 약한 그룹 (0번), 항상 적용
   thermal:
     heat_capacity_j_per_k: 40000
     cooling_w_per_k: 15
