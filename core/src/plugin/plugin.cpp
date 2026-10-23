@@ -28,6 +28,7 @@ std::map<std::string, PluginFactory>& registry() {
   static std::map<std::string, PluginFactory> factories = {
       {"native", make_native_plugin},
       {"fmu", make_fmu_plugin},
+      {"external", make_external_plugin},
   };
   return factories;
 }

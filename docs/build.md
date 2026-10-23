@@ -418,6 +418,29 @@ vsim_export('tv_2026.slx', 'Project', 'D:/projects/my_car_2026', 'After', 'vcu')
 - 오른쪽: `components.yaml` 편집. 파일을 끌어다 놓으면 `plugins/`에 저장하고 항목을 만듭니다. "포트 불러오기"로 포트 목록을 받고 신호를 고릅니다(목록에서 검색). **저장하고 다시 불러오기**를 누르면 시뮬레이터가 새 설정으로 다시 시작하고, 불러오지 못하면 이전 파일로 되돌리고 이유를 보여 줍니다.
 - 편집 탭으로 저장하면 YAML 주석은 사라집니다. 주석을 지키려면 YAML 탭에서 고칩니다.
 
+### 외부 컴포넌트 (가상 ECU, lockstep)
+
+다른 프로그램을 TCP로 한 주기씩 맞춰 돌립니다: MCU 에뮬레이터(Renode, QEMU)에서 도는 실제 펌웨어, 다른 언어의 제어기, 시험 장비. vsim이 주소를 열고 기다리면 그 프로그램이 접속해 포트를 알리고, 매 주기 입력(과 CAN 프레임)을 받아 출력을 돌려줍니다. 응답이 올 때까지 시뮬레이션이 멈추므로 프로그램이 느려도 결과는 같습니다.
+
+```yaml
+components:
+  vcu:
+    type: external
+    slot: vcu                       # 또는 after: sensors | vcu
+    period: 0.001
+    command: [python, ecus/simple_vcu.py]   # 선택: vsim이 시작 (VSIM_EXTERNAL=호스트:포트 환경 변수로 주소 전달)
+    listen: 127.0.0.1:47800         # 선택: 고정 주소 (기본: 빈 포트, 기다릴 때 출력)
+    connect_timeout_s: 30
+    timeout_s: 10                   # 주기마다 응답을 기다리는 한도
+    can: [can_main]                 # 프레임을 주고받을 버스 (가상 CAN과 함께)
+    params: {gain: 2}               # SETUP으로 전달
+    ports: {in: {pedal: drv.cmd.throttle}, out: {tq_fl: pt.motor.fl.torque_cmd, ...}}
+```
+
+- 프로토콜: [sdk/c/include/vsim_external.h](../sdk/c/include/vsim_external.h) (HELLO → SETUP → STEP/RESULT … → END, 리틀 엔디언, 길이 머리). 같은 파일에 헤더 하나짜리 C 클라이언트가 있습니다(`#define VSIM_EXTERNAL_IMPLEMENTATION`).
+- Python: `from vsim.external import Ecu, Frame` → `Ecu("이름", inputs={...}, outputs={...}).run(step)`. 예제 [ecus/simple_vcu.py](../templates/projects/example_fs_ev/ecus/simple_vcu.py).
+- Renode 같은 에뮬레이터에 붙일 때: 브리지 프로그램이 매 STEP에서 에뮬레이터를 `period`만큼 진행(Renode `emulation RunFor`), ADC·GPIO 값을 넣고 PWM·GPIO 출력을 읽어 RESULT로, 에뮬레이트된 CAN 컨트롤러의 프레임을 STEP/RESULT의 프레임으로 옮깁니다. 이 저장소에는 Renode가 없어 브리지는 직접 시험하지 못했고, 프로토콜은 C·Python 클라이언트로 시험합니다.
+
 ---
 
 ## 가상 CAN

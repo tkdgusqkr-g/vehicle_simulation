@@ -25,7 +25,7 @@ struct PortInfo {
 class PluginInstance {
  public:
   struct Info {
-    std::string type;     // native | fmu | python
+    std::string type;     // native | fmu | python | external
     std::string file;     // what was loaded (library, .fmu, module file)
     std::string name;     // the plugin's own name and version
     std::string version;
@@ -45,7 +45,7 @@ class PluginInstance {
 //   components:
 //     tv:
 //       enabled: true         # false keeps the entry but does not run it
-//       type: native          # native | fmu | python | builtin
+//       type: native          # native | fmu | python | external | builtin
 //       path: tv_cpp          # library or .fmu, relative to the project
 //                             # (or module: file:Class for python)
 //       slot: vcu             # replace a built-in block: driver | vcu

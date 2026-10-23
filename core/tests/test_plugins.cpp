@@ -6,6 +6,7 @@
 #include <fstream>
 #include <numbers>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -13,6 +14,10 @@
 #include "test_support.hpp"
 #include "vsim/plugin/plugin.hpp"
 #include "vsim/plugin/units.hpp"
+#include "../src/util/tcp.hpp"
+
+#define VSIM_EXTERNAL_IMPLEMENTATION
+#include "vsim_external.h"
 
 namespace vsim {
 namespace {
@@ -225,6 +230,63 @@ TEST(PluginHash, Sha256OfKnownText) {
   }
   EXPECT_EQ(sha256_file(file), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
   std::filesystem::remove(file);
+}
+
+
+// An external component (sdk/c/include/vsim_external.h) in lockstep: here a
+// thread with the C client; in practice an MCU emulator or a test bench.
+TEST(Plugins, ExternalComponentInLockstep) {
+  int port = 0;
+  {
+    TcpListener probe("127.0.0.1", 0);  // a free port
+    port = probe.port();
+  }
+  std::vector<double> times;
+  std::string setup;
+  std::thread program([&] {
+    VsimExternal link;
+    const VsimExternalPort ports[] = {{"speed", "km/h", 1}, {"pedal", "-", 1}, {"twice", "km/h", 0}};
+    const std::string address = "127.0.0.1:" + std::to_string(port);
+    for (int attempt = 0; attempt < 500; ++attempt) {  // until vsim listens
+      if (vsim_external_connect(&link, address.c_str(), "c_client", "0.1", ports, 3) == 0) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    setup = link.setup;
+    double t = 0.0, in[2] = {0.0, 0.0}, out[1] = {0.0};
+    while (vsim_external_next(&link, &t, in) == 1) {
+      times.push_back(t);
+      out[0] = 2.0 * in[0];
+      if (vsim_external_reply(&link, out) != 0) {
+        break;
+      }
+    }
+    vsim_external_close(&link);
+  });
+  {
+    Simulation sim(load_example(
+        "acceleration",
+        {{"components.bench", "{type: external, after: vcu, period: 0.01, listen: \"127.0.0.1:" + std::to_string(port) +
+                                  "\", params: {gain: 2}, ports: {in: {speed: veh.chassis.speed, pedal: drv.cmd.throttle},"
+                                  " out: {twice: ext.twice_speed}}}"}}));
+    ASSERT_EQ(sim.plugins().size(), 1u);
+    EXPECT_EQ(sim.plugins().front()->info().type, "external");
+    EXPECT_EQ(sim.plugins().front()->info().name, "c_client");
+    sim.run_for(1.0);
+    // Its input went out in km/h; its output (a new signal, in the port's unit) came back one
+    // period behind.
+    EXPECT_NEAR(signal(sim, "ext.twice_speed"), 2.0 * 3.6 * signal(sim, "veh.chassis.speed"), 2.0);
+    EXPECT_EQ(sim.bus().info(sim.bus().require("ext.twice_speed")).unit, "km/h");
+  }  // the run ends: END, and the program's loop returns
+  program.join();
+  ASSERT_EQ(times.size(), 100u);
+  EXPECT_DOUBLE_EQ(times[1], 0.01);
+  const nlohmann::json s = nlohmann::json::parse(setup);
+  EXPECT_EQ(s["component"], "bench");
+  EXPECT_DOUBLE_EQ(s["period"].get<double>(), 0.01);
+  EXPECT_EQ(s["params"]["gain"], 2);
+  EXPECT_EQ(s["inputs"], nlohmann::json::array({"speed", "pedal"}));
 }
 
 }  // namespace

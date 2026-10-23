@@ -12,6 +12,7 @@ namespace vsim {
 
 std::unique_ptr<PluginInstance> make_native_plugin(const ParamTree& params, const ComponentSpec& spec, double period);
 std::unique_ptr<PluginInstance> make_fmu_plugin(const ParamTree& params, const ComponentSpec& spec, double period);
+std::unique_ptr<PluginInstance> make_external_plugin(const ParamTree& params, const ComponentSpec& spec, double period);
 
 // The platform's shared-library extension (".dll", ".so", ".dylib").
 std::string shared_library_extension();

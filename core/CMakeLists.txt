@@ -47,6 +47,7 @@ add_library(vsim_core STATIC
   src/models/vehicle/aero.cpp
   src/models/vehicle/thermal.cpp
   src/models/vehicle/two_track.cpp
+  src/plugin/external_plugin.cpp
   src/plugin/fmu_plugin.cpp
   src/plugin/native_plugin.cpp
   src/plugin/plugin.cpp
@@ -67,6 +68,7 @@ add_library(vsim_core STATIC
   src/track/track.cpp
   src/track/track_mesh.cpp
   src/util/paths.cpp
+  src/util/tcp.cpp
   src/visual/gltf.cpp
   src/visual/mesh.cpp
   src/visual/vehicle_visual.cpp
@@ -74,6 +76,9 @@ add_library(vsim_core STATIC
 target_include_directories(vsim_core PUBLIC include "${PROJECT_SOURCE_DIR}/sdk/c/include"
                            PRIVATE "${PROJECT_SOURCE_DIR}/sdk/fmi2/include")
 target_link_libraries(vsim_core PRIVATE yaml-cpp nlohmann_json::nlohmann_json vsim_mcap vsim_miniz ${CMAKE_DL_LIBS})
+if(WIN32)
+  target_link_libraries(vsim_core PRIVATE ws2_32)  # external components (TCP)
+endif()
 # Plugins built with vsim (sdk/examples) are found without a path.
 set(VSIM_PLUGIN_OUTPUT_DIR "${PROJECT_BINARY_DIR}/plugins" CACHE INTERNAL "")
 target_compile_definitions(vsim_core PRIVATE VSIM_DEFAULT_PLUGIN_DIR="${VSIM_PLUGIN_OUTPUT_DIR}")
