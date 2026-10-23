@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vsim 플러그인</title>
+<script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+<style>
+  :root {
+    --bg: #12151a; --panel: #181c22; --panel-2: #1f242c; --border: #2c3440; --text: #e6e9ee;
+    --muted: #8a94a3; --accent: #4fb3ff; --good: #3ecf8e; --bad: #ff5c5c; --warn: #ffb347;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; font-size: 14px; }
+  header { display: flex; align-items: center; gap: 14px; padding: 12px 20px; border-bottom: 1px solid var(--border);
+    flex-wrap: wrap; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--bad); }
+  .dot.on { background: var(--good); }
+  .muted { color: var(--muted); }
+  main { display: grid; grid-template-columns: minmax(340px, 1fr) minmax(420px, 1.3fr); gap: 16px; padding: 16px 20px;
+    max-width: 1500px; margin: 0 auto; }
+  @media (max-width: 960px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  h2 { font-size: 14px; margin: 0 0 10px; color: var(--muted); font-weight: 600; }
+  .card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+  .card.off { opacity: 0.6; }
+  .card h3 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .badge { font-size: 11px; padding: 2px 7px; border-radius: 10px; background: #2a3442; color: var(--accent); font-weight: 600; }
+  .badge.native { color: #9be37a; } .badge.fmu { color: #f0b85a; } .badge.python { color: #6fc3ff; } .badge.builtin { color: var(--muted); }
+  .meta { font-size: 12px; color: var(--muted); margin: 4px 0 6px; word-break: break-all; line-height: 1.5; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  th { color: var(--muted); font-weight: 500; }
+  td.dir { width: 22px; color: var(--muted); }
+  .budget { height: 8px; background: #101317; border-radius: 4px; overflow: hidden; margin: 4px 0; }
+  .budget div { height: 100%; background: var(--good); }
+  .budget.hot div { background: var(--warn); }
+  .budget.over div { background: var(--bad); }
+  input, select, textarea { background: #101317; color: var(--text); border: 1px solid var(--border); border-radius: 5px;
+    padding: 4px 6px; font: inherit; font-size: 12.5px; }
+  input.wide { width: 100%; }
+  input.bad { border-color: var(--bad); }
+  textarea { width: 100%; min-height: 420px; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .grid { display: grid; grid-template-columns: 90px 1fr; gap: 5px 10px; align-items: center; margin: 8px 0; }
+  .grid label { color: var(--muted); font-size: 12.5px; }
+  button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #041018; border-color: var(--accent); font-weight: 600; }
+  button.small { padding: 3px 8px; font-size: 12px; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+  .tabs button.on { border-color: var(--accent); color: var(--accent); }
+  #notices { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 6px; max-width: 520px; z-index: 5; }
+  .notice { background: var(--panel-2); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 6px;
+    padding: 8px 12px; font-size: 13px; white-space: pre-wrap; }
+  .notice.error { border-left-color: var(--bad); }
+  .error-box { border: 1px solid var(--bad); background: #2a1416; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px;
+    white-space: pre-wrap; font-size: 13px; }
+  .drop { border: 1px dashed var(--border); border-radius: 8px; padding: 12px; text-align: center; color: var(--muted); margin: 8px 0; }
+  .drop.over { border-color: var(--accent); color: var(--accent); }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>플러그인</h1>
+  <span><span class="dot" id="conn-dot"></span><span id="conn">연결 안 됨</span></span>
+  <span class="muted" id="project"></span>
+  <span style="flex:1"></span>
+  <a class="muted" href="../live/index.html" style="color: var(--muted)">라이브 뷰</a>
+</header>
+<main>
+  <section>
+    <h2>실행 중</h2>
+    <div class="muted" id="active-empty">실행 중인 플러그인이 없습니다. 오른쪽에서 켜고 저장하세요.</div>
+    <div id="active"></div>
+  </section>
+  <section>
+    <h2>연결 설정 <span class="muted" id="components-file"></span></h2>
+    <div id="load-error"></div>
+    <div class="tabs">
+      <button id="tab-form" class="on">편집</button>
+      <button id="tab-yaml">YAML</button>
+    </div>
+    <div id="form-view">
+      <div class="drop" id="drop">플러그인 파일(.dll · .so · .fmu · .py)을 여기에 끌어다 놓거나 <button class="small" id="pick">파일 선택</button>
+        <input type="file" id="file" multiple style="display:none"><br>
+        <span style="font-size:12px">프로젝트의 <code>plugins/</code>에 저장하고 항목을 만듭니다.</span></div>
+      <div id="components"></div>
+      <div class="actions">
+        <button id="add">항목 추가</button>
+        <span style="flex:1"></span>
+        <span class="muted" style="font-size:12px">편집 탭으로 저장하면 YAML 주석은 남지 않습니다.</span>
+      </div>
+    </div>
+    <div id="yaml-view" style="display:none">
+      <textarea id="yaml" spellcheck="false"></textarea>
+    </div>
+    <div class="actions">
+      <button class="primary" id="save">저장하고 다시 불러오기</button>
+      <button id="revert">되돌리기</button>
+      <span class="muted" id="dirty"></span>
+    </div>
+  </section>
+</main>
+<datalist id="signal-list"></datalist>
+<datalist id="file-list"></datalist>
+<div id="notices"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const wsUrl = new URLSearchParams(location.search).get("ws") || "ws://127.0.0.1:8765";
+let ws = null;
+let state = null;          // last plugins.state
+let doc = {};              // components file as an object
+let yamlText = "";         // as loaded
+let view = "form";
+let dirty = false;
+const probed = {};         // name -> ports from plugins.probe
+const HEADER = "# 플러그인 연결 (설계 문서 §11.4). ui/plugins에서 저장함.\n";
+
+function send(method, params) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ jsonrpc: "2.0", method, params: params || {} }));
+}
+function notice(text, level) {
+  const div = document.createElement("div");
+  div.className = "notice " + (level || "");
+  div.textContent = text;
+  $("notices").appendChild(div);
+  setTimeout(() => div.remove(), level === "error" ? 12000 : 5000);
+}
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function setDirty(v) { dirty = v; $("dirty").textContent = v ? "저장 안 됨" : ""; }
+
+function connect() {
+  ws = new WebSocket(wsUrl);
+  ws.onopen = () => { $("conn-dot").classList.add("on"); $("conn").textContent = "연결됨"; send("plugins.get"); };
+  ws.onclose = () => {
+    $("conn-dot").classList.remove("on"); $("conn").textContent = "연결 안 됨 (재시도 중)";
+    setTimeout(connect, 1000);
+  };
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.method === "plugins.state") onState(m.params);
+    else if (m.method === "plugins.probe") onProbe(m.params);
+    else if (m.method === "notice") notice(m.params.text, m.params.level);
+  };
+}
+
+function onState(p) {
+  state = p;
+  $("project").textContent = p.project;
+  $("components-file").textContent = p.components_file;
+  $("load-error").innerHTML = p.load_error
+    ? `<div class="error-box">마지막 저장을 불러오지 못해서 이전 파일로 되돌렸습니다:\n${esc(p.load_error)}</div>` : "";
+  $("signal-list").innerHTML = p.signals.map((s) => `<option value="${esc(s.name)}">${esc(s.unit)}</option>`).join("");
+  $("file-list").innerHTML = p.files.map((f) => `<option value="${esc(f)}">`).join("");
+  for (const a of p.active) probed[a.name] = a.ports.map((c) => ({ name: c.port, unit: c.unit, input: c.input }));
+  renderActive();
+  if (!dirty && p.components_yaml !== yamlText) {
+    yamlText = p.components_yaml;
+    $("yaml").value = yamlText;
+    try { doc = jsyaml.load(yamlText) || {}; } catch (err) { doc = {}; notice("YAML을 읽지 못했습니다: " + err.message, "error"); }
+    renderComponents();
+  }
+}
+
+function onProbe(p) {
+  probed[p.name] = p.ports;
+  const c = doc[p.name];
+  if (c && !c.period && p.period) c.period = p.period;
+  notice(`${p.name}: 포트 ${p.ports.length}개 (${p.type}${p.plugin ? ", " + p.plugin : ""}${p.version ? " " + p.version : ""})`);
+  renderComponents();
+}
+
+function renderActive() {
+  const list = state.active;
+  $("active-empty").style.display = list.length ? "none" : "";
+  $("active").innerHTML = list.map((a) => {
+    const budget = a.period * 1e6, used = a.stats.max_us / budget;
+    const cls = used > 1 ? "over" : used > 0.5 ? "hot" : "";
+    const where = a.slot ? `${a.slot} 슬롯` : `${a.after} 다음`;
+    const rows = a.ports.map((c) => `<tr><td class="dir">${c.input ? "→" : "←"}</td><td>${esc(c.port)}</td>
+      <td class="muted">${esc(c.unit)}</td><td>${c.constant !== null ? "값 " + c.constant : esc(c.signal)}</td>
+      <td class="muted">${esc(c.signal_unit)}</td></tr>`).join("");
+    return `<div class="card"><h3>${esc(a.name)} <span class="badge ${a.type}">${a.type}</span>
+        <span class="muted" style="font-size:12px; font-weight:400">${where}, ${(a.period * 1000).toFixed(1)} ms</span></h3>
+      <div class="meta">${esc(a.plugin)} ${esc(a.version)}<br>${esc(a.file)}<br>sha256 ${esc(a.sha256.slice(0, 16))}…</div>
+      <div class="meta">한 번 실행: 평균 ${a.stats.mean_us.toFixed(1)} µs, 최대 ${a.stats.max_us.toFixed(1)} µs (주기 ${budget.toFixed(0)} µs, ${a.stats.calls}회)</div>
+      <div class="budget ${cls}"><div style="width:${Math.min(100, used * 100).toFixed(1)}%"></div></div>
+      <table><tr><th></th><th>포트</th><th>단위</th><th>신호</th><th>신호 단위</th></tr>${rows}</table></div>`;
+  }).join("");
+}
+
+// One editable card per entry of the components file.
+function renderComponents() {
+  const types = [...new Set([...(state ? state.types : ["native", "fmu"]), "builtin"])];
+  $("components").innerHTML = "";
+  for (const [name, c] of Object.entries(doc)) {
+    if (!c || typeof c !== "object") continue;
+    const enabled = c.enabled !== false;
+    const card = document.createElement("div");
+    card.className = "card" + (enabled ? "" : " off");
+    const where = c.slot ? "slot:" + c.slot : "after:" + (c.after || "vcu");
+    card.innerHTML = `<h3><label><input type="checkbox" data-k="enabled" ${enabled ? "checked" : ""}> ${esc(name)}</label>
+        <span class="badge ${esc(c.type)}">${esc(c.type || "?")}</span><span style="flex:1"></span>
+        <button class="small" data-a="probe">포트 불러오기</button> <button class="small" data-a="delete">삭제</button></h3>
+      <div class="grid">
+        <label>종류</label><select data-k="type">${types.map((t) => `<option ${t === c.type ? "selected" : ""}>${t}</option>`).join("")}</select>
+        <label>${c.type === "python" ? "모듈" : "파일"}</label>
+        <input class="wide" data-k="${c.type === "python" ? "module" : "path"}" list="file-list"
+          value="${esc(c.type === "python" ? c.module : c.path)}" placeholder="${c.type === "python" ? "tv_py:TorqueVectoring" : "plugins/my_vcu/my_vcu"}">
+        <label>위치</label><select data-k="where">
+          ${["slot:vcu", "slot:driver", "after:driver", "after:sensors", "after:vcu"].map((w) =>
+            `<option value="${w}" ${w === where ? "selected" : ""}>${w.startsWith("slot") ? w.slice(5) + " 대신" : w.slice(6) + " 다음"}</option>`).join("")}
+        </select>
+        <label>주기 [s]</label><input data-k="period" value="${esc(c.period ?? "")}" placeholder="플러그인 기본값" style="width:120px">
+        <label>params</label><input class="wide" data-k="params" value="${esc(c.params ? JSON.stringify(c.params) : "")}" placeholder='{"gain": 40}'>
+      </div>
+      <div data-ports></div>`;
+    card.querySelector("[data-ports]").appendChild(portTable(name, c));
+    card.addEventListener("change", (e) => onEdit(name, c, e.target));
+    card.querySelector('[data-a="probe"]').onclick = () => send("plugins.probe", { name, component: c });
+    card.querySelector('[data-a="delete"]').onclick = () => { if (confirm(`${name} 항목을 지울까요?`)) { delete doc[name]; setDirty(true); renderComponents(); } };
+    $("components").appendChild(card);
+  }
+}
+
+// Port rows: known ports (probed or running) plus anything already mapped.
+function portTable(name, c) {
+  const ports = [...(probed[name] || [])];
+  for (const dir of ["in", "out"]) {
+    for (const p of Object.keys(c.ports?.[dir] || {})) {
+      if (!ports.some((x) => x.name === p && x.input === (dir === "in"))) ports.push({ name: p, unit: "", input: dir === "in" });
+    }
+  }
+  const table = document.createElement("table");
+  if (!ports.length) {
+    table.innerHTML = `<tr><td class="muted">포트를 모릅니다: "포트 불러오기"를 누르세요 (같은 이름의 버스 신호에는 저절로 연결됩니다).</td></tr>`;
+    return table;
+  }
+  table.innerHTML = `<tr><th></th><th>포트</th><th>단위</th><th>연결할 신호 (또는 값)</th><th>포트 단위 지정</th></tr>`;
+  for (const p of ports) {
+    const dir = p.input ? "in" : "out";
+    const m = c.ports?.[dir]?.[p.name];
+    const signal = typeof m === "string" ? m : m?.signal ?? (m?.value !== undefined ? "=" + m.value : "");
+    const unit = typeof m === "object" && m ? m.unit ?? "" : "";
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td class="dir">${p.input ? "→" : "←"}</td><td>${esc(p.name)}</td><td class="muted">${esc(p.unit)}</td>
+      <td><input class="wide" list="signal-list" value="${esc(signal)}" placeholder="${p.input ? "신호 이름, =값" : "plugin." + esc(name) + "." + esc(p.name)}"></td>
+      <td><input value="${esc(unit)}" style="width:80px" placeholder="${esc(p.unit)}"></td>`;
+    const [sig, un] = tr.querySelectorAll("input");
+    const known = (v) => !v || v.startsWith("=") || state?.signals.some((s) => s.name === v) || !p.input;
+    sig.classList.toggle("bad", !known(sig.value));
+    const update = () => {
+      sig.classList.toggle("bad", !known(sig.value));
+      c.ports ??= {}; c.ports[dir] ??= {};
+      const v = sig.value.trim(), u = un.value.trim();
+      if (!v && !u) delete c.ports[dir][p.name];
+      else if (v.startsWith("=")) c.ports[dir][p.name] = { value: Number(v.slice(1)), ...(u ? { unit: u } : {}) };
+      else c.ports[dir][p.name] = u ? { signal: v, unit: u } : v;
+      setDirty(true);
+    };
+    sig.onchange = update;
+    un.onchange = update;
+    table.appendChild(tr);
+  }
+  return table;
+}
+
+function onEdit(name, c, el) {
+  const k = el.dataset.k;
+  if (!k) return;
+  if (k === "enabled") c.enabled = el.checked;
+  else if (k === "type") { c.type = el.value; renderComponents(); }
+  else if (k === "where") {
+    const [kind, value] = el.value.split(":");
+    delete c.slot; delete c.after;
+    if (kind === "slot") c.slot = value; else c.after = value;
+  } else if (k === "period") { if (el.value.trim()) c.period = Number(el.value); else delete c.period; }
+  else if (k === "params") {
+    try { if (el.value.trim()) c.params = JSON.parse(el.value); else delete c.params; el.classList.remove("bad"); }
+    catch { el.classList.add("bad"); return; }
+  } else if (k === "path" || k === "module") c[k] = el.value.trim();
+  setDirty(true);
+  if (k === "enabled") renderComponents();
+}
+
+function addComponent(name, fields) {
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name) || doc[name]) { notice("이름은 영문으로 시작하는 영문·숫자·_, 겹치지 않게", "error"); return; }
+  doc[name] = { enabled: true, ...fields };
+  setDirty(true);
+  renderComponents();
+}
+
+$("add").onclick = () => {
+  const name = prompt("항목 이름 (예: my_vcu)");
+  if (name) addComponent(name, { type: "native", path: "", after: "vcu", period: 0.01 });
+};
+
+// Upload: write into plugins/, then an entry pointing at it.
+async function upload(files) {
+  const list = [];
+  for (const f of files) {
+    const buf = new Uint8Array(await f.arrayBuffer());
+    let bin = "";
+    for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    list.push({ path: "plugins/" + f.name, base64: btoa(bin) });
+  }
+  send("plugins.import", { files: list });
+  for (const f of files) {
+    const stem = f.name.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9_]/g, "_");
+    const ext = f.name.slice(f.name.lastIndexOf(".")).toLowerCase();
+    if (doc[stem] || ext === ".json" || ext === ".csv") continue;
+    if (ext === ".py") addComponent(stem, { type: "python", module: stem + ":", after: "vcu", period: 0.01 });
+    else addComponent(stem, { type: ext === ".fmu" ? "fmu" : "native", path: "plugins/" + f.name, after: "vcu", period: 0.01 });
+  }
+}
+$("pick").onclick = () => $("file").click();
+$("file").onchange = () => upload($("file").files);
+const drop = $("drop");
+drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); upload(e.dataTransfer.files); });
+
+function showView(v) {
+  if (v === view) return;
+  if (v === "yaml") $("yaml").value = HEADER + jsyaml.dump(doc, { noRefs: true, lineWidth: 120 });
+  else {
+    try { doc = jsyaml.load($("yaml").value) || {}; } catch (err) { notice("YAML 오류: " + err.message, "error"); return; }
+    renderComponents();
+  }
+  view = v;
+  $("tab-form").classList.toggle("on", v === "form");
+  $("tab-yaml").classList.toggle("on", v === "yaml");
+  $("form-view").style.display = v === "form" ? "" : "none";
+  $("yaml-view").style.display = v === "yaml" ? "" : "none";
+}
+$("tab-form").onclick = () => showView("form");
+$("tab-yaml").onclick = () => showView("yaml");
+$("yaml").oninput = () => setDirty(true);
+
+$("save").onclick = () => {
+  let text;
+  if (view === "yaml") {
+    text = $("yaml").value;
+    try { jsyaml.load(text); } catch (err) { notice("YAML 오류: " + err.message, "error"); return; }
+  } else {
+    text = HEADER + jsyaml.dump(doc, { noRefs: true, lineWidth: 120 });
+  }
+  send("plugins.save", { text, reload: true });
+  setDirty(false);
+  yamlText = null;  // take the file as the simulator reloaded it (or rolled it back)
+};
+$("revert").onclick = () => { setDirty(false); send("plugins.get"); };
+
+// Live timing while the page is open.
+setInterval(() => { if (!dirty) send("plugins.get"); }, 3000);
+connect();
+
+window.vsimPlugins = { get doc() { return doc; }, get state() { return state; }, showView };
+</script>
+</body>
+</html>

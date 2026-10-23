@@ -6,6 +6,7 @@ add_executable(vsim_tests
   test_lap.cpp
   test_link.cpp
   test_params.cpp
+  test_plugins.cpp
   test_powertrain.cpp
   test_rng.cpp
   test_sensors.cpp
@@ -20,6 +21,7 @@ add_executable(vsim_tests
   test_two_track.cpp)
 target_link_libraries(vsim_tests PRIVATE vsim_core GTest::gtest_main nlohmann_json::nlohmann_json)
 target_compile_definitions(vsim_tests PRIVATE VSIM_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+add_dependencies(vsim_tests simple_vcu tv_cpp tv_fmu fake_ert_vcu)  # the example plugins the tests load
 vsim_set_warnings(vsim_tests)
 
 include(GoogleTest)
@@ -45,6 +47,14 @@ if(VSIM_BUILD_APP)
                      ${PROJECT_SOURCE_DIR}/templates/projects/example_fs_ev/scenarios/drive.yaml)
     set_tests_properties(vsim_link_e2e PROPERTIES TIMEOUT 60)
   endif()
+endif()
+
+# Python plugins in vsim-core's embedded interpreter.
+if(VSIM_BUILD_APP AND TARGET pybind11::embed)
+  add_test(NAME vsim_core_python_plugin
+           COMMAND vsim-core --scenario ${PROJECT_SOURCE_DIR}/templates/projects/example_fs_ev/scenarios/skidpad_auto.yaml
+                   --mode fast --duration 2 --no-link --no-wheel --set components.tv_py.enabled=true)
+  set_tests_properties(vsim_core_python_plugin PROPERTIES TIMEOUT 60)
 endif()
 
 # The Unreal plugin against stand-in engine headers (no Unreal here).

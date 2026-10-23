@@ -18,6 +18,7 @@
 #include "vsim/log/mcap_logger.hpp"
 #include "vsim/models/vehicle/single_track.hpp"
 #include "vsim/models/vehicle/two_track.hpp"
+#include "vsim/plugin/plugin.hpp"
 #include "vsim/sensors/sensor_system.hpp"
 #include "vsim/sim/context.hpp"
 #include "vsim/sim/integrator.hpp"
@@ -86,6 +87,7 @@ struct Simulation::Impl {
   std::vector<double> state;
   Rk4Integrator integrator;
   std::vector<ScheduledBlock> blocks;
+  std::vector<const PluginBlock*> plugins;  // among blocks
 
   std::int64_t tick = 0;
   double dt = 0.001;
@@ -166,19 +168,67 @@ void Simulation::Impl::build(const Scenario& scenario, const SimulationOptions& 
   plant->init(effective, *context);
 
   // Execution order within a tick: driver, sensors (they see the driver's
-  // pedals this tick), VCU, then lap timing.
+  // pedals this tick), VCU, then lap timing. Project components (plugins,
+  // design doc §11) take the driver or VCU slot or run after one of them.
+  const std::vector<ComponentSpec> components = components_from_params(effective);
+  const auto slot = [&](const std::string& name) -> const ComponentSpec* {
+    const ComponentSpec* found = nullptr;
+    for (const ComponentSpec& c : components) {
+      if (c.slot == name) {
+        if (found != nullptr) {
+          throw std::invalid_argument("components: both " + found->name + " and " + c.name + " take the " + name +
+                                      " slot");
+        }
+        found = &c;
+      }
+    }
+    return found;
+  };
+  const auto component_block = [&](const ComponentSpec& c) -> std::unique_ptr<Block> {
+    if (c.type == "builtin") {
+      if (c.slot == "vcu") {
+        return std::make_unique<ReferenceVcu>();
+      }
+      if (c.slot == "driver") {
+        return make_driver(effective);
+      }
+      throw std::invalid_argument(c.prefix + ": type builtin is only for the driver and vcu slots");
+    }
+    return std::make_unique<PluginBlock>(c);
+  };
   std::vector<std::unique_ptr<Block>> ordered;
-  ordered.push_back(make_driver(effective));
+  const auto extras_after = [&](const std::string& after) {
+    for (const ComponentSpec& c : components) {
+      if (c.slot.empty() && c.after == after) {
+        ordered.push_back(component_block(c));
+      }
+    }
+  };
+  if (const ComponentSpec* c = slot("driver")) {
+    ordered.push_back(component_block(*c));
+  } else {
+    ordered.push_back(make_driver(effective));
+  }
+  extras_after("driver");
   if (SensorSystem::configured(effective)) {
     ordered.push_back(std::make_unique<SensorSystem>());
   }
-  ordered.push_back(std::make_unique<ReferenceVcu>());
+  extras_after("sensors");
+  if (const ComponentSpec* c = slot("vcu")) {
+    ordered.push_back(component_block(*c));
+  } else {
+    ordered.push_back(std::make_unique<ReferenceVcu>());
+  }
+  extras_after("vcu");
   if (track) {
     ordered.push_back(std::make_unique<LapTimer>());
   }
   for (auto& block : ordered) {
     block->init(effective, *context);
     const std::int64_t period_ticks = ticks_for(block->period(), dt, block->name());
+    if (const auto* plugin = dynamic_cast<const PluginBlock*>(block.get())) {
+      plugins.push_back(plugin);
+    }
     blocks.push_back({std::move(block), period_ticks});
   }
 
@@ -233,6 +283,16 @@ void Simulation::Impl::build(const Scenario& scenario, const SimulationOptions& 
     for (const RealismCategory category : kRealismCategories) {
       meta["realism"][std::string(to_string(category))] =
           context->realism().is_real(category) ? "real" : "ideal";
+    }
+    for (const PluginBlock* plugin : plugins) {
+      const PluginInstance::Info info = plugin->info();
+      nlohmann::json& p = meta["plugins"][std::string(plugin->name())];
+      p = {{"type", info.type}, {"file", info.file}, {"sha256", plugin->sha256()}, {"name", info.name},
+           {"version", info.version}, {"period_s", plugin->period()}};
+      for (const PluginBlock::Connection& c : plugin->connections()) {
+        p["ports"][c.input ? "in" : "out"][c.port] =
+            c.constant ? nlohmann::json(*c.constant) : nlohmann::json(c.signal);
+      }
     }
     std::vector<std::string> names;
     for (const SignalId id : log_ids) {
@@ -307,6 +367,14 @@ void Simulation::Impl::finish() {
       summary["laps"] = laps_json;
       summary["best_lap_s"] = best > 0.0 ? nlohmann::json(best) : nlohmann::json(nullptr);
     }
+    for (const PluginBlock* plugin : plugins) {
+      const PluginBlock::Stats& st = plugin->stats();
+      summary["plugins"][std::string(plugin->name())] = {
+          {"calls", st.calls},
+          {"mean_step_us", st.calls > 0 ? st.total_s / static_cast<double>(st.calls) * 1e6 : 0.0},
+          {"max_step_us", st.max_s * 1e6},
+          {"budget_us", plugin->period() * 1e6}};
+    }
     write_text(run_path / "summary.json", summary.dump(2) + "\n");
   }
   if (mcap) {
@@ -349,6 +417,7 @@ double Simulation::end_time() const { return impl_->t_end; }
 const SignalBus& Simulation::bus() const { return impl_->bus; }
 void Simulation::set_signal(const std::string& name, double value) { impl_->bus.set(impl_->bus.require(name), value); }
 const Recorder& Simulation::recorder() const { return impl_->recorder; }
+std::vector<const PluginBlock*> Simulation::plugins() const { return impl_->plugins; }
 const std::filesystem::path& Simulation::run_path() const { return impl_->run_path; }
 
 void Simulation::reset() {

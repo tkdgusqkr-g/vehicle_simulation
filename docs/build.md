@@ -4,6 +4,13 @@ M5 기준 안내입니다. 설계는 [design.md](design.md)를 보세요.
 
 ## 지금 되는 것
 
+**M7 (실차 코드로 달린다)**
+- **플러그인**: 팀 코드를 VCU·드라이버 자리에 넣거나 VCU 다음에 블록으로 더합니다. C/C++ 공유 라이브러리(`sdk/c/include/vsim_plugin.h`), **FMU**(FMI 2.0 Co-Simulation: Simulink·Modelica·AMESim 등에서 내보낸 것), **Python** 클래스. 프로젝트의 `plugins/components.yaml`에서 포트를 신호에 연결하고, 단위는 자동 변환
+- **Simulink `vsim_export`**: 모델 하나를 명령 하나로 플러그인으로. Embedded Coder가 있으면 실차와 같은 C 코드로, 없으면 FMU로. 포트 이름으로 신호에 자동 연결, 모델 버전·해시 기록
+- **플러그인 페이지** (`ui/plugins/index.html`): 파일 올리기, 포트 불러오기, 신호 연결, 켜고 끄기, 저장하면 바로 다시 불러오기(잘못된 연결은 이전 설정으로 되돌림). 실행 시간 표시
+- 예제: 같은 토크 벡터링을 C++·FMU·Python으로 만든 세 플러그인(결과가 비트 단위로 같음), C로 쓴 최소 VCU
+- 실행 기록: 플러그인 파일 SHA-256·버전·연결(`meta.json`), 호출당 실행 시간(`summary.json`)
+
 **M6 (센서로 본다)**
 - **센서 신호 체인**: VCU가 참값 대신 센서가 잰 값을 받습니다. IMU(장착 위치의 구심·접선 가속도, 차체 롤·피치와 노면 경사의 중력 성분, 장착 각도), 휠속(톱니 펄스 시간 → 저속에서 끊김), APPS 2채널, 브레이크 압력, 조향각, GNSS(지연·끊김), 전류·전압·온도, 서스펜션 변위
 - 채널마다 개체 편차(스케일·바이어스), 잡음(데이터시트의 noise density, bias instability, random walk), 대역폭, 지연, 양자화, 포화. 모터 회전 차수 진동과 **aliasing**(anti-alias 필터 유무)
@@ -299,6 +306,79 @@ build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/sce
 
 ---
 
+## 플러그인
+
+팀 코드를 시뮬레이터 블록으로 넣습니다 ([설계 문서 §11](design.md#11-플러그인--사용자-코드-통합), SDK는 [sdk/README.md](../sdk/README.md)). 연결은 프로젝트의 `plugins/components.yaml`에 적습니다 (`project.yaml`의 `components:`가 이 파일을 가리킴).
+
+```yaml
+tv_native:
+  enabled: true
+  type: native                # native (.dll/.so) | fmu | python | builtin
+  path: tv_cpp                # 확장자 없이 쓰면 .dll/.so를 찾음
+  after: vcu                  # 이 블록 다음에 실행: driver | sensors | vcu
+  # slot: vcu                 # 또는 이 블록을 대신함: vcu | driver
+  period: 0.01
+  params: {gain: 40}          # native: JSON으로, fmu: 같은 이름의 파라미터에, python: init(params)에
+  ports:
+    in:
+      vx: vcu.vx_est                       # 신호 이름
+      yaw_rate: {signal: sens.imu.gz, unit: deg/s}   # 플러그인이 단위를 말하지 않을 때 지정
+      mode: {value: 1}                     # 고정값
+    out:
+      tq_fl: pt.motor.fl.torque_cmd        # 기존 신호를 덮어씀 (VCU 출력 보정 등)
+      shift: tv.shift                      # 없는 신호는 새로 만듦
+```
+
+- 포트 이름이 버스 신호 이름과 같으면 연결하지 않아도 됩니다. 연결되지 않은 입력, 없는 포트 이름, 단위 종류가 다른 연결(`m/s`를 `rad/s`에)은 시작할 때 오류로 알려 줍니다.
+- 플러그인 파일은 프로젝트 폴더 → `plugins/` → 환경 변수 `VSIM_PLUGIN_PATH`의 폴더(Windows는 `;`로 구분) → vsim 빌드의 `build/plugins` 순서로 찾습니다.
+- 예제 프로젝트에 네 항목이 꺼진 채로 있습니다. 켜서 달려 보기:
+
+```powershell
+build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/scenarios/skidpad_auto.yaml --set components.tv_native.enabled=true
+# 같은 로직의 FMU, Python: components.tv_fmu.enabled=true, components.tv_py.enabled=true
+# VCU를 C로 쓴 것으로 바꾸기: components.simple_vcu.enabled=true
+```
+
+### 종류별
+
+| 종류 | 만드는 법 | 비고 |
+|---|---|---|
+| `native` | C: `vsim_plugin.h`의 함수 표 하나 ([simple_vcu.c](../sdk/examples/simple_vcu_c/simple_vcu.c)). C++: `vsim_plugin.hpp`의 클래스 + `VSIM_PLUGIN(...)` ([tv_cpp.cpp](../sdk/examples/tv_cpp/tv_cpp.cpp)) | 가장 빠름 (예제 1 µs/호출). 64비트로 빌드 |
+| `fmu` | Simulink(`vsim_export`의 FMU 경로), OpenModelica·Dymola·AMESim 등의 FMI 2.0 Co-Simulation 내보내기 | `.fmu`를 그대로 두면 처음 실행할 때 임시 폴더에 풀어 씀. Model Exchange·FMI 3.0은 아직 없음. 변수 이름의 `.`·`[ ]`는 포트 이름에서 `_` |
+| `python` | `vsim.plugin.Block`을 상속한 클래스 ([tv_py.py](../templates/projects/example_fs_ev/plugins/tv_py.py)), `module: 파일:클래스` | 수백 Hz까지 권장 (예제 7.5 µs/호출). vsim-core는 Python이 설치되어 있을 때만(빌드한 버전과 같은 Python DLL) |
+| `builtin` | `slot: vcu`나 `slot: driver`에 기본 블록을 명시할 때 | |
+
+- 실행 순서: 드라이버 → (after: driver) → 센서 → (after: sensors) → VCU → (after: vcu) → 랩 타이머. 같은 위치의 블록은 `order:` 값, 그다음 이름 순.
+- 출력은 다음 호출까지 유지됩니다(ZOH). FMU는 입력을 넣고 한 주기 진행한 뒤 출력을 읽습니다(네이티브 블록과 같은 타이밍).
+
+### Simulink 모델 → 플러그인 (`vsim_export`)
+
+MATLAB에서 `sdk/simulink` 폴더를 경로에 추가하고:
+
+```matlab
+addpath('C:/vsim/sdk/simulink')
+% 포트를 신호에 자동 연결하려면 신호 목록을 먼저 (한 번):
+%   vsim-core --scenario <시나리오> --list-signals D:/projects/my_car_2026/vsim_signals.json
+vsim_export('vcu_2026.slx', 'Project', 'D:/projects/my_car_2026', 'Name', 'vcu', 'Slot', 'vcu')
+vsim_export('tv_2026.slx', 'Project', 'D:/projects/my_car_2026', 'After', 'vcu')
+```
+
+- 모델 조건: 고정 스텝 솔버, 샘플 시간 하나(= 플러그인 주기), 최상위 Inport/Outport가 스칼라(double, single, int8~32, uint8~32, boolean). 포트의 Unit을 정해 두면 vsim이 단위를 변환합니다.
+- 경로 자동 선택: Embedded Coder가 있으면 ERT C 코드 + vsim 래퍼를 `plugins/<이름>/`에 만들고 CMake로 빌드합니다(CMake와 Visual Studio 필요). 없으면 FMU로 내보냅니다. `'Route', 'fmu'`로 고를 수 있습니다.
+- 포트 연결: 포트 이름이 신호 이름에서 `.`을 `_`로 바꾼 것(`drv_cmd_throttle`)이면 자동, 아니면 비슷한 신호 후보를 주석으로 적고 비워 둡니다. `vsim_add_port(모델, 'drv.cmd.throttle', 'in', vsim_signals(프로젝트))`로 포트를 만들면 이름·단위가 맞게 생깁니다.
+- `plugins/components.yaml`에 항목을 쓰고(같은 이름이면 교체) 모델 파일 경로·버전·SHA-256·내보낸 시각을 `source:`에 남깁니다.
+- 이 개발 환경에는 MATLAB이 없어 `vsim_export.m`은 실행해 보지 못했습니다. 만드는 C 래퍼는 같은 틀(`vsim_ert_wrapper.c.in`)을 Embedded Coder 출력 모양의 모델에 붙여서 CI에서 빌드·실행 시험합니다. 처음 쓸 때 문제가 있으면 알려 주세요.
+
+### 플러그인 페이지
+
+`vsim-core`를 실시간으로 띄운 상태에서 `ui\plugins\index.html`을 엽니다.
+
+- 왼쪽: 실행 중인 플러그인(파일, SHA-256, 포트 연결, 호출당 평균·최대 실행 시간과 주기 대비 막대)
+- 오른쪽: `components.yaml` 편집. 파일을 끌어다 놓으면 `plugins/`에 저장하고 항목을 만듭니다. "포트 불러오기"로 포트 목록을 받고 신호를 고릅니다(목록에서 검색). **저장하고 다시 불러오기**를 누르면 시뮬레이터가 새 설정으로 다시 시작하고, 불러오지 못하면 이전 파일로 되돌리고 이유를 보여 줍니다.
+- 편집 탭으로 저장하면 YAML 주석은 사라집니다. 주석을 지키려면 YAML 탭에서 고칩니다.
+
+---
+
 ## 센서와 현상 탐지
 
 예제 차량에는 센서 12개가 있습니다 ([vehicle.yaml](../templates/projects/example_fs_ev/vehicle/vehicle.yaml)의 `sensors:`, 항목 설명은 [vehicle_parameters.md §18.1](vehicle_parameters.md#181-vehiclesensors-쓰는-법-m6)). 기본은 `realism: ideal`이라 센서가 참값을 그대로 냅니다. 실제처럼 하려면 시나리오에서 켭니다.
@@ -538,6 +618,7 @@ build\core\Release\vsim-core.exe --scenario templates/projects/example_fs_ev/sce
 | `--export-track-glb <파일>` | 시나리오의 트랙을 3D 모델(.glb)로 저장하고 종료 |
 | `--export-car-glb <파일>` | 시나리오의 차량 3D 모델(.glb)을 저장하고 종료 |
 | `--export-kc <파일.csv>` | 하드포인트에서 푼 서스펜션 K&C 곡선을 CSV로 저장하고 정적 값(킹핀각, 캐스터, 스크럽, 롤센터 등)을 출력한 뒤 종료 |
+| `--list-signals <파일.json>` | 시나리오의 신호 목록(이름, 단위, 설명)을 저장하고 종료. Simulink `vsim_export`가 포트를 연결할 때 씀 |
 | `--virtual-wheel` | 가상 휠 추가 (`input.virtual` RPC로 조작, UI 시험용) |
 
 ---
@@ -636,3 +717,9 @@ Linux에서 휠을 쓰려면 `/dev/input/event*`, `/dev/hidraw*` 읽기 권한�
 | `shared-memory link off: another simulator ... publishes` | vsim-core가 이미 하나 실행 중. 그쪽을 끄거나 `--link-name`을 다르게 |
 | 보정 페이지 "휠 입력이 꺼져 있습니다" | `driver.type: dil` 시나리오(`drive.yaml`)를 `--no-wheel` 없이 실행 |
 | `import vsim` 실패 | 빌드 후 `python/vsim/` 안에 `_vsim...pyd`(Windows) 또는 `.so`(Linux)가 있는지 확인 |
+| `components.<이름>.path: '...' not found` | 플러그인 파일 위치 확인. 프로젝트 `plugins/`에 두거나 `VSIM_PLUGIN_PATH`에 폴더 추가. 예제 플러그인은 vsim을 빌드해야 생김 |
+| `cannot load '....dll' (error 126)` | 플러그인이 쓰는 다른 DLL(예: MSVC 런타임, 회사 라이브러리)을 못 찾음. 플러그인과 같은 폴더에 두기. 32비트로 빌드했으면 64비트로 |
+| `plugin ABI version ...` | 플러그인을 이 vsim의 `sdk/c/include/vsim_plugin.h`로 다시 빌드 |
+| `inputs not connected: ...` | `components.yaml`에서 그 입력 포트에 신호나 `{value: ...}`를 지정 |
+| `python plugins need python3xx.dll` | vsim-core를 빌드한 버전의 Python을 설치하고 PATH에 추가 (Python 플러그인을 안 쓰면 필요 없음) |
+| FMU `no binary for this platform` | FMU를 64비트 Windows(`win64`) 또는 Linux(`linux64`) 바이너리 포함으로 다시 내보내기 |

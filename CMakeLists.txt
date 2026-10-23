@@ -22,6 +22,7 @@ include(Warnings)
 include(Dependencies)
 
 add_subdirectory(core)
+add_subdirectory(sdk)
 
 if(VSIM_BUILD_PYTHON)
   add_subdirectory(python)

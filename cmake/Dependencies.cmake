@@ -32,7 +32,17 @@ FetchContent_Declare(mcap
   # CMakeLists.txt keeps FetchContent from configuring the repository.
   SOURCE_SUBDIR cpp/mcap/include)
 
-FetchContent_MakeAvailable(yaml-cpp nlohmann_json mcap)
+# --- miniz: reading FMU archives (zip) ----------------------------------------
+FetchContent_Declare(miniz
+  URL https://github.com/richgel999/miniz/releases/download/3.0.2/miniz-3.0.2.zip
+  URL_HASH SHA256=ada38db0b703a56d3dd6d57bf84a9c5d664921d870d8fea4db153979fb5332c5
+  # The release is the amalgamated miniz.c / miniz.h; built below.
+  SOURCE_SUBDIR no-cmake)
+
+FetchContent_MakeAvailable(yaml-cpp nlohmann_json mcap miniz)
+
+add_library(vsim_miniz STATIC "${miniz_SOURCE_DIR}/miniz.c")
+target_include_directories(vsim_miniz SYSTEM PUBLIC "${miniz_SOURCE_DIR}")
 
 add_library(vsim_mcap INTERFACE)
 target_include_directories(vsim_mcap SYSTEM INTERFACE "${mcap_SOURCE_DIR}/cpp/mcap/include")
@@ -90,7 +100,9 @@ endif()
 
 # --- pybind11: installed with pip (`pip install pybind11`) ------------------
 if(VSIM_BUILD_PYTHON)
-  find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module)
+  # Development.Embed: Python plugins in vsim-core (optional).
+  find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module
+               OPTIONAL_COMPONENTS Development.Embed)
   if(NOT pybind11_DIR)
     execute_process(
       COMMAND "${Python_EXECUTABLE}" -m pybind11 --cmakedir

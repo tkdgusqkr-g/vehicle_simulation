@@ -5,3 +5,4 @@ name: example_fs_ev
 schema_version: 1
 vehicle: vehicle/vehicle.yaml
 control: control/vcu.yaml
+components: plugins/components.yaml   # 플러그인 연결 (설계 문서 §11.4)

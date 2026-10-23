@@ -1,0 +1,58 @@
+# 플러그인 연결 (설계 문서 §11.4, 사용법은 docs/build.md "플러그인").
+# 슬롯(driver, vcu)을 바꾸거나 기존 블록 뒤(after: driver | sensors | vcu)에 블록을 더합니다.
+# enabled: true인 것만 실행됩니다. 시나리오에서 켜려면:
+#   --set components.tv_native.enabled=true
+#
+# 아래 셋은 같은 토크 벡터링 로직을 C++(native), FMU, Python으로 만든 예입니다
+# (sdk/examples, plugins/tv_py.py). 세 결과가 같습니다.
+# path: 확장자 없이 쓰면 .dll/.so를 찾고, 프로젝트 폴더 → plugins/ → VSIM_PLUGIN_PATH →
+# vsim 빌드의 plugins 폴더 순서로 찾습니다.
+
+tv_native:
+  enabled: false
+  type: native
+  path: tv_cpp
+  after: vcu                  # VCU의 토크 명령을 받아서 좌우로 나눔
+  period: 0.01
+  params: &tv_params {gain: 40, wheelbase: 1.53, steer_ratio: 4.5, max_shift: 8}
+  ports: &tv_ports
+    in:
+      steer: drv.cmd.steer    # 이름이 버스 신호와 같으면 생략 가능
+      vx: vcu.vx_est          # VCU가 센서로 추정한 차속
+      yaw_rate: sens.imu.gz   # IMU 자이로 (센서 신호 체인을 거친 값)
+      tq_fl_in: pt.motor.fl.torque_cmd
+      tq_fr_in: pt.motor.fr.torque_cmd
+      tq_rl_in: pt.motor.rl.torque_cmd
+      tq_rr_in: pt.motor.rr.torque_cmd
+    out:
+      tq_fl: pt.motor.fl.torque_cmd
+      tq_fr: pt.motor.fr.torque_cmd
+      tq_rl: pt.motor.rl.torque_cmd
+      tq_rr: pt.motor.rr.torque_cmd
+      shift: tv.shift         # 없는 신호는 새로 만듦 (로그에 남음)
+
+tv_fmu:
+  enabled: false
+  type: fmu
+  path: tv_fmu.fmu            # FMI 2.0 Co-Simulation (Simulink·Modelica 등에서 내보낸 것)
+  after: vcu
+  period: 0.01
+  params: *tv_params          # FMU 파라미터 (변수 이름)
+  ports: *tv_ports
+
+tv_py:
+  enabled: false
+  type: python
+  module: tv_py:TorqueVectoring   # plugins/tv_py.py의 클래스
+  after: vcu
+  period: 0.01
+  params: *tv_params
+  ports: *tv_ports
+
+# VCU를 통째로 바꾸는 예 (C, sdk/examples/simple_vcu_c): 회생·슬립 제어 없는 단순 페달맵.
+simple_vcu:
+  enabled: false
+  type: native
+  slot: vcu
+  path: simple_vcu
+  params: {torque_max: 21}

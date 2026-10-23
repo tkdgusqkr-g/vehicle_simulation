@@ -17,6 +17,8 @@
 #include "vsim/util/paths.hpp"
 #include "vsim/version.hpp"
 
+#include "python_plugin.hpp"
+
 namespace py = pybind11;
 
 namespace {
@@ -69,6 +71,7 @@ py::dict curve_arrays(const vsim::SampledCurve& curve) {
 
 PYBIND11_MODULE(_vsim, m) {
   m.doc() = "C++ simulation core of vsim";
+  vsim::register_python_plugins(false);  // components of type python run in this interpreter
   m.attr("__version__") = vsim::version();
   m.attr("git_commit") = vsim::git_commit();
 

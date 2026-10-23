@@ -38,6 +38,7 @@
 #include "vsim/input/input_service.hpp"
 #endif
 #include "vsim/link/state_link.hpp"
+#include "vsim/plugin/plugin.hpp"
 #include "vsim/models/vehicle/suspension.hpp"
 #include "vsim/sim/simulation.hpp"
 #include "vsim/track/track.hpp"
@@ -46,6 +47,9 @@
 #include "vsim/visual/vehicle_visual.hpp"
 #include "vsim/util/paths.hpp"
 #include "vsim/version.hpp"
+#ifdef VSIM_WITH_PYTHON
+#include "python_plugin.hpp"
+#endif
 
 namespace {
 
@@ -66,6 +70,7 @@ struct Options {
   std::string export_track;
   std::string export_car;
   std::string export_kc;
+  std::string list_signals;
   std::string link_name = vsim_link::kStateName;
   bool no_wheel = false;
   bool virtual_wheel = false;
@@ -91,6 +96,8 @@ constexpr const char* kUsage = R"(usage: vsim-core --scenario <file.yaml> [optio
   --export-track-glb <file>  write the scenario's track as a 3D model (glTF binary) and exit
   --export-car-glb <file>    write the car's 3D model (glTF binary) and exit
   --export-kc <file.csv>     write the suspension K&C curves solved from the hardpoints and exit
+  --list-signals <file.json> write the scenario's signals (name, unit, description) and exit;
+                             the Simulink tools (sdk/simulink) map model ports with it
   --version            print the version and exit
 
 In realtime mode open ui/live/index.html in a browser to watch and drive.
@@ -208,6 +215,8 @@ std::optional<Options> parse_args(const std::vector<std::string>& args) {
       options.export_track = value();
     } else if (arg == "--export-kc") {
       options.export_kc = value();
+    } else if (arg == "--list-signals") {
+      options.list_signals = value();
     } else if (arg == "--export-car-glb") {
       options.export_car = value();
     } else if (arg == "--set") {
@@ -539,19 +548,26 @@ json params_json(const vsim::ParamTree& tree, const std::string& prefix) {
 
 // Writes files from the vehicle builder into the project: only below
 // vehicle/, with known extensions. Returns the written paths.
-std::vector<std::string> import_vehicle_files(const std::filesystem::path& project, const json& files) {
+// Files from a browser page into one folder of the project (no way out of it).
+std::vector<std::string> import_project_files(const std::filesystem::path& project, const json& files,
+                                              const std::string& folder, const std::vector<std::string>& exts) {
   std::vector<std::string> written;
   for (const json& f : files) {
     const std::string rel = f.at("path");
     const std::filesystem::path path = vsim::path_from_utf8(rel);
-    const std::string ext = vsim::path_to_utf8(path.extension());
-    const bool allowed_ext = ext == ".glb" || ext == ".yaml" || ext == ".step" || ext == ".stp" || ext == ".stl";
-    bool inside = rel.rfind("vehicle/", 0) == 0 && path.is_relative();
+    std::string ext = vsim::path_to_utf8(path.extension());
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
+    const bool allowed_ext = std::find(exts.begin(), exts.end(), ext) != exts.end();
+    bool inside = rel.rfind(folder + "/", 0) == 0 && path.is_relative();
     for (const auto& segment : path) {
       inside = inside && segment != "..";
     }
     if (!inside || !allowed_ext) {
-      throw std::invalid_argument("refusing to write '" + rel + "' (only vehicle/*.glb|yaml|step|stl)");
+      std::string list;
+      for (const std::string& e : exts) {
+        list += (list.empty() ? "" : "|") + e.substr(1);
+      }
+      throw std::invalid_argument("refusing to write '" + rel + "' (only " + folder + "/*." + list + ")");
     }
     const std::filesystem::path target = project / path;
     std::filesystem::create_directories(target.parent_path());
@@ -563,6 +579,130 @@ std::vector<std::string> import_vehicle_files(const std::filesystem::path& proje
     written.push_back(vsim::path_to_utf8(target));
   }
   return written;
+}
+
+std::vector<std::string> import_vehicle_files(const std::filesystem::path& project, const json& files) {
+  return import_project_files(project, files, "vehicle", {".glb", ".yaml", ".step", ".stp", ".stl"});
+}
+
+// --- Plugins page (ui/plugins) -------------------------------------------------------------
+
+// The components file before the page last saved it: restored if the new one
+// fails to load, so a bad mapping does not stop the simulator.
+std::optional<std::pair<std::filesystem::path, std::string>> g_components_backup;
+std::string g_components_error;  // why the last save was rolled back, for the page
+
+std::filesystem::path components_file(const vsim::Scenario& scenario) {
+  const vsim::ParamTree project = vsim::ParamTree::from_yaml_file(scenario.project_dir / "project.yaml");
+  return scenario.project_dir /
+         vsim::path_from_utf8(project.get_string("components", "plugins/components.yaml"));
+}
+
+json plugins_state(const vsim::Simulation& sim) {
+  json active = json::array();
+  for (const vsim::PluginBlock* p : sim.plugins()) {
+    const vsim::PluginInstance::Info info = p->info();
+    json ports = json::array();
+    for (const auto& c : p->connections()) {
+      ports.push_back({{"port", c.port}, {"unit", c.unit}, {"input", c.input}, {"signal", c.signal},
+                       {"signal_unit", c.signal_unit},
+                       {"constant", c.constant ? json(*c.constant) : json(nullptr)}});
+    }
+    const auto& st = p->stats();
+    active.push_back({{"name", std::string(p->name())},
+                      {"type", info.type},
+                      {"slot", p->spec().slot},
+                      {"after", p->spec().after},
+                      {"period", p->period()},
+                      {"file", info.file},
+                      {"sha256", p->sha256()},
+                      {"plugin", info.name},
+                      {"version", info.version},
+                      {"ports", ports},
+                      {"stats",
+                       {{"calls", st.calls},
+                        {"mean_us", st.calls > 0 ? st.total_s / static_cast<double>(st.calls) * 1e6 : 0.0},
+                        {"max_us", st.max_s * 1e6}}}});
+  }
+  json signals = json::array();
+  for (vsim::SignalId id = 0; id < sim.bus().size(); ++id) {
+    signals.push_back({{"name", sim.bus().info(id).name}, {"unit", sim.bus().info(id).unit}});
+  }
+  json files = json::array();
+  const std::filesystem::path dir = sim.scenario().project_dir / "plugins";
+  std::error_code ec;
+  if (std::filesystem::is_directory(dir, ec)) {
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(dir, ec)) {
+      if (entry.is_regular_file(ec)) {
+        files.push_back(vsim::path_to_utf8(entry.path().lexically_relative(sim.scenario().project_dir)));
+      }
+    }
+  }
+  const std::filesystem::path file = components_file(sim.scenario());
+  std::string text;
+  if (std::ifstream in(file, std::ios::binary); in) {
+    text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  }
+  return json{{"jsonrpc", "2.0"},
+              {"method", "plugins.state"},
+              {"params",
+               {{"project", vsim::path_to_utf8(sim.scenario().project_dir)},
+                {"components_file", vsim::path_to_utf8(file.lexically_relative(sim.scenario().project_dir))},
+                {"components_yaml", text},
+                {"types", vsim::plugin_types()},
+                {"active", active},
+                {"signals", signals},
+                {"files", files},
+                {"load_error", g_components_error}}}};
+}
+
+// Loads a component on its own to read its ports (the page maps them before running).
+json probe_plugin(const vsim::Simulation& sim, const std::string& name, const json& component) {
+  vsim::ParamTree params;
+  params.merge(vsim::ParamTree::from_yaml_string(component.dump()), "components." + name);
+  params.set("components." + name + ".enabled", "true");
+  params.set("project.dir", vsim::path_to_utf8(sim.scenario().project_dir));
+  const auto specs = vsim::components_from_params(params);
+  if (specs.empty()) {
+    throw std::invalid_argument("no component to probe");
+  }
+  const auto instance = vsim::create_plugin(params, specs.front());
+  json ports = json::array();
+  for (const vsim::PortInfo& port : instance->ports()) {
+    ports.push_back({{"name", port.name}, {"unit", port.unit}, {"input", port.input}});
+  }
+  const auto info = instance->info();
+  return json{{"jsonrpc", "2.0"},
+              {"method", "plugins.probe"},
+              {"params",
+               {{"name", name}, {"ports", ports}, {"period", instance->period()}, {"type", info.type},
+                {"file", info.file}, {"plugin", info.name}, {"version", info.version}}}};
+}
+
+// Writes the components file (after checking it parses) and makes the
+// project point at it.
+void save_components(const vsim::Scenario& scenario, const std::string& text) {
+  vsim::ParamTree::from_yaml_string(text);  // throws on a YAML error
+  const std::filesystem::path file = components_file(scenario);
+  std::filesystem::create_directories(file.parent_path());
+  std::string old;
+  if (std::ifstream in(file, std::ios::binary); in) {
+    old.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  }
+  g_components_backup.emplace(file, old);
+  g_components_error.clear();
+  {
+    std::ofstream out(file, std::ios::binary);
+    out << text;
+    if (!out) {
+      throw std::runtime_error("cannot write " + vsim::path_to_utf8(file));
+    }
+  }
+  const std::filesystem::path project = scenario.project_dir / "project.yaml";
+  if (!vsim::ParamTree::from_yaml_file(project).has("components")) {
+    std::ofstream out(project, std::ios::binary | std::ios::app);
+    out << "\ncomponents: " << vsim::path_to_utf8(file.lexically_relative(scenario.project_dir)) << "\n";
+  }
 }
 
 std::string notice(const std::string& level, const std::string& text) {
@@ -893,6 +1033,27 @@ int run_realtime(vsim::Simulation& sim, const Options& options) {
             server.broadcast(notice("info", "reloading the simulation with the new vehicle"));
             reload = true;
           }
+        } else if (method == "plugins.get") {
+          server.broadcast(plugins_state(sim).dump());
+        } else if (method == "plugins.probe") {
+          server.broadcast(probe_plugin(sim, params.at("name"), params.at("component")).dump());
+        } else if (method == "plugins.import") {
+          const auto written = import_project_files(sim.scenario().project_dir, params.at("files"), "plugins",
+                                                    {".dll", ".so", ".dylib", ".fmu", ".py", ".json", ".csv"});
+          for (const std::string& file : written) {
+            std::cout << "Plugins page wrote " << file << "\n";
+          }
+          server.broadcast(notice("info", "saved " + std::to_string(written.size()) + " file(s) to plugins/"));
+          server.broadcast(plugins_state(sim).dump());
+        } else if (method == "plugins.save") {
+          save_components(sim.scenario(), params.at("text"));
+          std::cout << "Plugins page saved " << vsim::path_to_utf8(components_file(sim.scenario())) << "\n";
+          if (params.value("reload", true)) {
+            server.broadcast(notice("info", "components saved; reloading the simulation"));
+            reload = true;
+          } else {
+            server.broadcast(notice("info", "components saved"));
+          }
         } else if (method == "vehicle.model") {
           server.broadcast(car_model_message(car_model, car_generation));
         } else if (method == "track.mesh") {
@@ -1057,6 +1218,9 @@ int main(int argc, char** argv) {
     }
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
+#ifdef VSIM_WITH_PYTHON
+    vsim::register_python_plugins(true);
+#endif
 #ifdef _WIN32
     // 1 ms timer resolution so the real-time loop can sleep in small steps.
     timeBeginPeriod(1);
@@ -1066,10 +1230,38 @@ int main(int argc, char** argv) {
     sim_options.log_dir = vsim::path_from_utf8(options->log_dir);
     sim_options.record = false;
     for (;;) {
-    vsim::Simulation sim(vsim::Scenario::load(vsim::path_from_utf8(options->scenario),
-                                              options->overrides),
-                         sim_options);
+    std::optional<vsim::Simulation> loaded;
+    try {
+      loaded.emplace(vsim::Scenario::load(vsim::path_from_utf8(options->scenario), options->overrides), sim_options);
+    } catch (const std::exception& error) {
+      if (!g_components_backup) {
+        throw;
+      }
+      // Components saved from the plugins page did not load: back to the old file.
+      std::cerr << "components rejected, restoring the previous file: " << error.what() << "\n";
+      g_components_error = error.what();
+      std::ofstream(g_components_backup->first, std::ios::binary) << g_components_backup->second;
+      g_components_backup.reset();
+      continue;
+    }
+    g_components_backup.reset();
+    vsim::Simulation& sim = *loaded;
 
+    if (!options->list_signals.empty()) {
+      nlohmann::json list = nlohmann::json::array();
+      const vsim::SignalBus& bus = sim.bus();
+      for (vsim::SignalId id = 0; id < bus.size(); ++id) {
+        const auto& info = bus.info(id);
+        list.push_back({{"name", info.name}, {"unit", info.unit}, {"description", info.description}});
+      }
+      std::ofstream out(vsim::path_from_utf8(options->list_signals), std::ios::binary);
+      out << list.dump(1) << "\n";
+      if (!out) {
+        throw std::runtime_error("cannot write " + options->list_signals);
+      }
+      std::cout << list.size() << " signals written to " << options->list_signals << "\n";
+      return 0;
+    }
     if (!options->export_kc.empty()) {
       write_kc(sim.scenario().params, options->export_kc);
       if (options->export_car.empty() && options->export_track.empty()) {

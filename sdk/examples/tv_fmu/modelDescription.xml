@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The torque vectoring example as an FMI 2.0 Co-Simulation FMU (vsim SDK). -->
+<fmiModelDescription fmiVersion="2.0" modelName="tv_fmu" guid="{8c4e810f-3df3-4a00-8276-176fa3c9f000}"
+                     generationTool="vsim sdk example" variableNamingConvention="flat" numberOfEventIndicators="0">
+  <CoSimulation modelIdentifier="tv_fmu" canHandleVariableCommunicationStepSize="true"/>
+  <UnitDefinitions>
+    <Unit name="rad"/><Unit name="m/s"/><Unit name="rad/s"/><Unit name="N.m"/>
+  </UnitDefinitions>
+  <TypeDefinitions>
+    <SimpleType name="Torque"><Real quantity="Torque" unit="N.m"/></SimpleType>
+  </TypeDefinitions>
+  <ModelVariables>
+    <ScalarVariable name="steer" valueReference="0" causality="input" variability="continuous"><Real unit="rad" start="0"/></ScalarVariable>
+    <ScalarVariable name="vx" valueReference="1" causality="input" variability="continuous"><Real unit="m/s" start="0"/></ScalarVariable>
+    <ScalarVariable name="yaw_rate" valueReference="2" causality="input" variability="continuous"><Real unit="rad/s" start="0"/></ScalarVariable>
+    <ScalarVariable name="tq_fl_in" valueReference="3" causality="input" variability="continuous"><Real declaredType="Torque" start="0"/></ScalarVariable>
+    <ScalarVariable name="tq_fr_in" valueReference="4" causality="input" variability="continuous"><Real declaredType="Torque" start="0"/></ScalarVariable>
+    <ScalarVariable name="tq_rl_in" valueReference="5" causality="input" variability="continuous"><Real declaredType="Torque" start="0"/></ScalarVariable>
+    <ScalarVariable name="tq_rr_in" valueReference="6" causality="input" variability="continuous"><Real declaredType="Torque" start="0"/></ScalarVariable>
+    <ScalarVariable name="tq_fl" valueReference="7" causality="output" variability="continuous" initial="calculated"><Real declaredType="Torque"/></ScalarVariable>
+    <ScalarVariable name="tq_fr" valueReference="8" causality="output" variability="continuous" initial="calculated"><Real declaredType="Torque"/></ScalarVariable>
+    <ScalarVariable name="tq_rl" valueReference="9" causality="output" variability="continuous" initial="calculated"><Real declaredType="Torque"/></ScalarVariable>
+    <ScalarVariable name="tq_rr" valueReference="10" causality="output" variability="continuous" initial="calculated"><Real declaredType="Torque"/></ScalarVariable>
+    <ScalarVariable name="shift" valueReference="11" causality="output" variability="continuous" initial="calculated"><Real declaredType="Torque"/></ScalarVariable>
+    <ScalarVariable name="gain" valueReference="12" causality="parameter" variability="tunable"><Real start="40"/></ScalarVariable>
+    <ScalarVariable name="wheelbase" valueReference="13" causality="parameter" variability="tunable"><Real unit="m" start="1.53"/></ScalarVariable>
+    <ScalarVariable name="steer_ratio" valueReference="14" causality="parameter" variability="tunable"><Real start="4.5"/></ScalarVariable>
+    <ScalarVariable name="understeer" valueReference="15" causality="parameter" variability="tunable"><Real start="0"/></ScalarVariable>
+    <ScalarVariable name="a_max" valueReference="16" causality="parameter" variability="tunable"><Real start="15"/></ScalarVariable>
+    <ScalarVariable name="max_shift" valueReference="17" causality="parameter" variability="tunable"><Real declaredType="Torque" start="8"/></ScalarVariable>
+    <ScalarVariable name="v_on" valueReference="18" causality="parameter" variability="tunable"><Real unit="m/s" start="3"/></ScalarVariable>
+  </ModelVariables>
+  <ModelStructure>
+    <Outputs>
+      <Unknown index="8"/><Unknown index="9"/><Unknown index="10"/><Unknown index="11"/><Unknown index="12"/>
+    </Outputs>
+  </ModelStructure>
+</fmiModelDescription>

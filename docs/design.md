@@ -2,7 +2,7 @@
 
 | 항목 | 내용 |
 |---|---|
-| 상태 | **Draft v1.3** (M6 구현 완료, Unreal 빌드·휠 느낌 확인 대기) |
+| 상태 | **Draft v1.4** (M7 구현 완료, Unreal 빌드·휠 느낌·MATLAB `vsim_export` 확인 대기) |
 | 최종 수정 | 2026-10-23 |
 | 초안 | Claude |
 | 검토 | @tkdgusqkr-g |
@@ -1138,6 +1138,15 @@ class MyTorqueVectoring(Block):
         return {"mz_cmd": self.kp * (r_ref - u["yaw_rate"])}
 ```
 
+**M7 구현** (`vsim/plugin/`, `sdk/`)
+- 연결 파일: 프로젝트의 `plugins/components.yaml`(`project.yaml`의 `components:`)이 `components.*`로 들어갑니다. 항목: `type`(native·fmu·python·builtin), `path`/`module`, `slot`(vcu·driver 대신) 또는 `after`(driver·sensors·vcu 다음), `period`, `params`, `ports.in/out`, `enabled`, `order`. 시나리오나 `--set`으로 덮어쓸 수 있습니다.
+- `PluginBlock`(`Block` 구현)이 모든 종류를 같은 방식으로 돌립니다: 포트 ↔ 신호 연결(이름이 같으면 자동, 상수 입력, 없는 출력 신호는 생성), 단위 변환(종류가 다르면 시작 시 오류), 출력 유한성 검사, 호출당 벽시계 시간(버스에 넣지 않음: 결정론 유지). 실행마다 `meta.json`에 파일 SHA-256·이름·버전·연결, `summary.json`에 실행 시간.
+- Native: §11.6의 ABI에 `name`, `version`, `default_period`, `VsimHost`(로그)를 더한 `VSIM_PLUGIN_ABI_VERSION 1`. 입력·출력은 선언 순서의 double 배열. C++ 헬퍼는 헤더 하나(`VSIM_PLUGIN` 매크로).
+- FMU: FMI 2.0 Co-Simulation. `.fmu`는 내용 해시 이름의 임시 폴더에 한 번 풀고(miniz), `modelDescription.xml`은 자체 소형 파서로 읽습니다(변수, 인과성, 단위·선언 형식). 매 주기 입력 설정 → `fmi2DoStep(t, h)` → 출력 읽기. 파라미터는 `params`의 같은 이름 변수에 초기화 전에 설정.
+- Python: `vsim.plugin.Block` 클래스. Python 모듈 안에서는 그 인터프리터로, vsim-core에서는 처음 쓸 때 내장 인터프리터를 띄웁니다(Windows는 Python DLL을 지연 로드: Python 없이도 실행). 매 호출 GIL을 잡습니다.
+- Simulink: `vsim_export.m`이 Embedded Coder(비재사용 함수, 루트 I/O 구조체)로 코드를 만들고, 생성 헤더에서 포트별 필드·형식을 읽어 래퍼 틀(`vsim_ert_wrapper.c.in`)을 채운 뒤 CMake로 빌드합니다. 없으면 FMU로. 포트 이름 = 신호 이름의 `.`→`_`면 자동 연결, 그 밖은 편집 거리로 후보를 주석에. `vsim-core --list-signals`가 신호 목록을 줍니다.
+- 플러그인 페이지(`ui/plugins`, RPC `plugins.get/probe/import/save`): 저장 후 다시 불러오지 못하면 이전 파일로 되돌리고 이유를 표시.
+
 ---
 
 ## 12. 전기 시스템: CAN, 배선, 기판
@@ -1752,7 +1761,7 @@ Q-12(혼자 개발, 정해진 일정 없음)와 Q-23(차가 최대한 빨리 구
 | **M4** ✅ | 우리 차로 구른다 | 차량 빌더: CAD 가져오기, 바디 매핑, 질량 특성, 센서 배치(3D), Unreal에 차량 형상 | 팀 CAD로 입력한 차를 주행 |
 | **M5** ✅ | 노면 위를 구른다 | L3 14-DOF, 하드포인트 → K&C, 3D 트랙(고도·뱅크·연석), 노면 거칠기·요철·μ 분포 | V-09, V-10, PH-02, PH-12, 노면 요철이 FFB로 느껴짐 |
 | **M6** ✅ | 센서로 본다 | 센서 신호 체인, 고주파 진동 합성, 현상 탐지 | V-11, PH-01, PH-03, PH-11 |
-| **M7** | 실차 코드로 달린다 | 플러그인 4종, `vsim_export`, SDK·예제, 플러그인 관리 UI | 실차 Simulink VCU로 주행 |
+| **M7** ✅ | 실차 코드로 달린다 | 플러그인 4종, `vsim_export`, SDK·예제, 플러그인 관리 UI | 실차 Simulink VCU로 주행 |
 | **M8** | CAN으로 말한다 | CAN 네트워크 편집기(버스·DBC·노드 등록), timing/faults, ECU 클록 드리프트·지터, 버스 로그 | V-08, PH-08, PH-09 |
 | **M9** | 전기가 흐른다 | 회로 편집기, MNA 해석기, 프리차지·셧다운, LV 전력 예산, ECU 전원 의존 동작, 센서 배선, 고장 주입, 하네스 경로 | V-07, PH-07, PH-10, PH-16 |
 | **M10** | 스스로 한계까지 | MPC 드라이버 추종 모드 NMPC, 한계 주행 MPCC, 속도 프로파일 | 두 모드로 외란 있는 트랙 완주 |
@@ -1942,6 +1951,30 @@ Q-12(혼자 개발, 정해진 일정 없음)와 Q-23(차가 최대한 빨리 구
 | 차속 추정 | 종방향 상보 필터 | 횡슬립·μ 추정 (§8.1) | 토크 벡터링과 함께 |
 | 원인 분리 | 분류 단위 | 분류 안의 개별 외란 단위 | 필요할 때 |
 
+**M7 (2026-10-23 구현)**. 사용법은 [build.md](build.md)의 "플러그인", SDK는 [sdk/README.md](../sdk/README.md)를 참고하세요.
+
+| 항목 | 결과 |
+|---|---|
+| 완료 기준 | 실차 Simulink VCU로 주행: Embedded Coder 코드 경로의 래퍼를 Embedded Coder 출력 모양의 대역 모델로 빌드·주행 시험 ✅ (형식 4종, 단위 %·rpm 변환, 주기 검사). **실제 MATLAB에서 `vsim_export` 실행은 사용자 확인 대기** |
+| 플러그인 4종 | Native(C·C++), FMU 2.0 CS, Python(모듈 안·vsim-core 내장), builtin. External(공유 메모리·UDP lockstep)은 M12의 외부 가상 ECU와 함께 |
+| 같은 로직 비교 | 토크 벡터링을 C++·FMU·Python으로: 스키드패드 8초 결과가 비트 단위로 같음 |
+| 실행 비용 | 호출당 평균 native 1.1 µs, FMU 1.1 µs, Python 7.5 µs (주기 10 ms) |
+| 오류 안내 | 없는 포트 이름, 연결 안 된 입력, 없는 신호, 단위 종류 불일치, 파일 없음(찾은 경로 목록), ABI 버전, 종류 없음(Python 미설치), 슬롯 중복, 비유한 출력, Python 예외(플러그인 이름과 시각) |
+| UI | 플러그인 페이지: 실행 중 목록과 실행 시간, 파일 올리기, 포트 불러오기, 신호 검색·연결, 저장 후 다시 불러오기와 실패 시 되돌리기 (브라우저 시험) |
+| 테스트 | C++ 180개(플러그인 11, vsim-core 내장 Python 1 추가), Python 38개(플러그인 5 추가) |
+
+**설계와 다르게 구현한 부분**
+
+| 항목 | M7 구현 | 설계 | 맞추는 시점 |
+|---|---|---|---|
+| FMU 종류 | FMI 2.0 Co-Simulation만 | FMI 2.0/3.0, Model Exchange (코어 적분기로 적분) | Plant 쪽 FMU가 필요할 때 |
+| 슬롯 | driver, vcu 교체와 블록 추가(driver·sensors·vcu 다음) | `bms_logic`, `plant.*`, `sensors.*`, `can_node.*` 등 (§11.1) | 해당 모델이 생길 때 (CAN 노드는 M8) |
+| External 플러그인 | 없음 | 공유 메모리·UDP lockstep | M12 |
+| 단위 | 표에 있는 단위 (각속도·속도·압력·온도·전력 등 50여 개) | 일반 단위 계산 | 필요할 때 |
+| 실시간 overrun 경고 | 실행 시간 기록과 페이지 막대 | 예산 초과 경고 | 실시간 문제가 보일 때 |
+| `vsim_export` 실행 | 미검증 (MATLAB 없음) | — | 사용자 확인 |
+| 신호 라이브러리 | 신호 목록(JSON)과 `vsim_add_port` | Simulink 버스 객체 | 필요할 때 |
+
 ---
 
 ## 20. 리스크
@@ -2066,5 +2099,6 @@ Q-12(혼자 개발, 정해진 일정 없음)와 Q-23(차가 최대한 빨리 구
 | v0.9 | 2026-10-22 | M2 구현 완료. §14.1에 트랙 파일 스키마 1 반영, §19.3 M2 구현 메모, D-10 확정, D-31~D-32 추가, Q-09는 "둘 다"로 진행(답변 대기) |
 | v1.0 | 2026-10-22 | Q-28 반영(모니터 1대)과 M3 구현. §16.3에 연결 규약·트랙 메시·Unreal 프로젝트 구조, §19.3 M3 구현 메모, D-06 확정, D-33~D-35 추가, 리스크에 엔진 없이 작성한 Unreal 프로젝트 추가 |
 | v1.1 | 2026-10-23 | M4 구현: 차량 빌더(브라우저 CAD 가져오기, 질량 특성, 하드포인트·센서, 프로젝트 저장), FSAE 기준 예제 차량과 규정 점검, 그래픽 개선(PBR, 하늘, 그림자, 트랙 주변 환경, 상세 차량 모델), 공유 메모리 v2(차량 메시). §19.3 M4 구현 메모 |
+| v1.4 | 2026-10-23 | M7 구현: 플러그인 호스트(Native C ABI·C++ 헬퍼, FMI 2.0 CS, Python 모듈·내장), 프로젝트 연결 파일(`plugins/components.yaml`), 단위 변환, 실행 기록(해시·실행 시간), Simulink `vsim_export`(Embedded Coder 래퍼·FMU), 플러그인 페이지, SDK 예제. §11 M7 구현, §19.3 M7 구현 메모 |
 | v1.3 | 2026-10-23 | M6 구현: 센서 신호 체인(채널 오차 체인, IMU 레버암·중력·장착·진동 aliasing, 휠속 펄스, APPS 2채널, GNSS 등 12종), 고장 주입, VCU의 APPS·BSPC 타당성 검사와 차속 추정, 현상 탐지·원인 분리 도구, 빌더·규정 점검의 센서 지원. §8.1, §10.5, §13.3 M6 구현, §19.3 M6 구현 메모 |
 | v1.2 | 2026-10-23 | M5 구현: L3 14자유도 모델(Kane, 예제 기본), 하드포인트 K&C 해석기, 조향축 모멘트 FFB, 타이어 캠버·노면 마찰, 3D 노면(고도·뱅크·연석·ISO 8608·마찰 구간·잔디), 3D 트랙 메시·지형, 뷰어의 서스펜션 움직임, 편집기 노면 도구. §6.4, §14.1 M5 구현, §19.3 M5 구현 메모 |

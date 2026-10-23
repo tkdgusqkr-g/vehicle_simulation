@@ -34,6 +34,10 @@ add_library(vsim_core STATIC
   src/models/vehicle/single_track.cpp
   src/models/vehicle/suspension.cpp
   src/models/vehicle/two_track.cpp
+  src/plugin/fmu_plugin.cpp
+  src/plugin/native_plugin.cpp
+  src/plugin/plugin.cpp
+  src/plugin/units.cpp
   src/sensors/sensor_chain.cpp
   src/sensors/sensor_system.cpp
   src/sim/integrator.cpp
@@ -53,8 +57,12 @@ add_library(vsim_core STATIC
   src/visual/mesh.cpp
   src/visual/vehicle_visual.cpp
   "${CMAKE_CURRENT_BINARY_DIR}/generated/version.cpp")
-target_include_directories(vsim_core PUBLIC include)
-target_link_libraries(vsim_core PRIVATE yaml-cpp nlohmann_json::nlohmann_json vsim_mcap)
+target_include_directories(vsim_core PUBLIC include "${PROJECT_SOURCE_DIR}/sdk/c/include"
+                           PRIVATE "${PROJECT_SOURCE_DIR}/sdk/fmi2/include")
+target_link_libraries(vsim_core PRIVATE yaml-cpp nlohmann_json::nlohmann_json vsim_mcap vsim_miniz ${CMAKE_DL_LIBS})
+# Plugins built with vsim (sdk/examples) are found without a path.
+set(VSIM_PLUGIN_OUTPUT_DIR "${PROJECT_BINARY_DIR}/plugins" CACHE INTERNAL "")
+target_compile_definitions(vsim_core PRIVATE VSIM_DEFAULT_PLUGIN_DIR="${VSIM_PLUGIN_OUTPUT_DIR}")
 if(UNIX AND NOT APPLE)
   target_link_libraries(vsim_core PRIVATE rt)  # shm_open on glibc < 2.34
 endif()
@@ -68,6 +76,20 @@ if(VSIM_BUILD_APP)
 
   add_executable(vsim-core apps/vsim-core/main.cpp)
   target_link_libraries(vsim-core PRIVATE vsim_core vsim_api nlohmann_json::nlohmann_json)
+  # Python plugins: an interpreter started on first use (design doc §11.2).
+  if(VSIM_BUILD_PYTHON AND TARGET Python::Python AND TARGET pybind11::embed)
+    target_sources(vsim-core PRIVATE "${PROJECT_SOURCE_DIR}/python/src/python_plugin.cpp")
+    target_include_directories(vsim-core PRIVATE "${PROJECT_SOURCE_DIR}/python/src")
+    target_link_libraries(vsim-core PRIVATE pybind11::embed)
+    target_compile_definitions(vsim-core PRIVATE VSIM_WITH_PYTHON VSIM_PYTHON_DIR="${PROJECT_SOURCE_DIR}/python")
+    if(MSVC)
+      # Starts without Python installed; only Python plugins need the DLL.
+      set(_vsim_python_dll "python${Python_VERSION_MAJOR}${Python_VERSION_MINOR}.dll")
+      target_link_options(vsim-core PRIVATE "/DELAYLOAD:${_vsim_python_dll}")
+      target_link_libraries(vsim-core PRIVATE delayimp)
+      target_compile_definitions(vsim-core PRIVATE VSIM_PYTHON_DLL="${_vsim_python_dll}")
+    endif()
+  endif()
   if(WIN32)
     target_link_libraries(vsim-core PRIVATE winmm shell32)
   endif()

@@ -1,4 +1,4 @@
-pybind11_add_module(_vsim src/bindings.cpp)
+pybind11_add_module(_vsim src/bindings.cpp src/python_plugin.cpp)
 target_link_libraries(_vsim PRIVATE vsim_core)
 # Build straight into the package directory so `import vsim` works with
 # PYTHONPATH=python (the generator expression stops per-config subfolders).
