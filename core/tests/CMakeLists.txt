@@ -1,5 +1,6 @@
 add_executable(vsim_tests
   test_can.cpp
+  test_car_sound.cpp
   test_driveline.cpp
   test_elec.cpp
   test_environment.cpp
@@ -28,6 +29,9 @@ target_link_libraries(vsim_tests PRIVATE vsim_core GTest::gtest_main nlohmann_js
 target_compile_definitions(vsim_tests PRIVATE VSIM_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 add_dependencies(vsim_tests simple_vcu tv_cpp tv_fmu fake_ert_vcu)  # the example plugins the tests load
 vsim_set_warnings(vsim_tests)
+# The Unreal plugin's engine-free headers (the car sound synthesizer).
+set_property(SOURCE test_car_sound.cpp APPEND PROPERTY INCLUDE_DIRECTORIES
+             ${PROJECT_SOURCE_DIR}/ui/unreal/VsimViewer/Plugins/VsimLink/Source/VsimLink/Public)
 
 include(GoogleTest)
 gtest_discover_tests(vsim_tests DISCOVERY_MODE PRE_TEST)

@@ -5,6 +5,7 @@
 #include "GameFramework/SpringArmComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "ProceduralMeshComponent.h"
+#include "VsimCarSound.h"
 
 AVsimCarActor::AVsimCarActor()
 {
@@ -41,6 +42,10 @@ AVsimCarActor::AVsimCarActor()
 	NoseCamera->SetupAttachment(Body);
 	NoseCamera->SetFieldOfView(75.0f);
 	NoseCamera->SetAutoActivate(false);
+
+	Sound = CreateDefaultSubobject<UVsimCarSound>(TEXT("Sound"));
+	Sound->SetupAttachment(Root);
+	Sound->SetAutoActivate(false);
 }
 
 USceneComponent* AVsimCarActor::NewPivot(USceneComponent* Parent, const FVector& Location)
@@ -182,6 +187,10 @@ void AVsimCarActor::ConfigureCameras(const vsim_link::VehicleInfo& Info)
 
 void AVsimCarActor::ApplyState(const vsim_link::VehicleState& State)
 {
+	if (Sound->IsPlaying())
+	{
+		Sound->SetState(State);
+	}
 	SetActorLocationAndRotation(VsimFrame::Position(State.x, State.y, State.road_z), VsimFrame::Heading(State.yaw));
 	// Unreal: positive pitch lifts the nose, positive roll lowers the right
 	// side. vsim: positive pitch dips the nose, positive roll lifts the left.

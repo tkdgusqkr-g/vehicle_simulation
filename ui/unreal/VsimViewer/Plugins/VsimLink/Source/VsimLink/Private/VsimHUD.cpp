@@ -116,6 +116,7 @@ void AVsimHUD::DrawHUD()
 		DrawText(TEXT("arrows/WASD drive (or the wheel)"), Muted, HelpX + 10 * Scale, HelpY + 8 * Scale, Small, Scale);
 		DrawText(TEXT("C camera   R reset   Space pause"), Muted, HelpX + 10 * Scale, HelpY + 30 * Scale, Small, Scale);
 		DrawText(TEXT("H HUD   F1 this help   Esc quit"), Muted, HelpX + 10 * Scale, HelpY + 52 * Scale, Small, Scale);
-		DrawText(TEXT("vsim viewer"), Muted, HelpX + 10 * Scale, HelpY + 74 * Scale, Small, Scale);
+		DrawText(FString::Printf(TEXT("N sound (%s)   vsim viewer"), Vsim->IsSoundOn() ? TEXT("on") : TEXT("off")), Muted,
+			HelpX + 10 * Scale, HelpY + 74 * Scale, Small, Scale);
 	}
 }

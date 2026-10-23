@@ -98,7 +98,7 @@ class LinkSnapshot {
     double get(const SignalBus& bus, double fallback = 0.0) const { return id ? bus.get(*id) : fallback; }
   };
   struct Wheel {
-    Id steer, omega, load, slip_ratio, slip_angle, hub_offset, camber;
+    Id steer, omega, load, slip_ratio, slip_angle, hub_offset, camber, tire_temp, brake_temp, surface;
   };
 
   vsim_link::VehicleInfo info_{};
@@ -110,6 +110,7 @@ class LinkSnapshot {
   std::vector<SignalId> motor_temps_;
   Wheel wheels_[4];
   double roll_per_g_ = 0.0, pitch_per_g_ = 0.0, body_tau_ = 0.05;
+  bool tire_thermal_ = false, brake_thermal_ = false;
   double last_time_ = 0.0;
   double ax_filtered_ = 0.0, ay_filtered_ = 0.0;
   double spin_[4] = {};

@@ -11,6 +11,7 @@
 #include <initializer_list>
 #include <type_traits>
 #include <cstdarg>
+#include <functional>
 
 #define PLATFORM_WINDOWS 0
 #define VSIMLINK_API
@@ -166,6 +167,20 @@ class USceneComponent : public UActorComponent {
   void SetRelativeScale3D(const FVector&) {}
   void SetVisibility(bool) {}
 };
+template <typename Signature> using TUniqueFunction = std::function<Signature>;
+class USynthComponent : public USceneComponent {
+ public:
+  using StubSelf = USynthComponent;
+  void Start() {}
+  void Stop() {}
+  bool IsPlaying() const { return false; }
+  void SetVolumeMultiplier(float) {}
+ protected:
+  int32 NumChannels = 1;
+  virtual bool Init(int32&) { return true; }
+  virtual int32 OnGenerateAudio(float*, int32) = 0;
+  void SynthCommand(TUniqueFunction<void()> Command) { Command(); }
+};
 class UPrimitiveComponent : public USceneComponent {
  public:
   void SetCollisionEnabled(ECollisionEnabled::Type) {}
@@ -218,7 +233,7 @@ class UWorld : public UObject {
 };
 class ACameraActor : public AActor { public: UCameraComponent* GetCameraComponent() const { return nullptr; } };
 struct FKey {};
-struct EKeys { static const FKey Up, Down, Left, Right, W, A, S, D, C, R, P, H, F1, SpaceBar, Escape; };
+struct EKeys { static const FKey Up, Down, Left, Right, W, A, S, D, C, R, P, H, N, F1, SpaceBar, Escape; };
 struct FInputModeGameOnly {};
 class AController : public AActor {};
 class APlayerController : public AController {

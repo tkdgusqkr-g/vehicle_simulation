@@ -251,6 +251,16 @@ TEST(Link, SnapshotFollowsTheSimulation) {
   }
   // Accelerating: the nose lifts (negative pitch).
   EXPECT_LT(s.pitch, 0.0);
+  // For the viewers' sound and tyre display.
+  EXPECT_FLOAT_EQ(s.info.gear_ratio,
+                  static_cast<float>(sim.scenario().params.get_double("vehicle.driveline.0.gear_ratio")));
+  EXPECT_GT(s.info.gear_ratio, 1.0f);
+  EXPECT_FLOAT_EQ(s.tire_temp[vsim_link::kFrontLeft], static_cast<float>(test::signal(sim, "veh.wheel.fl.tire_temp")));
+  EXPECT_FLOAT_EQ(s.brake_temp[vsim_link::kRearRight],
+                  static_cast<float>(test::signal(sim, "veh.wheel.rr.brake_temp")));
+  for (const std::uint8_t surface : s.wheel_surface) {
+    EXPECT_EQ(surface, 0u);  // on the road
+  }
 }
 
 }  // namespace

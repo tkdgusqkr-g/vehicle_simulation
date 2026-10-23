@@ -1,6 +1,6 @@
 // The car as published by the simulator (vsim_link.h, kMeshCar): body,
 // wheels, uprights, steering wheel and suspension links moved by the
-// vehicle state, plus the chase / cockpit / nose cameras.
+// vehicle state, plus the chase / cockpit / nose cameras and the car's sound.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -15,6 +15,7 @@ class UMaterialInstanceDynamic;
 class UProceduralMeshComponent;
 class USceneComponent;
 class USpringArmComponent;
+class UVsimCarSound;
 
 UCLASS()
 class VSIMLINK_API AVsimCarActor : public AActor
@@ -51,6 +52,10 @@ public:
 
 	UPROPERTY(VisibleAnywhere, Category = "vsim")
 	TObjectPtr<UCameraComponent> NoseCamera;
+
+	/** Motor, tyre, road and wind sound; off until toggled (N). */
+	UPROPERTY(VisibleAnywhere, Category = "vsim")
+	TObjectPtr<UVsimCarSound> Sound;
 
 private:
 	struct FCorner

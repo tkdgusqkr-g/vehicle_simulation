@@ -53,6 +53,9 @@ public:
 	void CycleCamera();
 	void SendKeys(uint32 Keys);
 	void SendCommand(vsim_link::Command Command);
+	/** Car sound on or off; returns whether it is on now. */
+	bool ToggleSound();
+	bool IsSoundOn() const;
 
 private:
 	void UpdateTrack();

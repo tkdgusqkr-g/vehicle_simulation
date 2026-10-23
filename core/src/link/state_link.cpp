@@ -394,7 +394,8 @@ void LinkSnapshot::reset(const Simulation& sim) {
   for (std::size_t c = 0; c < kCorners; ++c) {
     const std::string base = "veh.wheel." + std::string(kCornerNames[c]) + ".";
     wheels_[c] = {id(base + "steer"), id(base + "omega"), id(base + "fz"), id(base + "slip_ratio"),
-                  id(base + "slip_angle"), id(base + "hub_offset"), id(base + "camber")};
+                  id(base + "slip_angle"), id(base + "hub_offset"), id(base + "camber"),
+                  id(base + "tire_temp"), id(base + "brake_temp"), id(base + "surface")};
   }
 
   const ParamTree& p = sim.scenario().params;
@@ -411,6 +412,9 @@ void LinkSnapshot::reset(const Simulation& sim) {
   info_.tire_width = static_cast<float>(p.get_double("vehicle.tire.width_m", 0.2));
   info_.steering_ratio = static_cast<float>(p.get_double("vehicle.steering.ratio", 1.0));
   info_.steering_lock = static_cast<float>(p.get_double("vehicle.steering.lock_deg", 90.0) * std::numbers::pi / 180.0);
+  info_.gear_ratio = static_cast<float>(p.get_double("vehicle.driveline.0.gear_ratio", 1.0));
+  tire_thermal_ = p.has_prefix("vehicle.tire.thermal");
+  brake_thermal_ = p.has_prefix("vehicle.brakes.thermal");
   // Body motion for the picture only, until the suspension model (M5).
   constexpr double kDeg = std::numbers::pi / 180.0;
   roll_per_g_ = p.get_double("vehicle.suspension.roll_gradient_deg_per_g", 1.0) * kDeg;
@@ -476,6 +480,9 @@ void LinkSnapshot::update(const Simulation& sim, vsim_link::VehicleState& s) {
     s.wheel_slip_angle[c] = static_cast<float>(w.slip_angle.get(bus));
     s.wheel_z[c] = static_cast<float>(w.hub_offset.get(bus));
     s.wheel_camber[c] = static_cast<float>(w.camber.get(bus));
+    s.tire_temp[c] = tire_thermal_ ? static_cast<float>(w.tire_temp.get(bus)) : 0.0f;
+    s.brake_temp[c] = brake_thermal_ ? static_cast<float>(w.brake_temp.get(bus)) : 0.0f;
+    s.wheel_surface[c] = static_cast<std::uint8_t>(std::lround(std::clamp(w.surface.get(bus), 0.0, 2.0)));
   }
 
   s.power_kw = static_cast<float>(power_.get(bus) / 1000.0);

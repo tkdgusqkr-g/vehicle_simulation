@@ -453,6 +453,7 @@ std::string hello_message(const vsim::Simulation& sim, std::uint64_t track_gener
   vehicle["track_front"] = params.get_double("vehicle.track_front_m", 1.2);
   vehicle["track_rear"] = params.get_double("vehicle.track_rear_m", 1.2);
   vehicle["steering_ratio"] = params.get_double("vehicle.steering.ratio");
+  vehicle["gear_ratio"] = params.get_double("vehicle.driveline.0.gear_ratio", 1.0);
   vehicle["max_steer_wheel"] = params.get_double("vehicle.steering.lock_deg") * std::numbers::pi / 180.0;
   vehicle["tire_radius"] = params.get_double("vehicle.wheel.radius_m");
   vehicle["tire_width"] = params.get_double("vehicle.tire.width_m", 0.2);

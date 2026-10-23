@@ -74,6 +74,10 @@ void AVsimPlayerController::PlayerTick(float DeltaTime)
 	{
 		bHudVisible = !bHudVisible;
 	}
+	if (WasInputKeyJustPressed(EKeys::N))
+	{
+		Vsim->ToggleSound();
+	}
 	if (WasInputKeyJustPressed(EKeys::F1))
 	{
 		bHelpVisible = !bHelpVisible;

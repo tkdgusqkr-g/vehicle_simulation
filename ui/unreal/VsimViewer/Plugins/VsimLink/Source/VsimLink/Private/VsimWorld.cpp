@@ -15,6 +15,7 @@
 #include "Materials/MaterialInterface.h"
 #include "UObject/ConstructorHelpers.h"
 #include "VsimCarActor.h"
+#include "VsimCarSound.h"
 #include "VsimTrackActor.h"
 
 AVsimWorld::AVsimWorld()
@@ -142,6 +143,16 @@ void AVsimWorld::CycleCamera()
 	Car->UseCamera(Camera);
 }
 
+bool AVsimWorld::ToggleSound()
+{
+	return Car && Car->Sound->Toggle();
+}
+
+bool AVsimWorld::IsSoundOn() const
+{
+	return Car && Car->Sound->IsPlaying();
+}
+
 void AVsimWorld::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
@@ -163,6 +174,13 @@ void AVsimWorld::Tick(float DeltaSeconds)
 		// frame later, so that is added for the estimate shown and reported.
 		InputLatencyMs = State.input_ns != 0 ? double(vsim_link::now_ns() - State.input_ns) / 1e6 : 0.0;
 		Reader->ReportViewer(InputLatencyMs + FrameMs, FrameMs);
+	}
+	else if (IsSoundOn())
+	{
+		// No simulator: fade to silence instead of holding the last sound.
+		vsim_link::VehicleState Silent{};
+		Silent.paused = 1;
+		Car->Sound->SetState(Silent);
 	}
 	UpdateCamera(DeltaSeconds);
 }

@@ -9,7 +9,7 @@ public class VsimLink : ModuleRules
 		bUseUnity = false;
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
-			"Core", "CoreUObject", "Engine", "InputCore", "ProceduralMeshComponent"
+			"Core", "CoreUObject", "Engine", "InputCore", "ProceduralMeshComponent", "AudioMixer"
 		});
 	}
 }

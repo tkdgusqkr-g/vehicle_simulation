@@ -18,7 +18,7 @@ ENGINE_HEADERS = """CoreMinimal.h GameFramework/Actor.h GameFramework/PlayerCont
 GameFramework/GameModeBase.h GameFramework/SpringArmComponent.h HAL/PlatformTime.h
 Materials/MaterialInstanceDynamic.h Materials/MaterialInterface.h ProceduralMeshComponent.h
 UObject/ConstructorHelpers.h Camera/CameraComponent.h Camera/CameraActor.h Components/SceneComponent.h
-Components/StaticMeshComponent.h Components/DirectionalLightComponent.h
+Components/StaticMeshComponent.h Components/DirectionalLightComponent.h Components/SynthComponent.h
 Components/ExponentialHeightFogComponent.h Components/SkyAtmosphereComponent.h Components/SkyLightComponent.h
 Components/VolumetricCloudComponent.h
 Engine/StaticMesh.h Engine/World.h Engine/Canvas.h Engine/Engine.h Engine/Font.h EngineUtils.h

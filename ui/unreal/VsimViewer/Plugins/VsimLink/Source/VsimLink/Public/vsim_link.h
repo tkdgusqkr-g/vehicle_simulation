@@ -63,7 +63,8 @@ struct VehicleInfo {
   float tire_width;     // [m]
   float steering_ratio; // steering wheel angle / road wheel angle
   float steering_lock;  // [rad] at the steering wheel, one side
-  float reserved[7];
+  float gear_ratio;     // motor to wheel (first driveline entry), for sound
+  float reserved[6];
 };
 
 // One snapshot, copied under the sequence lock.
@@ -105,7 +106,8 @@ struct VehicleState {
   float tire_temp[4];        // [degC] tread surface; 0: not modelled
   float brake_temp[4];       // [degC] disc; 0: not modelled
   float road_z;              // [m] road height under the CG
-  float reserved_f[16];
+  std::uint8_t wheel_surface[4];  // 0 road, 1 kerb, 2 grass
+  float reserved_f[15];
   std::uint64_t track_generation;  // track this state is on; 0: none
   std::uint64_t car_generation;    // car model shown; 0: none
   VehicleInfo info;
