@@ -1,0 +1,37 @@
+# 구동계 진동 (PH-04): 감속기 백래시·비틀림 컴플라이언스와 모터 토크 리플을 켜고 저속 출발 → 토크 끊기 → 다시 밟기.
+# 기본 예제 차는 강체 구동계라서 여기서 overrides로 켭니다.
+name: driveline_shuffle
+project: ..
+seed: 1
+
+time:
+  dt: 0.001
+  mode: fast
+  t_end: 4
+
+driver:
+  type: maneuver
+  throttle: {type: pulse, start_s: 0, period_s: 2.5, width_s: 2.0, value: 0.3}   # 0~2 s 출발, 2.5 s 다시
+
+overrides:
+  # 바퀴마다 감속기 출력 → 바퀴 사이 비틀림 강성·감쇠와 유격 (바퀴 기준)
+  vehicle.driveline.0.shaft.stiffness_nm_per_rad: 6000
+  vehicle.driveline.0.shaft.damping_nms_per_rad: 3
+  vehicle.driveline.0.shaft.backlash_deg: 0.6
+  vehicle.driveline.1.shaft.stiffness_nm_per_rad: 6000
+  vehicle.driveline.1.shaft.damping_nms_per_rad: 3
+  vehicle.driveline.1.shaft.backlash_deg: 0.6
+  vehicle.driveline.2.shaft.stiffness_nm_per_rad: 6000
+  vehicle.driveline.2.shaft.damping_nms_per_rad: 3
+  vehicle.driveline.2.shaft.backlash_deg: 0.6
+  vehicle.driveline.3.shaft.stiffness_nm_per_rad: 6000
+  vehicle.driveline.3.shaft.damping_nms_per_rad: 3
+  vehicle.driveline.3.shaft.backlash_deg: 0.6
+  # 모터 토크 리플: 전기각 6차 × 극쌍 5 = 기계 1회전당 30 주기, 토크의 3 % + 코깅 0.3 N·m
+  vehicle.powertrain.motor.ripple.0.order: 30
+  vehicle.powertrain.motor.ripple.0.amplitude_pct: 3
+  vehicle.powertrain.motor.ripple.0.cogging_nm: 0.3
+
+logging:
+  rate_hz: 1000
+  signals: ["veh.*", "pt.*", "vcu.*", "drv.*", "energy.*"]

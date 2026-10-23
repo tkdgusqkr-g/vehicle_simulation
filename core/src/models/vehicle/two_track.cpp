@@ -173,6 +173,7 @@ struct TwoTrackModel::Signals {
   SignalId power_mech, power_elec;
   SignalId soc, voltage, current, power, ocv, open_voltage, battery_temp, overloaded;
   SignalId cell_v_min, cell_v_max, soc_min, soc_max, weak_group;
+  std::vector<SignalId> shaft_torque, shaft_twist;
   // Electrical network inputs (when it carries the accumulator).
   SignalId elec_current = 0;
   std::vector<SignalId> elec_dc, elec_enabled;
@@ -293,7 +294,9 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
   body_offset_ = energy_offset_ + kEnergyCount;
   unsprung_offset_ = body_offset_ + kBodySize;
   thermal_offset_ = full_ ? unsprung_offset_ + 2 * kCorners : body_offset_;
-  size_ = thermal_offset_ + 3 * kCorners;
+  mech_offset_ = thermal_offset_ + 3 * kCorners;
+  size_ = mech_offset_ + motors + driveline_.shaft_count();
+  ripple_max_frequency_ = 1.0 / (8.0 * ctx.dt());
   torque_cmd_.assign(motors, 0.0);
   network_ = ElectricalNetwork::powers_plant(params);
   dc_voltage_.assign(motors, 0.0);
@@ -411,6 +414,13 @@ void TwoTrackModel::init(const ParamTree& params, Context& ctx) {
                        bus.declare(base + "temp", "degC", "winding temperature"),
                        bus.declare(base + "loss", "W", "motor and inverter losses"),
                        bus.declare(base + "power_elec", "W", "DC power drawn")});
+  }
+  s.shaft_torque.clear();
+  s.shaft_twist.clear();
+  for (std::size_t i = 0; i < driveline_.shaft_count(); ++i) {
+    const std::string base = "pt.shaft." + std::string(kCornerNames[driveline_.shaft_wheel(i)]) + ".";
+    s.shaft_torque.push_back(bus.declare(base + "torque", "N*m", "torque the shaft carries to the wheel"));
+    s.shaft_twist.push_back(bus.declare(base + "twist", "rad", "twist at the wheel, free play included"));
   }
   s.power_mech = bus.declare("pt.power_mech", "W", "total motor shaft power");
   s.power_elec = bus.declare("pt.power_elec", "W", "battery terminal power, including aux");
@@ -840,6 +850,10 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
       }
       e.motor_avail[i] = motor_.envelope(e.motor_speed[i], network_ ? dc_voltage_[i] : dc_voltage, temp);
       e.motor_torque[i] = std::clamp(x[motor_offset_ + 2 * i], -e.motor_avail[i], e.motor_avail[i]);
+      if (!motor_.ripple.empty()) {
+        e.motor_torque[i] += motor_.ripple_torque(e.motor_torque[i], x[mech_offset_ + i], e.motor_speed[i],
+                                                  ripple_max_frequency_);
+      }
       e.motor_loss[i] = motor_.losses(e.motor_torque[i], e.motor_speed[i]);
       e.motor_power[i] = e.motor_torque[i] * e.motor_speed[i] + e.motor_loss[i];
       total += e.motor_power[i];
@@ -1057,7 +1071,12 @@ void TwoTrackModel::evaluate(std::span<const double> x, Eval& e, std::span<doubl
   }
 
   Driveline::Losses losses;
-  driveline_.accelerations(q, loads, dx.subspan(wheel_offset_, driveline_.dof_count()), losses);
+  const std::span<const double> twist = x.subspan(mech_offset_ + motors, driveline_.shaft_count());
+  driveline_.accelerations(q, twist, loads, dx.subspan(wheel_offset_, driveline_.dof_count()),
+                           dx.subspan(mech_offset_ + motors, driveline_.shaft_count()), losses);
+  for (std::size_t i = 0; i < motors; ++i) {
+    dx[mech_offset_ + i] = e.motor_speed[i];  // rotor angle
+  }
 
   // Tire and brake temperatures.
   for (std::size_t c = 0; c < kCorners; ++c) {
@@ -1272,6 +1291,11 @@ void TwoTrackModel::write_outputs(double /*t*/, std::span<const double> x, Signa
     bus.set(motor.power, e.motor_power[i]);
   }
   bus.set(s.power_mech, e.power_mech);
+  for (std::size_t i = 0; i < s.shaft_torque.size(); ++i) {
+    const std::span<const double> twist = x.subspan(mech_offset_ + driveline_.motor_count(), driveline_.shaft_count());
+    bus.set(s.shaft_torque[i], driveline_.shaft_torque(i, x.subspan(wheel_offset_, driveline_.dof_count()), twist));
+    bus.set(s.shaft_twist[i], twist[i]);
+  }
   bus.set(s.power_elec, e.power_elec);
 
   bus.set(s.soc, x[battery_offset_]);
@@ -1323,7 +1347,9 @@ void TwoTrackModel::write_outputs(double /*t*/, std::span<const double> x, Signa
   const double sinks = energy[kBatteryLoss] + energy[kAux] + energy[kMotorLoss] + energy[kGearLoss] +
                        energy[kDiffLoss] + energy[kBrakeLoss] + energy[kSlipLoss] + energy[kRollingLoss] +
                        energy[kDragLoss] + energy[kDamperLoss] + energy[kTireDampingLoss];
-  const double potential_gain = full_ ? stored_energy(x) - stored0_ : 0.0;
+  const double potential_gain = (full_ ? stored_energy(x) - stored0_ : 0.0) +
+                                driveline_.spring_energy(x.subspan(mech_offset_ + driveline_.motor_count(),
+                                                                   driveline_.shaft_count()));
   bus.set(s.residual, energy[kBatteryChemical] - sinks - kinetic_gain - rc_stored - potential_gain);
 
   if (full_) {

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <numbers>
 #include <stdexcept>
+#include <string>
 
 namespace vsim {
 
@@ -27,6 +28,19 @@ MotorParams MotorParams::from_params(const ParamTree& params) {
   p.coolant_temp = get("thermal.coolant_temp_c", p.coolant_temp);
   p.derate_start = get("thermal.derate_start_c", p.derate_start);
   p.derate_end = get("thermal.derate_end_c", p.derate_end);
+
+  for (std::size_t i = 0; params.has_prefix("vehicle.powertrain.motor.ripple." + std::to_string(i)); ++i) {
+    const std::string r = "vehicle.powertrain.motor.ripple." + std::to_string(i) + ".";
+    Ripple ripple;
+    ripple.order = params.get_double(r + "order");
+    ripple.share = params.get_double(r + "amplitude_pct", 0.0) / 100.0;
+    ripple.cogging = params.get_double(r + "cogging_nm", 0.0);
+    ripple.phase = params.get_double(r + "phase_deg", 0.0) * std::numbers::pi / 180.0;
+    if (!(ripple.order > 0.0) || ripple.share < 0.0 || ripple.cogging < 0.0) {
+      throw std::invalid_argument(r + "order > 0, amplitude_pct and cogging_nm >= 0");
+    }
+    p.ripple.push_back(ripple);
+  }
 
   if (!(p.torque_max > 0.0 && p.power_max > 0.0 && p.speed_max > 0.0 && p.nominal_voltage > 0.0)) {
     throw std::invalid_argument("vehicle.powertrain.motor: torque, power, speed and voltage must be positive");
@@ -52,6 +66,17 @@ double MotorParams::envelope(double speed, double dc_voltage, double temperature
   // Fade to zero over the last 5 % below the speed limit.
   torque *= std::clamp((speed_max - w) / (0.05 * speed_max), 0.0, 1.0);
   return torque * derate(temperature);
+}
+
+double MotorParams::ripple_torque(double torque, double angle, double speed, double max_frequency) const {
+  double extra = 0.0;
+  for (const Ripple& r : ripple) {
+    const double frequency = r.order * std::abs(speed) / (2.0 * std::numbers::pi);
+    const double ratio = frequency / max_frequency;
+    const double fade = 1.0 / (1.0 + ratio * ratio * ratio * ratio);
+    extra += fade * (r.share * torque + r.cogging) * std::sin(r.order * angle + r.phase);
+  }
+  return extra;
 }
 
 double MotorParams::losses(double torque, double speed) const {

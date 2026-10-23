@@ -154,6 +154,8 @@ class TwoTrackModel final : public PlantModel {
   std::size_t unsprung_offset() const { return unsprung_offset_; }  // zu[4], then vzu[4]
   // Per corner: tire surface and core temperature, brake disc temperature [degC].
   std::size_t thermal_offset() const { return thermal_offset_; }
+  // Rotor angles (one per motor), then shaft twists (one per compliant shaft).
+  std::size_t mech_offset() const { return mech_offset_; }
   const KcTable& kc(std::size_t axle) const { return kc_[axle]; }
   // Static figures of the suspension (full model).
   double sprung_mass() const { return sprung_mass_; }
@@ -188,6 +190,8 @@ class TwoTrackModel final : public PlantModel {
   std::size_t body_offset_ = 0;
   std::size_t unsprung_offset_ = 0;
   std::size_t thermal_offset_ = 0;
+  std::size_t mech_offset_ = 0;     // per motor: rotor angle; per shaft: twist
+  double ripple_max_frequency_ = 125.0;  // [Hz] the plant step carries
   std::size_t size_ = 0;
   TireThermalParams tire_thermal_;
   BrakeThermalParams brake_thermal_;

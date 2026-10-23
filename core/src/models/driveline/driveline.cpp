@@ -13,6 +13,21 @@ namespace {
 constexpr double kBrakeStickTau = 0.005;  // [s]
 // Speed difference over which a limited-slip diff reaches full locking torque.
 constexpr double kLsdSmoothing = 0.5;  // [rad/s]
+// At most a rotor and a wheel per corner.
+constexpr std::size_t kMaxDofs = 2 * kCorners;
+// The tooth contact damping fades in over this much twist past the free play [rad].
+constexpr double kContactFade = 2e-4;
+
+// Twist past the free play (the dead zone) and how far into contact (0..1).
+double engaged(double twist, double half_play) {
+  if (twist > half_play) {
+    return twist - half_play;
+  }
+  if (twist < -half_play) {
+    return twist + half_play;
+  }
+  return 0.0;
+}
 
 std::vector<double> invert(std::vector<double> a, std::size_t n) {
   std::vector<double> inv(n * n, 0.0);
@@ -114,6 +129,17 @@ DrivelineConfig DrivelineConfig::from_params(const ParamTree& params) {
     } else if (item.has_prefix("diff")) {
       throw std::invalid_argument(where + ": a differential needs two wheels");
     }
+    if (item.has_prefix("shaft")) {
+      if (entry.wheels.size() != 1) {
+        throw std::invalid_argument(where + ": shaft compliance is for one-wheel entries");
+      }
+      entry.shaft_stiffness = item.get_double("shaft.stiffness_nm_per_rad");
+      entry.shaft_damping = item.get_double("shaft.damping_nms_per_rad", 0.0);
+      entry.backlash = item.get_double("shaft.backlash_deg", 0.0) * 3.14159265358979323846 / 180.0;
+      if (!(entry.shaft_stiffness > 0.0) || entry.shaft_damping < 0.0 || entry.backlash < 0.0) {
+        throw std::invalid_argument(where + ": shaft needs stiffness_nm_per_rad > 0, damping and backlash >= 0");
+      }
+    }
     config.entries.push_back(std::move(entry));
   }
   if (config.entries.empty()) {
@@ -134,13 +160,22 @@ void Driveline::init(const DrivelineConfig& config, double wheel_inertia, double
   dofs_ = 0;
   motors_.clear();
   lsds_.clear();
+  shafts_.clear();
   std::array<bool, kCorners> assigned{};
 
   for (std::size_t m = 0; m < config.entries.size(); ++m) {
     const DrivelineEntry& entry = config.entries[m];
     Motor motor{entry.gear_ratio, entry.efficiency, {}};
     const double g = entry.gear_ratio;
-    if (entry.wheels.size() == 1 || entry.diff == DiffType::Locked) {
+    if (entry.wheels.size() == 1 && entry.shaft_stiffness > 0.0) {
+      // Rotor and gear on their own coordinate (wheel speed units), the wheel on another.
+      const std::size_t rotor = dofs_++;
+      const std::size_t wheel = dofs_++;
+      wheel_dof_[entry.wheels[0]] = wheel;
+      motor.dofs = {{rotor, g}};
+      shafts_.push_back({rotor, wheel, entry.wheels[0], entry.shaft_stiffness, entry.shaft_damping,
+                         0.5 * entry.backlash});
+    } else if (entry.wheels.size() == 1 || entry.diff == DiffType::Locked) {
       const std::size_t dof = dofs_++;
       for (const std::size_t wheel : entry.wheels) {
         wheel_dof_[wheel] = dof;
@@ -196,10 +231,26 @@ double Driveline::motor_speed(std::size_t motor, std::span<const double> q) cons
   return speed;
 }
 
-void Driveline::accelerations(std::span<const double> q, const Loads& loads,
-                              std::span<double> qdot, Losses& losses) const {
+double Driveline::shaft_torque(std::size_t shaft, std::span<const double> q, std::span<const double> twist) const {
+  const Shaft& s = shafts_[shaft];
+  const double e = engaged(twist[shaft], s.half_play);
+  const double contact = std::min(1.0, std::abs(e) / kContactFade);
+  return s.stiffness * e + contact * s.damping * (q[s.motor_dof] - q[s.wheel_dof]);
+}
+
+double Driveline::spring_energy(std::span<const double> twist) const {
+  double energy = 0.0;
+  for (std::size_t i = 0; i < shafts_.size() && i < twist.size(); ++i) {
+    const double e = engaged(twist[i], shafts_[i].half_play);
+    energy += 0.5 * shafts_[i].stiffness * e * e;
+  }
+  return energy;
+}
+
+void Driveline::accelerations(std::span<const double> q, std::span<const double> twist, const Loads& loads,
+                              std::span<double> qdot, std::span<double> twist_rate, Losses& losses) const {
   const std::size_t n = dofs_;
-  std::array<double, kCorners> torque{};
+  std::array<double, kMaxDofs> torque{};
   for (std::size_t wheel = 0; wheel < kCorners; ++wheel) {
     torque[wheel_dof_[wheel]] += loads.wheel_torque[wheel];
   }
@@ -227,8 +278,23 @@ void Driveline::accelerations(std::span<const double> q, const Loads& loads,
     losses.diff += locking * slip;
   }
 
+  // Compliant shafts: the spring through the free play and the tooth damping.
+  for (std::size_t i = 0; i < shafts_.size(); ++i) {
+    const Shaft& s = shafts_[i];
+    const double t = shaft_torque(i, q, twist);
+    torque[s.motor_dof] -= t;
+    torque[s.wheel_dof] += t;
+    const double e = engaged(twist[i], s.half_play);
+    const double contact = std::min(1.0, std::abs(e) / kContactFade);
+    const double slip = q[s.motor_dof] - q[s.wheel_dof];
+    losses.gear += contact * s.damping * slip * slip;
+    if (!twist_rate.empty()) {
+      twist_rate[i] = slip;
+    }
+  }
+
   // Brakes: kinetic friction while slipping, static friction below capacity.
-  std::array<double, kCorners> capacity{};
+  std::array<double, kMaxDofs> capacity{};
   for (std::size_t wheel = 0; wheel < kCorners; ++wheel) {
     capacity[wheel_dof_[wheel]] += loads.brake_capacity[wheel];
   }

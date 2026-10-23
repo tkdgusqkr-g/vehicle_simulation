@@ -160,7 +160,7 @@ L3 모델이 하드포인트에서 K&C를 직접 풉니다 (`vsim-core --export-
 | 토크–속도 곡선 (DC 전압 2~3 수준) | 표 | ★★★ | 전압 강하에 따른 고속 토크 감소 표현 | |
 | 로터 관성 | kg·m² | ★★★ | | |
 | 효율맵 (모터, 가능하면 인버터 포함 시스템 효율) | 표 | ★★ | | |
-| 토크 정확도, 토크 리플 | %, N·m | ★ | 액추에이터 비이상성(PH-04)용 | |
+| 토크 정확도, 토크 리플 | %, N·m | ★ | 액추에이터 비이상성(PH-04)용: `powertrain.motor.ripple: [{order, amplitude_pct, cogging_nm}]` (order = 기계 1회전당 주기 = 전기 차수 × 극쌍수) | |
 | 토크 응답 시간상수 | ms | ★ | | |
 | 열: 열저항 / 열용량, 디레이팅 시작·차단 온도 | K/W, J/K, °C | ★★ | | |
 | 전기 상수: Ld, Lq, Rs, 쇄교자속, 극쌍수 | — | ★ | Level B(dq 모델)용 | |
@@ -182,7 +182,8 @@ L3 모델이 하드포인트에서 K&C를 직접 풉니다 (`vsim-core --export-
 | 감속비 | — | ★★★ | | |
 | 효율 | % | ★★ | | |
 | 관성 (모터 축 기준) | kg·m² | ★ | **CAD** 가능 | |
-| 백래시 | deg | ★ | 구동계 진동(PH-04)용 | |
+| 백래시 | deg | ★ | 구동계 진동(PH-04)용: `driveline[i].shaft.backlash_deg` (바퀴 기준) | |
+| 감속기 출력 ~ 바퀴 비틀림 강성·감쇠 | N·m/rad, N·m·s/rad | ★ | `shaft.stiffness_nm_per_rad`, `shaft.damping_nms_per_rad` | |
 
 ## 12. 배터리 (Accumulator)
 

@@ -1,0 +1,18 @@
+test: driveline_shuffle
+description: PH-04 감속기 백래시(0.6°)·비틀림 강성과 모터 토크 리플이 있을 때 출발·토크 끊기·다시 밟기. 유격을 지나며 축 토크가 부호를 바꾸고 튀며, 슬립 제어가 구동계 진동을 바퀴 슬립으로 오인해 토크를 줄입니다.
+scenario: ../scenarios/driveline_shuffle.yaml
+checks:
+  - name: 출발 때 축 토크가 유격을 지나 역전 (−30 N·m 미만)
+    expr: "min(window(pt.shaft.rl.torque, 0.02, 0.5)) < -30"
+  - name: 출발 때 정상 토크(약 82 N·m)의 두 배 가까이 튐
+    expr: "max(window(pt.shaft.rl.torque, 0.02, 0.5)) > 160"
+  - name: 토크를 끊은 뒤 유격 안에서 덜컹거림 (역방향 충격 2회 이상)
+    expr: "count(window(pt.shaft.rl.torque, 2.0, 2.45) < -2) >= 2"
+  - name: 슬립 제어가 진동을 슬립으로 오인해 토크를 줄임
+    expr: "max(window(vcu.motor.rl.slip, 0, 0.5)) > 0.3 and min(window(vcu.motor.rl.tc, 0, 0.5)) < 0.5"
+  - name: 다시 밟을 때 토크 오버슈트 (25 % 이상)
+    expr: "max(window(pt.shaft.rl.torque, 2.5, 3.0)) > 1.25 * mean(window(pt.shaft.rl.torque, 3.5, 4.0))"
+  - name: 진동이 가라앉은 뒤에는 조용함
+    expr: "max(window(pt.shaft.rl.torque, 3.5, 4.0)) - min(window(pt.shaft.rl.torque, 3.5, 4.0)) < 2"
+  - name: 에너지 수지 오차 1 J 미만 (축 스프링 에너지 포함)
+    expr: "abs(final(energy.residual)) < 1"

@@ -153,3 +153,25 @@ TEST(CellSpread, SampledPerCarWhenVariationIsReal) {
 
 }  // namespace
 }  // namespace vsim
+
+namespace vsim {
+namespace {
+
+TEST(Motor, TorqueRippleAndItsFade) {
+  MotorParams m = MotorParams::from_params(test::load_example(
+      "straight_accel", {{"vehicle.powertrain.motor.ripple.0.order", "30"},
+                         {"vehicle.powertrain.motor.ripple.0.amplitude_pct", "3"},
+                         {"vehicle.powertrain.motor.ripple.0.cogging_nm", "0.3"}}).params);
+  ASSERT_EQ(m.ripple.size(), 1u);
+  const double quarter = 3.14159265358979 / (2.0 * 30.0);  // sin = 1
+  // At standstill the full ripple: 3 % of 10 N m plus 0.3 N m cogging.
+  EXPECT_NEAR(m.ripple_torque(10.0, quarter, 0.0, 125.0), 0.6, 1e-12);
+  // Far above what the plant step carries: faded out.
+  EXPECT_LT(std::abs(m.ripple_torque(10.0, quarter, 1000.0, 125.0)), 1e-3);
+  EXPECT_THROW(MotorParams::from_params(test::load_example(
+                   "straight_accel", {{"vehicle.powertrain.motor.ripple.0.order", "0"}}).params),
+               std::invalid_argument);
+}
+
+}  // namespace
+}  // namespace vsim

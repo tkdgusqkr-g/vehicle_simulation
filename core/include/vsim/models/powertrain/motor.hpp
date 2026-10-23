@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include "vsim/sim/params.hpp"
 
 namespace vsim {
@@ -23,6 +25,13 @@ struct MotorParams {
   double coolant_temp = 35.0;        // [degC]
   double derate_start = 100.0;       // [degC] full torque below
   double derate_end = 140.0;         // [degC] zero torque above
+  // Torque ripple (design doc §10.4, PH-04): harmonics of the rotor angle, `order` cycles per
+  // mechanical revolution (electrical harmonic x pole pairs), a share of the torque plus a
+  // load-independent part (cogging).
+  struct Ripple {
+    double order = 6.0, share = 0.0, cogging = 0.0, phase = 0.0;  // -, -, [N m], [rad]
+  };
+  std::vector<Ripple> ripple;
 
   // Reads vehicle.powertrain.motor.*
   static MotorParams from_params(const ParamTree& params);
@@ -31,6 +40,9 @@ struct MotorParams {
   double envelope(double speed, double dc_voltage, double temperature) const;
   double derate(double temperature) const;
   double losses(double torque, double speed) const;
+  // Ripple on top of `torque` at rotor angle `angle` [rad]. Harmonics above `max_frequency`
+  // [Hz] fade out (the plant step cannot carry them; the rotor and wheel inertia filter them).
+  double ripple_torque(double torque, double angle, double speed, double max_frequency) const;
 };
 
 }  // namespace vsim

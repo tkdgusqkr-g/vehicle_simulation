@@ -145,6 +145,10 @@ aero:
 # 구동계: 모터마다 구동하는 바퀴. 바퀴 2개면 디퍼렌셜(open | lsd | locked)
 #   예) 후륜 단일 모터: - {motor: rear, wheels: [rl, rr], gear_ratio: 4.2,
 #                         diff: {type: lsd, preload_nm: 20, ramp: 0.3}}
+#   감속기 → 바퀴 비틀림과 유격 (PH-04, 바퀴 기준; 없으면 강체):
+#     - {motor: fl, wheel: fl, gear_ratio: 14.0, efficiency: 0.97,
+#        shaft: {stiffness_nm_per_rad: 6000, damping_nms_per_rad: 3, backlash_deg: 0.6}}
+#   scenarios/driveline_shuffle.yaml이 이렇게 켜서 출발·토크 끊기 진동을 봅니다.
 driveline:
   - {motor: fl, wheel: fl, gear_ratio: 14.0, efficiency: 0.97}
   - {motor: fr, wheel: fr, gear_ratio: 14.0, efficiency: 0.97}
@@ -159,6 +163,8 @@ powertrain:
     nominal_voltage_v: 520     # 이 DC 전압에서 power_max_kw. 전압이 낮으면 비례해서 줄어듦
     rotor_inertia_kgm2: 0.00027
     torque_time_constant_s: 0.002
+    # ripple:                  # 토크 리플 (PH-04): 기계 1회전당 order 주기, 토크의 amplitude_pct % + 코깅
+    #   - {order: 30, amplitude_pct: 3, cogging_nm: 0.3}   # 전기각 6차 × 극쌍 5
     losses:                    # P = copper*T^2 + iron*|w| + windage*w^2 + constant
       copper_w_per_nm2: 3.0
       iron_w_per_radps: 0.25
